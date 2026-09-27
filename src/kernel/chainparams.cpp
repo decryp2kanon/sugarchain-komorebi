@@ -135,6 +135,10 @@ public:
         assert(genesis.hashMerkleRoot == uint256{"7677ce2a579cb0411d1c9e6b1e9072b8f537f1e59cb387dacac2daac56e150b0"});
         assert(genesis.GetPoWHash() == uint256{"0031205acedcc69a9c18f79b84790179d68fb90588bedee6587ff701bdde04eb"});
 
+        vSeeds = {"1seed.sugarchain.info", "2seed.sugarchain.info",
+                  "seed.sugarchain.site", "seed.sugar.hel.lu"};
+        vFixedSeeds.assign(std::begin(chainparams_seed_main), std::end(chainparams_seed_main));
+
         // Wallet/address porting is deliberately deferred; these baseline fields
         // are not used for header, block, script or network validation.
         base58Prefixes[PUBKEY_ADDRESS] = std::vector<unsigned char>(1,0);
