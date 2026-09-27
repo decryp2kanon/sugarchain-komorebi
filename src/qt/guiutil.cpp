@@ -644,6 +644,7 @@ bool SetStartOnSystemStartup(bool fAutoStart)
         else
             optionFile << strprintf("Name=Sugarchain Komorebi (%s)\n", ChainTypeToString(chain));
         optionFile << "Exec=" << pszExePath << strprintf(" -min -chain=%s\n", ChainTypeToString(chain));
+        optionFile << "Icon=sugarchain\n";
         optionFile << "Terminal=false\n";
         optionFile << "Hidden=false\n";
         optionFile.close();
