@@ -10,13 +10,13 @@ import tempfile
 import argparse
 
 BINARIES = [
-'bin/bitcoin',
-'bin/bitcoind',
-'bin/bitcoin-cli',
-'bin/bitcoin-tx',
-'bin/bitcoin-wallet',
-'bin/bitcoin-util',
-'bin/bitcoin-qt',
+'bin/sugarchain',
+'bin/sugarchaind',
+'bin/sugarchain-cli',
+'bin/sugarchain-tx',
+'bin/sugarchain-wallet',
+'bin/sugarchain-util',
+'bin/sugarchain-qt',
 ]
 
 parser = argparse.ArgumentParser(

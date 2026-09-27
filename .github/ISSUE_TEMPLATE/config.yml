@@ -1,8 +1,11 @@
 blank_issues_enabled: true
 contact_links:
-  - name: Bitcoin Core Security Policy
-    url: https://github.com/bitcoin/bitcoin/blob/master/SECURITY.md
-    about: View security policy
-  - name: Bitcoin Core Developers
-    url: https://bitcoincore.org
-    about: Bitcoin Core homepage
+  - name: Sugarchain bug reports
+    url: https://github.com/sugarchain-project/sugarchain/issues
+    about: Report a Sugarchain issue
+  - name: Sugarchain contact and community
+    url: https://t.me/sugarchain
+    about: Contact the Sugarchain community
+  - name: Sugarchain homepage
+    url: https://sugarchain.org/
+    about: Sugarchain product information
