@@ -151,6 +151,10 @@ public:
         // This is fine at runtime as we'll fall back to using them as an addrfetch if they don't support the
         // service bits we want, but we should get them updated to support all service bits wanted by any
         // release ASAP to avoid it where possible.
+        vSeeds.emplace_back("1seed.sugarchain.info");
+        vSeeds.emplace_back("2seed.sugarchain.info");
+        vSeeds.emplace_back("seed.sugarchain.site");
+        vSeeds.emplace_back("seed.sugar.hel.lu");
 
         // Wallet/address porting is deliberately deferred; these baseline fields
         // are not used for header, block, script or network validation.
@@ -161,6 +165,8 @@ public:
         base58Prefixes[EXT_SECRET_KEY] = {0x04, 0x88, 0xAD, 0xE4};
 
         bech32_hrp = "bc";
+
+        vFixedSeeds.assign(std::begin(chainparams_seed_main), std::end(chainparams_seed_main));
 
         fDefaultConsistencyChecks = false;
         m_is_mockable_chain = false;
