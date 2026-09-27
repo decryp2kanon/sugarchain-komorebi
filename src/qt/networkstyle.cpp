@@ -17,11 +17,12 @@ static const struct {
     const int iconColorHueShift;
     const int iconColorSaturationReduction;
 } network_styles[] = {
+    // Preserve the official logo colors; window titles still identify each network.
     {ChainType::MAIN, QAPP_APP_NAME_DEFAULT, 0, 0},
-    {ChainType::TESTNET, QAPP_APP_NAME_TESTNET, 70, 30},
-    {ChainType::TESTNET4, QAPP_APP_NAME_TESTNET4, 70, 30},
-    {ChainType::SIGNET, QAPP_APP_NAME_SIGNET, 35, 15},
-    {ChainType::REGTEST, QAPP_APP_NAME_REGTEST, 160, 30},
+    {ChainType::TESTNET, QAPP_APP_NAME_TESTNET, 0, 0},
+    {ChainType::TESTNET4, QAPP_APP_NAME_TESTNET4, 0, 0},
+    {ChainType::SIGNET, QAPP_APP_NAME_SIGNET, 0, 0},
+    {ChainType::REGTEST, QAPP_APP_NAME_REGTEST, 0, 0},
 };
 
 // titleAddText needs to be const char* for tr()
@@ -75,7 +76,7 @@ NetworkStyle::NetworkStyle(const QString &_appName, const int iconColorHueShift,
     }
 
     appIcon             = QIcon(pixmap);
-    trayAndWindowIcon   = QIcon(pixmap.scaled(QSize(256,256)));
+    trayAndWindowIcon   = QIcon(pixmap.scaled(QSize(256,256), Qt::KeepAspectRatio, Qt::SmoothTransformation));
 }
 
 const NetworkStyle* NetworkStyle::instantiate(const ChainType networkId)

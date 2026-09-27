@@ -67,12 +67,20 @@ Copyright: Stephen Hutchings, Jonas Schnelli
 License: Expat
 Comment: Modifications of Stephen Hutchings' Typicons
 
-Files: src/qt/res/icons/bitcoin.*
-       share/pixmaps/bitcoin*
-       src/qt/res/src/bitcoin.svg
+Files: src/qt/res/src/bitcoin.svg
 Copyright: Bitboy, Jonas Schnelli
 License: public-domain
 Comment: Site: https://bitcointalk.org/?topic=1756.0
+
+Files: src/qt/res/icons/sugarchain.*
+       src/qt/res/icons/sugarchain_testnet.ico
+       share/pixmaps/sugarchain*
+       share/pixmaps/nsis-header.bmp
+       share/pixmaps/nsis-wizard.bmp
+Copyright: 2018-2020, The Sugarchain Yumekawa developers
+License: Expat
+Comment: Official assets from https://github.com/sugarchain-project/sugarchain
+         See share/pixmaps/SUGARCHAIN-ASSETS.md for provenance and source license.
 
 Files: src/qt/res/icons/proxy.png
        src/qt/res/src/proxy.svg
