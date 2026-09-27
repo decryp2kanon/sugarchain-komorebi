@@ -3,6 +3,8 @@
 # file COPYING or https://opensource.org/license/mit/.
 
 add_library(bitcoin_crypto STATIC EXCLUDE_FROM_ALL
+  yespower-1.0.1/yespower-opt.c
+  yespower-1.0.1/sha256.c
   aes.cpp
   chacha20.cpp
   chacha20poly1305.cpp

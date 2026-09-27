@@ -169,3 +169,10 @@ bool CheckProofOfWorkImpl(uint256 hash, unsigned int nBits, const Consensus::Par
 
     return true;
 }
+
+// Validate the target before computing the expensive, uncached PoW hash.
+bool CheckBlockProofOfWork(const CBlockHeader& header, const Consensus::Params& params)
+{
+    if (!DeriveTarget(header.nBits, params.powLimit)) return false;
+    return CheckProofOfWork(params.fYespowerSugar ? header.GetPoWHash() : header.GetHash(), header.nBits, params);
+}
