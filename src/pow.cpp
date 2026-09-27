@@ -6,14 +6,40 @@
 #include <pow.h>
 
 #include <arith_uint256.h>
+#include <algorithm>
 #include <chain.h>
 #include <primitives/block.h>
 #include <uint256.h>
 #include <util/check.h>
 
+// Official Sugarchain SugarShield: average 510 targets, using endpoint MTPs.
+// Preserve integer operation ordering (divide before multiply) for consensus.
+static unsigned int GetSugarShieldWorkRequired(const CBlockIndex* last, const Consensus::Params& params)
+{
+    const arith_uint256 limit = UintToArith256(params.powLimit);
+    const CBlockIndex* first = last;
+    arith_uint256 total{0};
+    for (int64_t i = 0; first && i < params.nPowAveragingWindow; ++i) {
+        arith_uint256 target;
+        target.SetCompact(first->nBits);
+        total += target;
+        first = first->pprev;
+    }
+    if (!first) return limit.GetCompact();
+    int64_t span = last->GetMedianTimePast() - first->GetMedianTimePast();
+    span = params.AveragingWindowTimespan() + (span - params.AveragingWindowTimespan()) / 4;
+    span = std::clamp(span, params.MinActualTimespan(), params.MaxActualTimespan());
+    arith_uint256 next = total / params.nPowAveragingWindow;
+    next /= params.AveragingWindowTimespan();
+    next *= span;
+    if (next > limit) next = limit;
+    return next.GetCompact();
+}
+
 unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlockHeader *pblock, const Consensus::Params& params)
 {
     assert(pindexLast != nullptr);
+    if (params.nPowAveragingWindow) return GetSugarShieldWorkRequired(pindexLast, params);
     unsigned int nProofOfWorkLimit = UintToArith256(params.powLimit).GetCompact();
 
     // Only change once per difficulty adjustment interval

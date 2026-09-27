@@ -30,6 +30,8 @@ HeadersSyncState::HeadersSyncState(NodeId id,
       m_last_header_received(m_chain_start.GetBlockHeader()),
       m_current_height(chain_start.nHeight)
 {
+    ResetDifficultyHistory();
+
     // Estimate the number of blocks that could possibly exist on the peer's
     // chain *right now* using 6 blocks/second (fastest blockrate given the MTP
     // rule) times the number of seconds from the last allowed block until
@@ -45,6 +47,42 @@ HeadersSyncState::HeadersSyncState(NodeId id,
     LogDebug(BCLog::NET, "Initial headers sync started with peer=%d: height=%i, max_commitments=%i, min_work=%s\n", m_id, m_current_height, m_max_commitments, m_minimum_required_work.ToString());
 }
 
+void HeadersSyncState::ResetDifficultyHistory()
+{
+    m_difficulty_history.clear();
+    if (!m_consensus_params.nPowAveragingWindow) return;
+    // 510 averaged blocks plus the earlier endpoint's 11-block median.
+    const size_t limit = m_consensus_params.nPowAveragingWindow + CBlockIndex::nMedianTimeSpan;
+    const CBlockIndex* index = &m_chain_start;
+    while (index && m_difficulty_history.size() < limit) {
+        m_difficulty_history.emplace_front(index->GetBlockHeader());
+        m_difficulty_history.front().nHeight = index->nHeight;
+        index = index->pprev;
+    }
+    CBlockIndex* previous = nullptr;
+    for (auto& entry : m_difficulty_history) {
+        entry.pprev = previous;
+        previous = &entry;
+    }
+}
+
+bool HeadersSyncState::CheckDifficultyAndAppend(const CBlockHeader& header)
+{
+    assert(!m_difficulty_history.empty());
+    auto* previous = &m_difficulty_history.back();
+    if (header.nBits != GetNextWorkRequired(previous, &header, m_consensus_params)) return false;
+    m_difficulty_history.emplace_back(header);
+    auto& entry = m_difficulty_history.back();
+    entry.pprev = previous;
+    entry.nHeight = previous->nHeight + 1;
+    const size_t limit = m_consensus_params.nPowAveragingWindow + CBlockIndex::nMedianTimeSpan;
+    if (m_difficulty_history.size() > limit) {
+        m_difficulty_history.pop_front();
+        m_difficulty_history.front().pprev = nullptr;
+    }
+    return true;
+}
+
 /** Free any memory in use, and mark this object as no longer usable. This is
  * required to guarantee that we won't reuse this object with the same
  * SaltedUint256Hasher for another sync. */
@@ -52,6 +90,7 @@ void HeadersSyncState::Finalize()
 {
     Assume(m_download_state != State::FINAL);
     ClearShrink(m_header_commitments);
+    m_difficulty_history.clear();
     m_last_header_received.SetNull();
     ClearShrink(m_redownloaded_headers);
     m_redownload_buffer_last_hash.SetNull();
@@ -168,6 +207,7 @@ bool HeadersSyncState::ValidateAndStoreHeadersCommitments(std::span<const CBlock
         m_redownload_buffer_first_prev_hash = m_chain_start.GetBlockHash();
         m_redownload_buffer_last_hash = m_chain_start.GetBlockHash();
         m_redownload_chain_work = m_chain_start.nChainWork;
+        ResetDifficultyHistory();
         m_download_state = State::REDOWNLOAD;
         LogDebug(BCLog::NET, "Initial headers sync transition with peer=%d: reached sufficient work at height=%i, redownloading from height=%i\n", m_id, m_current_height, m_redownload_buffer_last_height);
     }
@@ -186,7 +226,9 @@ bool HeadersSyncState::ValidateAndProcessSingleHeader(const CBlockHeader& curren
     // work chain if they compress the work into as few blocks as possible,
     // so don't let anyone give a chain that would violate the difficulty
     // adjustment maximum.
-    if (!PermittedDifficultyTransition(m_consensus_params, next_height,
+    if (m_consensus_params.nPowAveragingWindow
+            ? !CheckDifficultyAndAppend(current)
+            : !PermittedDifficultyTransition(m_consensus_params, next_height,
                 m_last_header_received.nBits, current.nBits)) {
         LogDebug(BCLog::NET, "Initial headers sync aborted with peer=%d: invalid difficulty transition at height=%i (presync phase)\n", m_id, next_height);
         return false;
@@ -234,7 +276,9 @@ bool HeadersSyncState::ValidateAndStoreRedownloadedHeader(const CBlockHeader& he
         previous_nBits = m_chain_start.nBits;
     }
 
-    if (!PermittedDifficultyTransition(m_consensus_params, next_height,
+    if (m_consensus_params.nPowAveragingWindow
+            ? !CheckDifficultyAndAppend(header)
+            : !PermittedDifficultyTransition(m_consensus_params, next_height,
                 previous_nBits, header.nBits)) {
         LogDebug(BCLog::NET, "Initial headers sync aborted with peer=%d: invalid difficulty transition at height=%i (redownload phase)\n", m_id, next_height);
         return false;

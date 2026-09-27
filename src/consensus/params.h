@@ -112,6 +112,13 @@ struct Params {
     uint256 powLimit;
     /** Sugarchain mainnet uses YespowerSugar rather than the block identifier. */
     bool fYespowerSugar{false};
+    /** SugarShield (DigiShieldZEC) parameters; zero keeps baseline Bitcoin rules. */
+    int64_t nPowAveragingWindow{0};
+    int64_t nPowMaxAdjustDown{0};
+    int64_t nPowMaxAdjustUp{0};
+    int64_t AveragingWindowTimespan() const { return nPowAveragingWindow * nPowTargetSpacing; }
+    int64_t MinActualTimespan() const { return AveragingWindowTimespan() * (100 - nPowMaxAdjustUp) / 100; }
+    int64_t MaxActualTimespan() const { return AveragingWindowTimespan() * (100 + nPowMaxAdjustDown) / 100; }
     bool fPowAllowMinDifficultyBlocks;
     /**
       * Enforce BIP94 timewarp attack mitigation. On testnet4 this also enforces
