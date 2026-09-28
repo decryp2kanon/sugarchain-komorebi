@@ -30,6 +30,8 @@ HeadersSyncState::HeadersSyncState(NodeId id,
       m_last_header_received(m_chain_start.GetBlockHeader()),
       m_current_height(chain_start.nHeight)
 {
+    ResetDifficultyHistory();
+
     // Estimate the number of blocks that could possibly exist on the peer's
     // chain *right now* using 6 blocks/second (fastest blockrate given the MTP
     // rule) times the number of seconds from the last allowed block until
@@ -39,10 +41,62 @@ HeadersSyncState::HeadersSyncState(NodeId id,
     // chain to be longer than this (at the current time -- in the future we
     // could try again, if necessary, to sync a longer chain).
     const auto max_seconds_since_start{(Ticks<std::chrono::seconds>(NodeClock::now() - NodeSeconds{std::chrono::seconds{chain_start.GetMedianTimePast()}}))
-                                       + MAX_FUTURE_BLOCK_TIME};
+                                       + m_consensus_params.max_future_block_time};
     m_max_commitments = 6 * max_seconds_since_start / m_params.commitment_period;
 
     LogDebug(BCLog::NET, "Initial headers sync started with peer=%d: height=%i, max_commitments=%i, min_work=%s\n", m_id, m_current_height, m_max_commitments, m_minimum_required_work.ToString());
+}
+
+// Build temporary context for the existing SugarShield GetNextWorkRequired(), not a new DAA.
+// Low-work headers are not yet in the normal block index; each PRESYNC/REDOWNLOAD
+// pass needs its own recent history to check difficulty before accepting them.
+void HeadersSyncState::ResetDifficultyHistory()
+{
+    // Discard the previous pass's temporary history.
+    m_difficulty_history.clear();
+    if (!m_consensus_params.nPowAveragingWindow) return;
+    // For a candidate at height h, average targets h-1 through h-510.
+    // The older MTP endpoint is h-511: its median includes itself and 10 predecessors
+    // (nMedianTimeSpan = 11), reaching h-521. Thus retain 510 + 11 = 521 entries;
+    // the newer endpoint's median is already covered by the averaged blocks.
+    const size_t limit = m_consensus_params.nPowAveragingWindow + CBlockIndex::nMedianTimeSpan;
+    // Copy backwards from the known chain start, storing oldest first. Near genesis,
+    // copy only the available ancestors, as the normal chain traversal would do.
+    const CBlockIndex* index = &m_chain_start;
+    while (index && m_difficulty_history.size() < limit) {
+        m_difficulty_history.emplace_front(index->GetBlockHeader());
+        m_difficulty_history.front().nHeight = index->nHeight;
+        index = index->pprev;
+    }
+    // Link the copies so the unchanged SugarShield calculation can follow pprev.
+    CBlockIndex* previous = nullptr;
+    for (auto& entry : m_difficulty_history) {
+        entry.pprev = previous;
+        previous = &entry;
+    }
+}
+
+// Check the candidate's SugarShield difficulty, then retain it as context for the next header.
+bool HeadersSyncState::CheckDifficultyAndAppend(const CBlockHeader& header)
+{
+    assert(!m_difficulty_history.empty());
+    // The newest retained entry is the candidate's predecessor. Reject a target
+    // that differs from GetNextWorkRequired() before changing the history.
+    auto* previous = &m_difficulty_history.back();
+    if (header.nBits != GetNextWorkRequired(previous, &header, m_consensus_params)) return false;
+    // Append the accepted header and connect its predecessor and height.
+    m_difficulty_history.emplace_back(header);
+    auto& entry = m_difficulty_history.back();
+    entry.pprev = previous;
+    entry.nHeight = previous->nHeight + 1;
+    // Keep the same 510 targets + 11 older MTP entries needed for the next check.
+    const size_t limit = m_consensus_params.nPowAveragingWindow + CBlockIndex::nMedianTimeSpan;
+    if (m_difficulty_history.size() > limit) {
+        // Drop the oldest entry and remove the now-dangling link to it.
+        m_difficulty_history.pop_front();
+        m_difficulty_history.front().pprev = nullptr;
+    }
+    return true;
 }
 
 /** Free any memory in use, and mark this object as no longer usable. This is
@@ -52,6 +106,7 @@ void HeadersSyncState::Finalize()
 {
     Assume(m_download_state != State::FINAL);
     ClearShrink(m_header_commitments);
+    m_difficulty_history.clear();
     m_last_header_received.SetNull();
     ClearShrink(m_redownloaded_headers);
     m_redownload_buffer_last_hash.SetNull();
@@ -168,6 +223,7 @@ bool HeadersSyncState::ValidateAndStoreHeadersCommitments(std::span<const CBlock
         m_redownload_buffer_first_prev_hash = m_chain_start.GetBlockHash();
         m_redownload_buffer_last_hash = m_chain_start.GetBlockHash();
         m_redownload_chain_work = m_chain_start.nChainWork;
+        ResetDifficultyHistory();
         m_download_state = State::REDOWNLOAD;
         LogDebug(BCLog::NET, "Initial headers sync transition with peer=%d: reached sufficient work at height=%i, redownloading from height=%i\n", m_id, m_current_height, m_redownload_buffer_last_height);
     }
@@ -186,7 +242,9 @@ bool HeadersSyncState::ValidateAndProcessSingleHeader(const CBlockHeader& curren
     // work chain if they compress the work into as few blocks as possible,
     // so don't let anyone give a chain that would violate the difficulty
     // adjustment maximum.
-    if (!PermittedDifficultyTransition(m_consensus_params, next_height,
+    if (m_consensus_params.nPowAveragingWindow
+            ? !CheckDifficultyAndAppend(current)
+            : !PermittedDifficultyTransition(m_consensus_params, next_height,
                 m_last_header_received.nBits, current.nBits)) {
         LogDebug(BCLog::NET, "Initial headers sync aborted with peer=%d: invalid difficulty transition at height=%i (presync phase)\n", m_id, next_height);
         return false;
@@ -234,7 +292,9 @@ bool HeadersSyncState::ValidateAndStoreRedownloadedHeader(const CBlockHeader& he
         previous_nBits = m_chain_start.nBits;
     }
 
-    if (!PermittedDifficultyTransition(m_consensus_params, next_height,
+    if (m_consensus_params.nPowAveragingWindow
+            ? !CheckDifficultyAndAppend(header)
+            : !PermittedDifficultyTransition(m_consensus_params, next_height,
                 previous_nBits, header.nBits)) {
         LogDebug(BCLog::NET, "Initial headers sync aborted with peer=%d: invalid difficulty transition at height=%i (redownload phase)\n", m_id, next_height);
         return false;

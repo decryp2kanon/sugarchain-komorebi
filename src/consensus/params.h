@@ -6,6 +6,7 @@
 #ifndef BITCOIN_CONSENSUS_PARAMS_H
 #define BITCOIN_CONSENSUS_PARAMS_H
 
+#include <consensus/amount.h>
 #include <script/verify_flags.h>
 #include <uint256.h>
 
@@ -84,6 +85,9 @@ struct BIP9Deployment {
 struct Params {
     uint256 hashGenesisBlock;
     int nSubsidyHalvingInterval;
+    CAmount nInitialSubsidy{50 * COIN};
+    int64_t max_future_block_time{2 * 60 * 60};
+    bool enforce_taproot_on_all_blocks{true};
     /**
      * Hashes of blocks that
      * - are known to be consensus valid, and
@@ -110,6 +114,15 @@ struct Params {
     std::array<BIP9Deployment,MAX_VERSION_BITS_DEPLOYMENTS> vDeployments;
     /** Proof of work parameters */
     uint256 powLimit;
+    /** Sugarchain mainnet uses YespowerSugar rather than the block identifier. */
+    bool fYespowerSugar{false};
+    /** SugarShield (DigiShieldZEC) parameters; zero keeps baseline Bitcoin rules. */
+    int64_t nPowAveragingWindow{0};
+    int64_t nPowMaxAdjustDown{0};
+    int64_t nPowMaxAdjustUp{0};
+    int64_t AveragingWindowTimespan() const { return nPowAveragingWindow * nPowTargetSpacing; }
+    int64_t MinActualTimespan() const { return AveragingWindowTimespan() * (100 - nPowMaxAdjustUp) / 100; }
+    int64_t MaxActualTimespan() const { return AveragingWindowTimespan() * (100 + nPowMaxAdjustDown) / 100; }
     bool fPowAllowMinDifficultyBlocks;
     /**
       * Enforce BIP94 timewarp attack mitigation. On testnet4 this also enforces

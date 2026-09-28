@@ -1,19 +1,47 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-present The Bitcoin Core developers
+// Copyright (c) 2016-2018 The Zcash developers
+// Copyright (c) 2018-2020 The Sugarchain Yumekawa developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <pow.h>
 
 #include <arith_uint256.h>
+#include <algorithm>
 #include <chain.h>
 #include <primitives/block.h>
 #include <uint256.h>
 #include <util/check.h>
 
+// Official Sugarchain SugarShield: average 510 targets, using endpoint MTPs.
+// Preserve integer operation ordering (divide before multiply) for consensus.
+static unsigned int GetSugarShieldWorkRequired(const CBlockIndex* last, const Consensus::Params& params)
+{
+    const arith_uint256 limit = UintToArith256(params.powLimit);
+    const CBlockIndex* first = last;
+    arith_uint256 total{0};
+    for (int64_t i = 0; first && i < params.nPowAveragingWindow; ++i) {
+        arith_uint256 target;
+        target.SetCompact(first->nBits);
+        total += target;
+        first = first->pprev;
+    }
+    if (!first) return limit.GetCompact();
+    int64_t span = last->GetMedianTimePast() - first->GetMedianTimePast();
+    span = params.AveragingWindowTimespan() + (span - params.AveragingWindowTimespan()) / 4;
+    span = std::clamp(span, params.MinActualTimespan(), params.MaxActualTimespan());
+    arith_uint256 next = total / params.nPowAveragingWindow;
+    next /= params.AveragingWindowTimespan();
+    next *= span;
+    if (next > limit) next = limit;
+    return next.GetCompact();
+}
+
 unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlockHeader *pblock, const Consensus::Params& params)
 {
     assert(pindexLast != nullptr);
+    if (params.nPowAveragingWindow) return GetSugarShieldWorkRequired(pindexLast, params);
     unsigned int nProofOfWorkLimit = UintToArith256(params.powLimit).GetCompact();
 
     // Only change once per difficulty adjustment interval
@@ -168,4 +196,11 @@ bool CheckProofOfWorkImpl(uint256 hash, unsigned int nBits, const Consensus::Par
         return false;
 
     return true;
+}
+
+// Validate the target before computing the expensive, uncached PoW hash.
+bool CheckBlockProofOfWork(const CBlockHeader& header, const Consensus::Params& params)
+{
+    if (!DeriveTarget(header.nBits, params.powLimit)) return false;
+    return CheckProofOfWork(params.fYespowerSugar ? header.GetPoWHash() : header.GetHash(), header.nBits, params);
 }

@@ -1847,8 +1847,8 @@ CAmount GetBlockSubsidy(int nHeight, const Consensus::Params& consensusParams)
     if (halvings >= 64)
         return 0;
 
-    CAmount nSubsidy = 50 * COIN;
-    // Subsidy is cut in half every 210,000 blocks which will occur approximately every 4 years.
+    CAmount nSubsidy = consensusParams.nInitialSubsidy;
+    // Halve the chain-specific initial subsidy at its consensus interval.
     nSubsidy >>= halvings;
     return nSubsidy;
 }
@@ -2263,7 +2263,11 @@ script_verify_flags GetBlockScriptFlags(const CBlockIndex& block_index, const Ch
     // mainnet.
     // For simplicity, always leave P2SH+WITNESS+TAPROOT on except for the two
     // violating blocks.
-    script_verify_flags flags{SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS | SCRIPT_VERIFY_TAPROOT};
+    script_verify_flags flags{SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS};
+    if (consensusparams.enforce_taproot_on_all_blocks ||
+        DeploymentActiveAt(block_index, chainman, Consensus::DEPLOYMENT_TAPROOT)) {
+        flags |= SCRIPT_VERIFY_TAPROOT;
+    }
     const auto it{consensusparams.script_flag_exceptions.find(*Assert(block_index.phashBlock))};
     if (it != consensusparams.script_flag_exceptions.end()) {
         flags = it->second;
@@ -3876,7 +3880,7 @@ void ChainstateManager::ReceivedBlockTransactions(const CBlock& block, CBlockInd
 static bool CheckBlockHeader(const CBlockHeader& block, BlockValidationState& state, const Consensus::Params& consensusParams, bool fCheckPOW = true)
 {
     // Check proof of work matches claimed amount
-    if (fCheckPOW && !CheckProofOfWork(block.GetHash(), block.nBits, consensusParams))
+    if (fCheckPOW && !CheckBlockProofOfWork(block, consensusParams))
         return state.Invalid(BlockValidationResult::BLOCK_INVALID_HEADER, "high-hash", "proof of work failed");
 
     return true;
@@ -4069,7 +4073,7 @@ void ChainstateManager::GenerateCoinbaseCommitment(CBlock& block, const CBlockIn
 bool HasValidProofOfWork(std::span<const CBlockHeader> headers, const Consensus::Params& consensusParams)
 {
     return std::ranges::all_of(headers,
-                               [&](const auto& header) { return CheckProofOfWork(header.GetHash(), header.nBits, consensusParams); });
+                               [&](const auto& header) { return CheckBlockProofOfWork(header, consensusParams); });
 }
 
 bool IsBlockMutated(const CBlock& block, bool check_witness_root)
@@ -4153,7 +4157,7 @@ static bool ContextualCheckBlockHeader(const CBlockHeader& block, BlockValidatio
     }
 
     // Check timestamp
-    if (block.Time() > NodeClock::now() + std::chrono::seconds{MAX_FUTURE_BLOCK_TIME}) {
+    if (block.Time() > NodeClock::now() + std::chrono::seconds{consensusParams.max_future_block_time}) {
         return state.Invalid(BlockValidationResult::BLOCK_TIME_FUTURE, "time-too-new", "block timestamp too far in the future");
     }
 

@@ -105,6 +105,7 @@ add_executable(test_bitcoin
   sock_tests.cpp
   span_tests.cpp
   streams_tests.cpp
+  sugarshield_tests.cpp
   sync_tests.cpp
   system_ram_tests.cpp
   system_tests.cpp
@@ -153,6 +154,7 @@ target_json_data_sources(test_bitcoin
 )
 target_raw_data_sources(test_bitcoin NAMESPACE test::data
   data/asmap.raw
+  data/sugarchain_headers.raw
 )
 
 add_windows_application_manifest(test_bitcoin)
