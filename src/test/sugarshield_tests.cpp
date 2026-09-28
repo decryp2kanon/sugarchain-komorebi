@@ -308,6 +308,32 @@ BOOST_AUTO_TEST_CASE(non_genesis_start_and_reset)
     }
 }
 
+BOOST_AUTO_TEST_CASE(rolling_targets_match_full_history_with_irregular_times)
+{
+    const auto synthetic{SyntheticParams()};
+    HeaderChain chain{SyntheticGenesis()};
+    for (size_t height{1}; height <= 4000; ++height) {
+        CBlockHeader header;
+        header.nVersion = 1;
+        header.hashPrevBlock = chain.hashes.back();
+        // A deterministic nine-block pattern, deliberately not aligned with
+        // either the 510-target window or the 11-timestamp median window.
+        header.nTime = chain.headers.back().nTime + 1 + (height * 7919 % 9);
+        header.nBits = GetNextWorkRequired(&chain.index.back(), &header, synthetic);
+        MineHeader(header, synthetic);
+        chain.Append(header);
+    }
+    BOOST_REQUIRE(std::adjacent_find(chain.headers.begin(), chain.headers.end(),
+        [](const auto& a, const auto& b) { return a.nBits != b.nBits; }) != chain.headers.end());
+    for (const size_t start : {0U, 1U, 509U, 510U, 511U, 520U, 521U, 522U, 2000U}) {
+        BOOST_TEST_CONTEXT("start=" << start) {
+            // The actual rolling checker must accept every full-history target,
+            // including initial context, reset and thousands of pop_front calls.
+            CheckRoundTrip(chain, start, synthetic, {1, 521}, 17);
+        }
+    }
+}
+
 BOOST_AUTO_TEST_CASE(invalid_difficulty_with_valid_pow_in_both_passes)
 {
     const auto synthetic{SyntheticParams()};

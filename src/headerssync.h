@@ -195,6 +195,8 @@ private:
     void ResetDifficultyHistory();
     bool CheckDifficultyAndAppend(const CBlockHeader& header);
     std::deque<CBlockIndex> m_difficulty_history;
+    // Sum of the newest averaging-window targets (all available targets near genesis).
+    arith_uint256 m_difficulty_target_sum{0};
 
     /**
      *  Only called in PRESYNC.

@@ -433,6 +433,36 @@ cmake --build build-ibd-optimization --target bench_headers_sync
 build-ibd-optimization/bin/bench_headers_sync src/test/data/sugarchain_headers.raw 6000 100
 ```
 
+### Rolling target sum, unchanged SugarShield arithmetic
+
+The header-sync state keeps one additional 256-bit sum of its newest 510 targets.
+It still retains the same 521 indices and computes both endpoint MTPs normally.
+Initialization/reset sums the available newest targets; after a valid append it
+subtracts the outgoing target and adds the new target. Invalid difficulty is
+rejected before updating the sum. Short-history behavior is unchanged. No header,
+commitment, work-threshold, contextual or PoW check is removed.
+
+The final damping/clamping/division/multiplication/compact-target calculation is
+shared with the full-history `GetNextWorkRequired()` implementation, preserving
+the existing integer operation order. Normal tests passed all 52 selected cases;
+ASan/UBSan passed the 29 SugarShield/header-sync/PoW cases. The new irregular-time
+fixture compares full-history targets against the real rolling state machine at
+starts 0, 1, 509, 510, 511, 520, 521, 522 and 2000, across resets and thousands of
+evictions. The localhost P2P/body-mutation/restart regression and production build
+also passed.
+
+An isolated A/B/B/A comparison (6000 real headers, 100 two-pass rounds per
+process; initial genuine PoW outside the timer) measured:
+
+| Run | Target summation | State-machine seconds |
+| --- | --- | ---: |
+| A | full history per header | 19.2403 |
+| B | rolling sum | 12.0062 |
+| B | rolling sum | 11.8460 |
+| A | full history per header | 19.2087 |
+
+The component ratio is 1.612x. This is not a full IBD acceleration factor.
+
 Run the localhost mainnet functional regression using the framework's existing
 binary override (the test itself selects its temporary config explicitly):
 
