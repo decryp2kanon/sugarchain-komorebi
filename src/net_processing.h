@@ -10,6 +10,7 @@
 #include <net.h>
 #include <node/txorphanage.h>
 #include <private_broadcast.h>
+#include <pow.h>
 #include <protocol.h>
 #include <threadsafety.h>
 #include <uint256.h>
@@ -94,6 +95,8 @@ public:
         uint32_t max_headers_result{MAX_HEADERS_RESULTS};
         //! Whether private broadcast is used for sending transactions.
         bool private_broadcast{DEFAULT_PRIVATE_BROADCAST};
+        //! Global per-node limit, not a separate worker pool for each peer.
+        int header_pow_workers{DEFAULT_HEADER_POW_WORKERS};
     };
 
     static std::unique_ptr<PeerManager> make(CConnman& connman, AddrMan& addrman,

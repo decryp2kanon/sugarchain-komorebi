@@ -9,6 +9,8 @@
 #include <consensus/params.h>
 
 #include <cstdint>
+#include <memory>
+#include <span>
 
 class CBlockHeader;
 class CBlockIndex;
@@ -33,6 +35,22 @@ unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, int64_t nF
 bool CheckBlockProofOfWork(const CBlockHeader& header, const Consensus::Params& params);
 bool CheckProofOfWork(uint256 hash, unsigned int nBits, const Consensus::Params&);
 bool CheckProofOfWorkImpl(uint256 hash, unsigned int nBits, const Consensus::Params&);
+
+inline constexpr int DEFAULT_HEADER_POW_WORKERS{1};
+inline constexpr int MAX_HEADER_POW_WORKERS{8};
+
+/** Bounded, node-owned verification workers; no trust from peer/index status. */
+class HeaderPoWVerifier {
+    struct Impl;
+    std::unique_ptr<Impl> m_impl;
+
+public:
+    explicit HeaderPoWVerifier(int workers);
+    ~HeaderPoWVerifier();
+    HeaderPoWVerifier(const HeaderPoWVerifier&) = delete;
+    HeaderPoWVerifier& operator=(const HeaderPoWVerifier&) = delete;
+    bool Check(std::span<const CBlockHeader> headers, const Consensus::Params& params);
+};
 
 /**
  * Return false if the proof-of-work requirement specified by new_nbits at a

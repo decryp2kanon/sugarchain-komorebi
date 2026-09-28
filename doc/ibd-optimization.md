@@ -226,3 +226,69 @@ spacing, the test advanced mock time by only 16 seconds, but Core31's stale-tip
 check is scheduled every ten minutes. The fixture now advances beyond both
 thresholds; all five tests in `denialofservice_tests` pass. Production peer
 timers, connection limits and eviction rules are unchanged.
+
+## Bounded parallel header PoW
+
+`-parpow=1` preserves serial verification by default. Values are clamped to 1-8.
+In parallel mode a single node-owned `HeaderPoWVerifier` reuses Core31's
+`CCheckQueue`; peers do not create their own pools. The first header is checked
+synchronously. Subsequent batches contain at most eight uncached proofs, and a
+batch finishes before another is submitted. Cache hits still check current
+target limits. Header continuity, SugarShield, chainwork, commitments and final
+contextual validation remain in their original paths.
+
+Parallel mode can compute up to seven additional proofs in the failing batch;
+it never speculates across an entire message. The existing 2000-header message
+bound is unchanged. Local computation failures propagate to the calling thread
+instead of being mistaken for peer misbehavior. Thread-local Yespower scratch
+storage now has a destructor, so destroying/recreating a pool releases it. The
+algorithm, parameters, header serialization and 32-byte results are unchanged.
+
+The test binary alone uses Linux linker wrapping to count actual Yespower calls,
+measure maximum concurrency and inject a local library failure. Production has
+no diagnostic counters or fault hooks. Regression tests cover cold first proofs,
+warm reuse, invalid first/later proofs, concurrency bounds, simultaneous callers,
+pool recreation, parameter changes and worker-error propagation. All 6000 real
+mainnet header outputs match the previous `yespower_tls` API bit for bit.
+
+Normal tests passed, including peer eviction after the separately documented
+fixture correction. A separate ASan/UBSan run passed all seven selected suites
+in 122.73 seconds, with leak detection and halt-on-error enabled. The localhost
+`p2p_sugarchain_header_pow.py` test also passed: real 6000-header PRESYNC,
+invalid-Yespower disconnection, 2001-header rejection, shutdown/restart and fresh
+PRESYNC. It uses unchanged mainnet minimum chainwork, no external peers and no
+wallet; accepted block/header heights correctly stay zero. Existing
+`feature_shutdown.py` passed as well. ThreadSanitizer validation is still pending.
+
+Build with `-DBUILD_BENCH=ON` and run a fresh process for each comparison:
+
+```sh
+build-ibd-optimization/bin/bench_header_pow src/test/data/sugarchain_headers.raw 6000 1
+build-ibd-optimization/bin/bench_header_pow src/test/data/sugarchain_headers.raw 6000 8
+```
+
+This tool checks continuity, difficulty and MTP outside the timer, then measures
+2000-header verification messages, with explicitly separate cold/repeated passes.
+Parsing, contextual prechecks and worker construction are excluded; lazy scratch
+allocation is included. A repeated pass may recompute proofs if its input exceeds
+cache capacity. It is not a full IBD benchmark.
+
+| A/B/B/A | Workers | Cold 6000 proofs | Repeated pass |
+| --- | ---: | ---: | ---: |
+| A | 1 | 17.6894 s | 0.00655 s |
+| B | 8 | 3.19008 s | 0.00667 s |
+| B | 8 | 3.26878 s | 0.00660 s |
+| A | 1 | 17.6865 s | 0.00656 s |
+
+The cold verification ratio is about 5.48x. This does not establish full IBD
+within five hours. No minimum-chainwork, AssumeValid or checkpoint shortcut was
+used to obtain these figures.
+
+Run the localhost mainnet functional regression using the framework's existing
+binary override (the test itself selects its temporary config explicitly):
+
+```sh
+BITCOIND="$PWD/build-ibd-optimization/bin/sugarchaind" \
+  python3 test/functional/p2p_sugarchain_header_pow.py \
+  --configfile=build-ibd-optimization/test/config.ini
+```

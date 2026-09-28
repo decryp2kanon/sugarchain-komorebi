@@ -10,6 +10,7 @@
 #include <arith_uint256.h>
 #include <algorithm>
 #include <chain.h>
+#include <checkqueue.h>
 #include <crypto/sha256.h>
 #include <cuckoocache.h>
 #include <primitives/block.h>
@@ -19,6 +20,7 @@
 #include <util/hasher.h>
 
 #include <mutex>
+#include <exception>
 #include <shared_mutex>
 
 namespace {
@@ -58,6 +60,29 @@ public:
     {
         std::unique_lock lock{m_mutex};
         m_valid.insert(entry);
+    }
+};
+
+YespowerVerificationCache& VerificationCache()
+{
+    static YespowerVerificationCache cache;
+    return cache;
+}
+
+struct HeaderPoWCheck {
+    const CBlockHeader* header;
+    const Consensus::Params* params;
+
+    // Preserve allocation/computation errors on the calling thread; do not
+    // turn a local resource failure into an invalid-header/peer penalty.
+    std::optional<std::exception_ptr> operator()() const
+    {
+        try {
+            if (CheckBlockProofOfWork(*header, *params)) return std::nullopt;
+            return std::exception_ptr{};
+        } catch (...) {
+            return std::current_exception();
+        }
     }
 };
 } // namespace
@@ -253,10 +278,55 @@ bool CheckBlockProofOfWork(const CBlockHeader& header, const Consensus::Params& 
     if (!params.fYespowerSugar || EnableFuzzDeterminism()) {
         return CheckProofOfWork(params.fYespowerSugar ? header.GetPoWHash() : header.GetHash(), header.nBits, params);
     }
-    static YespowerVerificationCache cache;
+    auto& cache{VerificationCache()};
     const auto entry{cache.Entry(header)};
     if (cache.Contains(entry)) return true;
     if (!CheckProofOfWork(header.GetPoWHash(), header.nBits, params)) return false;
     cache.Insert(entry);
+    return true;
+}
+
+struct HeaderPoWVerifier::Impl {
+    const int workers;
+    std::mutex caller_mutex;
+    CCheckQueue<HeaderPoWCheck> queue;
+    explicit Impl(int count)
+        : workers{std::clamp(count, 1, MAX_HEADER_POW_WORKERS)}, queue{1, workers - 1, "powch"} {}
+};
+
+HeaderPoWVerifier::HeaderPoWVerifier(int workers)
+    : m_impl{workers > 1 ? std::make_unique<Impl>(workers) : nullptr} {}
+HeaderPoWVerifier::~HeaderPoWVerifier() = default;
+
+bool HeaderPoWVerifier::Check(std::span<const CBlockHeader> headers, const Consensus::Params& params)
+{
+    if (!m_impl || !params.fYespowerSugar || EnableFuzzDeterminism()) {
+        return std::ranges::all_of(headers, [&](const auto& header) { return CheckBlockProofOfWork(header, params); });
+    }
+    std::lock_guard call_lock{m_impl->caller_mutex};
+    if (headers.empty()) return true;
+    // An invalid first header must not cause speculative work for the message.
+    if (!CheckBlockProofOfWork(headers.front(), params)) return false;
+    headers = headers.subspan(1);
+    auto& cache{VerificationCache()};
+    while (!headers.empty()) {
+        std::vector<HeaderPoWCheck> batch;
+        batch.reserve(m_impl->workers);
+        while (!headers.empty() && batch.size() < size_t(m_impl->workers)) {
+            const auto& header{headers.front()};
+            if (!DeriveTarget(header.nBits, params.powLimit)) return false;
+            if (!cache.Contains(cache.Entry(header))) batch.push_back({&header, &params});
+            headers = headers.subspan(1);
+        }
+        if (batch.empty()) continue;
+        // At most eight cold checks may run before the next failure decision,
+        // independently of message/peer count. Never enqueue the whole message.
+        CCheckQueueControl<HeaderPoWCheck> control{m_impl->queue};
+        control.Add(std::move(batch));
+        if (const auto error{control.Complete()}) {
+            if (*error) std::rethrow_exception(*error);
+            return false;
+        }
+    }
     return true;
 }

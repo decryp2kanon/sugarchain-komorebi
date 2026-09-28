@@ -284,6 +284,7 @@ BASE_SCRIPTS = [
     'rpc_generate.py',
     'wallet_balance.py',
     'p2p_initial_headers_sync.py',
+    'p2p_sugarchain_header_pow.py',
     'feature_nulldummy.py',
     'mempool_accept.py',
     'p2p_addr_selfannouncement.py',

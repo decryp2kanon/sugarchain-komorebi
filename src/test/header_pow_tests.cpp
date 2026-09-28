@@ -1,0 +1,241 @@
+// Copyright (c) 2026 The Sugarchain Komorebi developers
+// Distributed under the MIT software license, see the accompanying file COPYING.
+
+#include <crypto/yespower-1.0.1/yespower.h>
+#include <kernel/chainparams.h>
+#include <pow.h>
+#include <primitives/block.h>
+#include <streams.h>
+#include <test/data/sugarchain_headers.raw.h>
+#include <test/util/setup_common.h>
+#include <util/chaintype.h>
+
+#include <boost/test/unit_test.hpp>
+
+#include <algorithm>
+#include <atomic>
+#include <span>
+#include <stdexcept>
+#include <thread>
+#include <vector>
+
+namespace {
+std::atomic<bool> observing{false};
+std::atomic<unsigned> calls{0}, active{0}, peak{0}, fail_call{0};
+
+struct Observation {
+    explicit Observation(unsigned fail = 0)
+    {
+        BOOST_REQUIRE_EQUAL(active.load(), 0U);
+        calls = peak = 0;
+        fail_call = fail;
+        observing = true;
+    }
+    ~Observation() { observing = false; }
+};
+
+struct HeaderPoWSetup : BasicTestingSetup {
+    const std::unique_ptr<const CChainParams> main{CChainParams::Main()};
+    Consensus::Params params{main->GetConsensus()};
+
+    HeaderPoWSetup() : BasicTestingSetup{ChainType::REGTEST}
+    {
+        // Easy, genuine Yespower proofs. These fixtures test PoW scheduling,
+        // not a SugarShield chain; the real-chain tests cover contextual rules.
+        params.powLimit = uint256{"7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"};
+    }
+
+    std::vector<CBlockHeader> Headers(unsigned tag, unsigned count) const
+    {
+        std::vector<CBlockHeader> headers(count, main->GenesisBlock());
+        for (unsigned i{0}; i < count; ++i) {
+            auto& h{headers[i]};
+            h.nTime += tag * 1000 + i;
+            h.nBits = 0x207fffff;
+            h.nNonce = 0;
+            // The uncached primitive supplies the oracle without pre-populating
+            // the production verification cache tested below.
+            while (!CheckProofOfWorkImpl(h.GetPoWHash(), h.nBits, params)) ++h.nNonce;
+        }
+        return headers;
+    }
+
+    void Invalidate(CBlockHeader& header) const
+    {
+        do { ++header.nNonce; } while (CheckProofOfWorkImpl(header.GetPoWHash(), header.nBits, params));
+    }
+};
+} // namespace
+
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+extern "C" int __real_yespower(yespower_local_t*, const uint8_t*, size_t, const yespower_params_t*, yespower_binary_t*);
+extern "C" int __wrap_yespower(yespower_local_t* local, const uint8_t* input, size_t size,
+                             const yespower_params_t* params, yespower_binary_t* output)
+{
+    if (!observing.load()) return __real_yespower(local, input, size, params, output);
+    const auto ordinal{++calls};
+    const auto concurrent{++active};
+    auto maximum{peak.load()};
+    while (maximum < concurrent && !peak.compare_exchange_weak(maximum, concurrent)) {}
+    // Simulate the library's documented local resource failure, never success.
+    const int result{ordinal == fail_call.load() ? -1 : __real_yespower(local, input, size, params, output)};
+    --active;
+    return result;
+}
+#endif
+
+BOOST_FIXTURE_TEST_SUITE(header_pow_tests, HeaderPoWSetup)
+
+BOOST_AUTO_TEST_CASE(mainnet_hashes_match_legacy_tls_bit_for_bit)
+{
+    DataStream stream{test::data::sugarchain_headers};
+    std::vector<CBlockHeader> headers(6000);
+    for (auto& header : headers) stream >> header;
+    BOOST_REQUIRE(stream.empty());
+    static constexpr uint8_t personal[]{"Satoshi Nakamoto 31/Oct/2008 Proof-of-work is essentially one-CPU-one-vote"};
+    const yespower_params_t official{YESPOWER_1_0, 2048, 32, personal, sizeof(personal) - 1};
+    std::vector<uint256> expected, actual(headers.size());
+    for (const auto& header : headers) {
+        DataStream serialized;
+        serialized << header;
+        yespower_binary_t hash;
+        BOOST_REQUIRE_EQUAL(yespower_tls(reinterpret_cast<const uint8_t*>(serialized.data()), serialized.size(), &official, &hash), 0);
+        expected.emplace_back(std::span{hash.uc});
+    }
+    std::atomic<size_t> next{0};
+    {
+        std::vector<std::jthread> workers;
+        for (int i{0}; i < 8; ++i) {
+            workers.emplace_back([&] {
+                for (;;) {
+                    const auto index{next.fetch_add(1)};
+                    if (index >= headers.size()) break;
+                    actual[index] = headers[index].GetPoWHash();
+                }
+            });
+        }
+    }
+    for (size_t i{0}; i < headers.size(); ++i) BOOST_CHECK(actual[i] == expected[i]);
+
+    // Lock down the invalid-nonce fixture used by the localhost P2P test.
+    auto invalid{headers.front()};
+    invalid.nNonce ^= 1;
+    BOOST_CHECK(!CheckProofOfWorkImpl(invalid.GetPoWHash(), invalid.nBits, main->GetConsensus()));
+
+    HeaderPoWVerifier verifier{8};
+    Observation observation;
+    BOOST_CHECK(verifier.Check(headers, main->GetConsensus()));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+    BOOST_CHECK_EQUAL(calls.load(), headers.size());
+    BOOST_CHECK_LE(peak.load(), 8U);
+#endif
+}
+
+BOOST_AUTO_TEST_CASE(cold_proofs_cache_reuse_and_worker_lifetime)
+{
+    unsigned tag{10};
+    for (int workers : {1, 2, 8, 8, 1000, -1}) {
+        const auto headers{Headers(tag++, 25)};
+        HeaderPoWVerifier verifier{workers};
+        BOOST_CHECK(verifier.Check({}, params));
+        {
+            Observation observation;
+            BOOST_REQUIRE(verifier.Check(headers, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+            BOOST_CHECK_EQUAL(calls.load(), headers.size());
+            BOOST_CHECK_LE(peak.load(), unsigned(std::clamp(workers, 1, MAX_HEADER_POW_WORKERS)));
+            BOOST_CHECK_EQUAL(active.load(), 0U);
+#endif
+        }
+        {
+            Observation observation;
+            BOOST_REQUIRE(verifier.Check(headers, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+            BOOST_CHECK_EQUAL(calls.load(), 0U);
+#endif
+        }
+        // Repeated construction/destruction also exercises scratch cleanup
+        // under ASan/LSan rather than keeping all workers alive until exit.
+    }
+}
+
+BOOST_AUTO_TEST_CASE(invalid_first_and_later_proofs_have_bounded_speculation)
+{
+    HeaderPoWVerifier verifier{8};
+    unsigned tag{30};
+    for (size_t position : {0U, 1U, 7U, 8U, 9U, 16U, 24U}) {
+        auto headers{Headers(tag++, 25)};
+        Invalidate(headers[position]);
+        Observation observation;
+        BOOST_CHECK(!verifier.Check(headers, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        if (position == 0) {
+            BOOST_CHECK_EQUAL(calls.load(), 1U);
+        } else {
+            // One serial admission check, then at most eight cold proofs per
+            // decision. Invalid compact targets are not used as a shortcut.
+            const auto upper{std::min(headers.size(), 1 + ((position + 7) / 8) * 8)};
+            BOOST_CHECK_LE(calls.load(), upper);
+            BOOST_CHECK_GE(calls.load(), 2U + ((position - 1) / 8) * 8);
+        }
+        BOOST_CHECK_LE(peak.load(), 8U);
+        BOOST_CHECK_EQUAL(active.load(), 0U);
+#endif
+    }
+    BOOST_CHECK(verifier.Check(Headers(50, 25), params));
+}
+
+BOOST_AUTO_TEST_CASE(concurrent_callers_share_one_bounded_pool)
+{
+    const auto first{Headers(60, 33)}, second{Headers(61, 33)};
+    HeaderPoWVerifier verifier{8};
+    std::atomic<bool> success{true};
+    Observation observation;
+    {
+        std::jthread a{[&] { if (!verifier.Check(first, params)) success = false; }};
+        std::jthread b{[&] { if (!verifier.Check(second, params)) success = false; }};
+    }
+    BOOST_CHECK(success.load());
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+    BOOST_CHECK_EQUAL(calls.load(), first.size() + second.size());
+    BOOST_CHECK_LE(peak.load(), 8U);
+    BOOST_CHECK_EQUAL(active.load(), 0U);
+#endif
+}
+
+BOOST_AUTO_TEST_CASE(current_target_and_algorithm_rules_are_not_cached)
+{
+    auto headers{Headers(70, 17)};
+    HeaderPoWVerifier verifier{8};
+    BOOST_REQUIRE(verifier.Check(headers, params));
+    auto strict{main->GetConsensus()};
+    BOOST_CHECK(!verifier.Check(headers, strict));
+    auto bitcoin{params};
+    bitcoin.fYespowerSugar = false;
+    const bool expected{std::ranges::all_of(headers, [&](const auto& h) {
+        return CheckProofOfWorkImpl(h.GetHash(), h.nBits, bitcoin);
+    })};
+    BOOST_CHECK_EQUAL(verifier.Check(headers, bitcoin), expected);
+    for (uint32_t bits : {0U, 0x1f800001U, 0x23000001U}) {
+        auto invalid{headers};
+        invalid[8].nBits = bits;
+        BOOST_CHECK(!verifier.Check(invalid, params));
+    }
+}
+
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+BOOST_AUTO_TEST_CASE(local_worker_failure_reaches_caller_without_poisoning_queue)
+{
+    const auto headers{Headers(80, 17)};
+    HeaderPoWVerifier verifier{8};
+    {
+        Observation observation{/*fail=*/2};
+        BOOST_CHECK_THROW(verifier.Check(headers, params), std::runtime_error);
+        BOOST_CHECK_LE(calls.load(), 9U);
+        BOOST_CHECK_EQUAL(active.load(), 0U);
+    }
+    BOOST_CHECK(verifier.Check(headers, params));
+}
+#endif
+
+BOOST_AUTO_TEST_SUITE_END()
