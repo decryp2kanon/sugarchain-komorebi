@@ -153,3 +153,38 @@ Validation: full GUI/IPC/multiprocess rebuild; `sugarshield_tests`,
 Added regression coverage for changes to every serialized header field, invalid
 compact targets, a stricter powLimit, SHA256d-vs-Yespower separation and concurrent
 cache readers. This is component-level validation, not full mainnet completion.
+
+### Reproducing the offline import comparison
+
+Keep separate baseline and candidate executables, and supply an existing raw
+block file (not a live node's datadir). The output directory must not exist:
+
+```sh
+python3 contrib/bench/offline-ibd.py \
+  --baseline /path/to/baseline/sugarchaind \
+  --candidate /path/to/candidate/sugarchaind \
+  --blocks /path/to/mainnet-blocks.dat --height 6000 \
+  --tip e7a04205f70e5b6e99d83a8f720748fee559a382701b39ff9891e391e6cf81d9 \
+  --work-dir /path/to/new-comparison-directory
+```
+
+The tool retains four fresh datadirs, commands, binary/input hashes, logs, wall
+and child CPU times, and expected-tip checks. Its active-process record identifies
+only the child it owns. It does not connect peers or alter existing node data.
+Repeat validation of this tool gave A/B/B/A times of 71.689 / 18.645 / 19.446 /
+71.779 seconds, all at the expected tip with successful shutdown. The raw block
+file SHA256 was
+`39ba457e491589267dbc4c3d916aa863a4112fdf99b6d4b86ddaf0ede23769ed`.
+
+### Additional profiling, not production changes
+
+An isolated gprof build attributed 75.50% of sampled time to
+`blockmix_xor_1_0` and 24.10% to `blockmix_xor_save_1_0`; SHA256 Transform was
+0.06%. Temporary AVX and O3 builds did not establish a meaningful improvement
+and were not adopted. No release compiler flags were changed.
+
+A temporary Linux MADV_HUGEPAGE experiment, with no system policy changes,
+gave eight-worker A/B/B/A raw rates of 2204.87 / 2484.80 / 2384.10 / 2240.18
+hashes/s on CPUs 0-3,8-11. All 6000 output hashes matched. Single-worker throughput
+was unchanged, so this has not been added to the serial production path. These
+are diagnostic experiments, not full IBD results or a production parallel queue.
