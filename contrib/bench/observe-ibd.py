@@ -19,6 +19,7 @@ def process_stat(text):
     # comm may contain spaces/parentheses; fields after its final ')' start at 3.
     fields = text[text.rindex(')') + 2:].split()
     return {
+        'state': fields[0],
         'start_ticks': int(fields[19]),
         'cpu_ticks': int(fields[11]) + int(fields[12]),
         'rss_pages': int(fields[21]),
@@ -70,6 +71,8 @@ def main():
                 row['process'] = process_stat((proc / 'stat').read_text())
                 if row['process']['start_ticks'] != identity:
                     raise ProcessLookupError('PID was reused')
+                if row['process']['state'] in ('Z', 'X'):
+                    raise ProcessLookupError('Process exited; awaiting parent reaping')
                 row['io'] = {key: int(value) for key, value in
                              (line.split(':', 1) for line in (proc / 'io').read_text().splitlines())}
                 row['chain'] = rpc(command, 'getblockchaininfo')

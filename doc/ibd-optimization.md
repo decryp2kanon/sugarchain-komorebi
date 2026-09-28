@@ -518,3 +518,13 @@ an immutable copy of the binary from source `775ef0b94e`, `-parpow=8`,
 `-maxpowcache=2048`, `-dbcache=4096`, `-assumevalid=0`, unchanged minimum chainwork,
 and a new empty datadir. Startup and initial peer/PRESYNC progress are confirmed;
 completion time, block-stage throughput and full-IBD success remain unverified.
+
+The user subsequently deferred all public-network full-IBD/block-download
+measurement to their final validation. The development observation node was
+stopped normally via its cookie-authenticated RPC, with `Shutdown done`, still
+at blocks=0 and about 392,000 presynced headers. Its data/logs were preserved;
+no user node was stopped. Further development uses fixtures, offline imports,
+components and localhost tests only. No completion-time claim follows from this
+short observation. The observer now also terminates on an exited/zombie process
+without waiting for the parent to reap its PID; five tests include this real
+child-process lifecycle case and verify that no RPC is attempted after exit.
