@@ -594,3 +594,44 @@ per peer. A 128-block, 900000-byte-padding-per-block stress test transferred
 115220865 bytes with exhaustive index checks enabled and passed verifychain.
 These stress runs are correctness checks, not performance comparisons. The
 GUI/IPC/multiprocess production build passed.
+
+### Bounded receive batching before send-side processing
+
+The message handler processes at most 64 available messages, stopping at a
+one-millisecond steady-clock deadline between messages, before servicing sends.
+This adapts PR 225's batching idea with a time/fairness bound. Slow individual
+messages are not preempted, exactly as before, but a single slow message is
+followed immediately by send-side work. Interrupt, disconnect and send-buffer
+backpressure terminate the batch immediately. Peer order remains randomized;
+all message parsing, proof and contextual checks are unchanged.
+
+A/B/B/A at 10000 deterministic regtest blocks, four localhost peers, zero added
+latency and the same explicit 128-request budget for both binaries measured:
+
+| Run | Receive handling | Seconds | Node CPU seconds | Harness CPU seconds |
+| --- | --- | ---: | ---: | ---: |
+| A | one message | 1.384944 | 1.76 | 1.342 |
+| B | bounded batch | 0.931611 | 1.08 | 0.880 |
+| B | bounded batch | 0.936430 | 1.14 | 0.864 |
+| A | one message | 1.349077 | 1.68 | 1.309 |
+
+The localhost proxy ratio is 1.464x with matching tip/UTXO/verifychain. Python
+peer overhead is visible and also decreases with fewer request messages, so
+this is not an end-to-end mainnet prediction. Reduced node CPU independently
+supports the send-side overhead explanation.
+
+Tests cover work/time bounds, two busy peers, a slow callback, send backpressure,
+disconnect, empty queues and immediate shutdown. Normal network/peer/DoS tests
+passed all 25 cases (152236 assertions), and TSan passed all 25. The localhost
+v2 stall/backoff/recovery and real Sugarchain invalid-PoW/body/restart regressions
+passed, as did the complete production GUI/IPC/multiprocess build.
+
+**Existing sanitizer issue:** the full ASan/UBSan network suite reports
+`streams.cpp:99` passing a null pointer to zero-length `fwrite` from
+`CaptureMessageToFile`, in `net_tests/initial_advertise_from_version_message`.
+That test directly calls `ProcessMessagesOnce`, not the changed message loop.
+It reproduces identically in the preserved pre-optimization sanitizer binary
+SHA256 `34d780347b1937360d0fa5fc3729789d07b322ef688725559d60cb87d59af52d`.
+No source workaround or test expectation change was made. All other 24 selected
+network/peer/DoS cases passed ASan/UBSan (150395 assertions). Thus the full
+sanitizer suite is not claimed clean; this unrelated capture-path issue remains.

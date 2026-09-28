@@ -31,14 +31,69 @@
 #include <cstdint>
 #include <ios>
 #include <memory>
+#include <map>
 #include <optional>
 #include <string>
+#include <thread>
 
 using namespace std::literals;
 using namespace util::hex_literals;
 using util::ToString;
 
 BOOST_FIXTURE_TEST_SUITE(net_tests, RegTestingSetup)
+
+BOOST_AUTO_TEST_CASE(message_batches_bound_work_and_respect_termination)
+{
+    enum class Mode { FAST, SLOW, PAUSED, DISCONNECTED, INTERRUPTED, EMPTY };
+    struct Events : NetEventsInterface {
+        Mode mode;
+        int peers;
+        std::map<NodeId, unsigned> calls;
+        unsigned sends{0};
+        std::atomic<bool>* interrupt{nullptr};
+        Events(Mode mode_in, int peers_in) : mode{mode_in}, peers{peers_in} {}
+        void InitializeNode(const CNode&, ServiceFlags) override {}
+        void FinalizeNode(const CNode&) override {}
+        bool HasAllDesirableServiceFlags(ServiceFlags) const override { return true; }
+        bool ProcessMessages(CNode& node, std::atomic<bool>& stop) override
+        {
+            interrupt = &stop;
+            ++calls[node.GetId()];
+            if (mode == Mode::SLOW) std::this_thread::sleep_for(2ms);
+            if (mode == Mode::PAUSED) node.fPauseSend = true;
+            if (mode == Mode::DISCONNECTED) node.fDisconnect = true;
+            if (mode == Mode::INTERRUPTED) stop = true;
+            return mode != Mode::EMPTY;
+        }
+        bool SendMessages(CNode&) override
+        {
+            if (++sends == unsigned(peers)) *interrupt = true;
+            return false;
+        }
+    };
+    auto& connman{static_cast<ConnmanTestMsg&>(*m_node.connman)};
+    for (Mode mode : {Mode::FAST, Mode::SLOW, Mode::PAUSED, Mode::DISCONNECTED, Mode::INTERRUPTED, Mode::EMPTY}) {
+        Events events{mode, mode == Mode::FAST ? 2 : 1};
+        struct Restore {
+            ConnmanTestMsg& connman;
+            PeerManager* original;
+            ~Restore() { connman.ClearTestNodes(); connman.SetMsgProc(original); }
+        } restore{connman, m_node.peerman.get()};
+        for (int i{0}; i < events.peers; ++i) {
+            connman.AddTestNode(*new CNode(i, nullptr, CAddress{}, 0, 0, CAddress{}, "", ConnectionType::INBOUND,
+                                         /*inbound_onion=*/false, /*network_key=*/0));
+        }
+        connman.SetMsgProc(&events);
+        connman.RunMessageHandler();
+        BOOST_CHECK_EQUAL(events.calls.size(), events.peers);
+        BOOST_CHECK_EQUAL(events.sends, mode == Mode::INTERRUPTED ? 0 : events.peers);
+        for (const auto& [id, count] : events.calls) {
+            BOOST_CHECK_GE(count, 1U);
+            BOOST_CHECK_LE(count, 64U);
+            if (mode != Mode::FAST) BOOST_CHECK_EQUAL(count, 1U);
+        }
+    }
+}
 
 BOOST_AUTO_TEST_CASE(cnode_listen_port)
 {
