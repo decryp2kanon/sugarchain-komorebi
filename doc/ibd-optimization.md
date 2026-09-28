@@ -1,9 +1,13 @@
 # Core31 IBD optimization measurements
 
-The acceptance target is a complete fresh mainnet IBD in at most five hours,
+The final performance target is a complete fresh mainnet IBD in at most five hours,
 with `-assumevalid=0`, unchanged minimum chainwork, and all PoW, difficulty,
 contextual, script and commitment checks enabled. Component benchmarks and
 extrapolations are not evidence that this target has been met.
+
+The user will perform the final network IBD and judge that target. Development
+completion uses repeatable offline/component/localhost validation, not repeated
+multi-hour mainnet downloads. No full-IBD completion time is claimed here.
 
 ## Reference implementation audit
 
@@ -635,3 +639,58 @@ SHA256 `34d780347b1937360d0fa5fc3729789d07b322ef688725559d60cb87d59af52d`.
 No source workaround or test expectation change was made. All other 24 selected
 network/peer/DoS cases passed ASan/UBSan (150395 assertions). Thus the full
 sanitizer suite is not claimed clean; this unrelated capture-path issue remains.
+
+## Final integration and measurement limits
+
+A separate clean `build-ibd-optimization-final` build completed with GUI, IPC,
+multiprocess, daemon, CLI and benchmarks enabled, using Cap'n Proto from
+`/usr/local`. Actual yespower compilation remains portable `-O2` with SSE2;
+no `-march=native`, forced AVX instruction set, or system policy change was made.
+
+The final clean binaries passed 78 selected C++ cases (571488 assertions):
+SugarShield, header PoW, low-work header sync, PoW, checkqueue, networking,
+peer management, DoS and validation. Existing functional ping, malformed/flooded
+messages, v1/v2 network deadlock, initial headers, minimum-chainwork, compact
+blocks/blocksonly and shutdown tests passed all eight scenarios. The three
+IBD request-limit/stall scenarios also passed. The new real-header/body test
+exposed a test-only fixture lookup error when invoked through CMake's build
+symlink; resolving the source path fixes that invocation without changing
+production or validation expectations. Its build-directory rerun passed,
+including mutated-body rejection, genuine block acceptance and worker restart.
+
+Final offline integration imported all 6000 real mainnet blocks, obtained the
+documented exact tip and UTXO digest, passed `verifychain(4, 6000)`, shut down,
+restarted without network peers, and passed those checks again. This run
+overlapped regression tests and is correctness evidence, not a new performance
+comparison. Final daemon SHA256:
+`33a94a1d58ceb56eddd16b95ef5478ab90460bacf4df4d6d9cbb417c8265c476`.
+
+Two further experiments were not adopted:
+
+- An ordered asynchronous proof-window prototype improved a short 40000-header
+  A/B/B/A proxy by only 1.031x while adding queue/lifetime complexity. This was
+  insufficient evidence of a repeatable benefit to retain production changes.
+- Eight physical-core affinity measurements varied substantially: unrestricted
+  22.3435/21.9948 seconds versus pinned 23.0636/19.8457 seconds. No reliable
+  affinity benefit was established and no CPU affinity policy was installed.
+
+No speculative larger scheduling window, adaptive peer scheduler, stall-timeout
+override, block-index cache increase or tip-log suppression was retained. The
+available short fixtures do not establish those as current bottlenecks.
+
+For the user's final run on Nana, an explicit candidate configuration is
+`-parpow=8 -maxpowcache=2048 -maxibdblocksinflight=128 -dbcache=4096 -assumevalid=0`
+with a new datadir. These are opt-in resource budgets, not claims of optimal
+settings for every host. Defaults remain conservative; full-chain memory growth
+and long-run cache retention need measurement. Existing datadirs are not reused.
+
+The proxies deliberately complement one another: real headers exercise genuine
+Yespower and contextual difficulty; header-sync benchmarks cover both commitment
+phases; real block import checks state/durability/restart; localhost experiments
+isolate latency, request bounds and message processing. They do not reproduce
+Internet peer heterogeneity, the entire historical transaction/script mix,
+44-million-entry index growth, long-run disk pressure or full-chain shutdown.
+Their speedup ratios cannot be multiplied into a full-IBD prediction. PR 225's
+10h49m15s result also uses a different validation/trust policy. Final full IBD
+time, improvement ratio against a full-run baseline, and the five-hour target
+remain unmeasured and belong to the user's final validation.

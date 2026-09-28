@@ -78,7 +78,7 @@ class SugarchainHeaderPoWTest(BitcoinTestFramework):
 
         # A cached valid header proves nothing about the supplied block body.
         # Mutate only the coinbase output, leaving the header/PoW unchanged.
-        raw_block = bytes.fromhex((Path(__file__).parent / "data/sugarchain_block_1.hex").read_text())
+        raw_block = bytes.fromhex((Path(__file__).resolve().parent / "data/sugarchain_block_1.hex").read_text())
         block = CBlock()
         block.deserialize(BytesIO(raw_block))
         assert_equal(CBlockHeader(block).serialize(), headers[0].serialize())
