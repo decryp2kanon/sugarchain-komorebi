@@ -267,6 +267,24 @@ build-ibd-optimization/bin/bench_header_pow src/test/data/sugarchain_headers.raw
 build-ibd-optimization/bin/bench_header_pow src/test/data/sugarchain_headers.raw 6000 8
 ```
 
+For an A/B/B/A comparison of two saved binaries with the same worker count:
+
+```sh
+python3 contrib/bench/header-pow-ab.py \
+  --baseline /path/to/baseline/bench_header_pow \
+  --candidate /path/to/candidate/bench_header_pow \
+  --headers src/test/data/sugarchain_headers.raw --count 6000 --workers 8 \
+  --work-dir /path/to/new-results-directory
+```
+
+The runner records input/executable SHA256, commands, exit statuses, child CPU
+time and cold/repeated measurements separately. It refuses to overwrite an
+existing result directory or continue after failed validation, inconsistent
+measurements or changes to the input/binaries. Synthetic runner checks covered
+malformed/NaN/zero measurements, incorrect worker counts, duplicate/missing
+passes, failed child processes and preservation of existing output. Synthetic
+runner checks are not performance evidence.
+
 This tool checks continuity, difficulty and MTP outside the timer, then measures
 2000-header verification messages, with explicitly separate cold/repeated passes.
 Parsing, contextual prechecks and worker construction are excluded; lazy scratch
