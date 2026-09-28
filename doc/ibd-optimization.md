@@ -239,6 +239,18 @@ of invalid headers and invalid sizes. The localhost P2P regression passed with
 1 MiB, restart at 2 MiB, and startup rejection of 0, negative, oversized and
 non-numeric budgets. No shared node or external peer participates in that test.
 
+A larger offline validation subsequently passed all 1,000,000 linked mainnet
+headers at the maximum 2048 MiB cache setting, then passed the repeated proof
+checks in the same process. The fixture tip is
+`09246c3d203e709775281602bc710622ccbd4455010a745b0bdb13bb2c0858b0`, and its SHA256 is
+`76b8b06e5930b133c900d75ec838a5a9295d1ee5b7436084c8378a4103b37cce`.
+The running executable SHA256 was
+`8649236a35ca38f221514b0f5130b3d98dd1703a52af00740517398163b3de3c`.
+Linkage, all expected difficulty targets, MTP and genuine initial PoW passed;
+exit status was zero, maximum RSS 2,415,228 KiB, reported swaps zero. The timing
+is not used as an A/B result because compilation and a brief component smoke
+test overlapped this validation. No public-network IBD was performed by it.
+
 ## Existing peer-test timing assumption
 
 The expanded test selection found five assertions failing in
