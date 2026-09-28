@@ -307,6 +307,31 @@ The cold verification ratio is about 5.48x. This does not establish full IBD
 within five hours. No minimum-chainwork, AssumeValid or checkpoint shortcut was
 used to obtain these figures.
 
+## Optional Linux huge-page mapping advice
+
+Yespower scratch allocations now request `MADV_HUGEPAGE` where Linux exposes it.
+This is mapping-local advice, not a system setting, reservation or requirement:
+failed/unsupported advice leaves ordinary pages usable. Allocation sizes, free
+paths, algorithm and portable compiler flags are unchanged. The change adds
+four guarded lines to the existing allocator.
+
+With the existing host policy (`madvise`), a separate production-path A/B/B/A
+comparison verified 40,000 real headers with eight workers per fresh process:
+
+| Run | Mapping advice | Cold proofs | Repeated pass |
+| --- | --- | ---: | ---: |
+| A | unchanged | 20.2418 s | 0.04378 s |
+| B | huge-page advice | 18.8278 s | 0.04609 s |
+| B | huge-page advice | 18.1894 s | 0.04459 s |
+| A | unchanged | 20.3863 s | 0.04418 s |
+
+The cold-pass ratio is 1.098x; combined child CPU time per run fell from
+151.71/152.17 to 137.09/134.55 seconds. `/proc` reported 63,488 KiB of anonymous
+huge pages, 96,824 KiB RSS and zero swap for a candidate process. All 49 cases in
+the ASan/UBSan selection (`header_pow_tests,sugarshield_tests,headers_sync_chainwork_tests,pow_tests,checkqueue_tests,denialofservice_tests`)
+passed with leak detection and halt-on-error enabled. This is a local cold-proof
+measurement, not a full IBD result or a guarantee on other memory/page policies.
+
 Run the localhost mainnet functional regression using the framework's existing
 binary override (the test itself selects its temporary config explicitly):
 
