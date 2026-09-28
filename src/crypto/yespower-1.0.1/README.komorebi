@@ -1,0 +1,26 @@
+Komorebi source provenance
+=========================
+
+yespower 1.0.1 (upstream 1977c28)
+Repository: https://github.com/openwall/yespower
+Commit: 1977c283bc43eed5a2c2579e02d6d996e49866b0
+
+The vendored C sources, headers and README are unmodified upstream files
+from this pinned commit. Only files needed by the production implementation
+and its documentation are included; use the upstream checkout for make check.
+The yespower-1.0.1 directory name is retained for build/include stability.
+
+Previously these files were copied from sugarchain-project/sugarchain commit
+64bc05ccc1dc2dcd4db9e86715c14dee12be6460 and were byte-identical to Openwall's
+YESPOWER_1_0_1 release (d81b48a5793ceaffcf34079df9d446b752a3e113).
+
+This is an implementation update, not a consensus algorithm change.
+YespowerSugar still uses YESPOWER_1_0, N=2048, r=32 and the 74-byte string:
+Satoshi Nakamoto 31/Oct/2008 Proof-of-work is essentially one-CPU-one-vote
+Header serialization, output byte order, PoW comparison and validation
+call sites are unchanged. No local performance patches or hash cache are
+added. Upstream copyright, license and attribution remain in each file.
+
+Komorebi uses its existing CMake compiler options, not the upstream Makefile
+flags. This update does not add -march=native or enable additional instruction
+sets.
