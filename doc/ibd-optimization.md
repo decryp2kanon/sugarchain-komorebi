@@ -471,3 +471,26 @@ BITCOIND="$PWD/build-ibd-optimization/bin/sugarchaind" \
   python3 test/functional/p2p_sugarchain_header_pow.py \
   --configfile=build-ibd-optimization/test/config.ini
 ```
+
+### Exact small-divisor SugarShield arithmetic
+
+SugarShield's two ordered divisions now use unsigned base-2^32 long division
+when the divisor fits in 32 bits. Eight limb steps replace the generic bitwise
+256-bit division. The remainder is strictly smaller than the divisor, so the
+next 64-bit intermediate cannot overflow. Larger/nonpositive divisors retain
+the generic operation. No division is combined or reordered, and damping,
+clamping, multiplication, powLimit and compact conversion are unchanged.
+
+The independent test oracle retains the old generic arithmetic. It compares
+86,004 final consensus targets across random 256-bit inputs, every power-of-two
+boundary, quotient boundaries, clamp endpoints, both powLimit settings, and
+32-bit/fallback divisors. All 48 selected normal tests passed (420,299
+assertions); ASan/UBSan passed 30 cases (405,735 assertions). The 6000-header
+mainnet fixture, 521-history/reset/sliding regressions, localhost P2P invalid
+PoW/body-mutation/restart test, and GUI/IPC/multiprocess production build passed.
+
+A/B/B/A against the immediately preceding rolling-sum implementation, using the
+same 6000-header/100-round component benchmark, measured 11.8674, 1.69143,
+1.69769, 12.0110 seconds respectively: 7.046x for the state-machine component.
+Initial genuine Yespower checks remain outside this timer. This is not a full
+IBD measurement or a claim of meeting the five-hour target.

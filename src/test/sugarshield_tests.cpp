@@ -168,6 +168,51 @@ struct SugarShieldSetup : BasicTestingSetup {
 
 BOOST_FIXTURE_TEST_SUITE(sugarshield_tests, SugarShieldSetup)
 
+BOOST_AUTO_TEST_CASE(target_division_matches_generic_arithmetic)
+{
+    FastRandomContext rng{true};
+    // Keep the pre-optimization arithmetic as an independent oracle. Include
+    // both 32-bit limb division and the generic large-divisor fallback.
+    for (const int64_t window : {1LL, 2LL, 510LL, 65535LL, 4294967295LL, 4294967296LL}) {
+        auto rules{params};
+        rules.nPowAveragingWindow = window;
+        rules.nPowTargetSpacing = 5;
+        for (const uint256 limit : {params.powLimit, ArithToUint256(~arith_uint256{0})}) {
+            rules.powLimit = limit;
+            const int64_t expected_span{rules.AveragingWindowTimespan()};
+            const auto check = [&](const arith_uint256& total, int64_t span) {
+                int64_t adjusted{expected_span + (span - expected_span) / 4};
+                adjusted = std::clamp(adjusted, rules.MinActualTimespan(), rules.MaxActualTimespan());
+                arith_uint256 reference{total / arith_uint256{uint64_t(window)}};
+                reference /= arith_uint256{uint64_t(expected_span)};
+                reference *= adjusted;
+                if (reference > UintToArith256(limit)) reference = UintToArith256(limit);
+                BOOST_CHECK_EQUAL(CalculateSugarShieldWorkRequired(total, span, rules), reference.GetCompact());
+            };
+            for (int64_t span : {-expected_span, int64_t{0}, expected_span, 5 * expected_span}) {
+                check(arith_uint256{0}, span);
+                check(~arith_uint256{0}, span);
+                for (unsigned bit{0}; bit < 256; ++bit) {
+                    const arith_uint256 power{arith_uint256{1} << bit};
+                    check(power - 1, span);
+                    check(power, span);
+                    check(power + 1, span);
+                }
+                for (int i{0}; i < 1000; ++i) check(UintToArith256(rng.rand256()), span);
+            }
+            // Quotient boundaries, including low limbs carrying into high limbs.
+            for (unsigned bit{0}; bit < 200; bit += 7) {
+                arith_uint256 multiple{arith_uint256{1} << bit};
+                multiple *= arith_uint256{uint64_t(window)};
+                multiple *= arith_uint256{uint64_t(expected_span)};
+                check(multiple - 1, expected_span);
+                check(multiple, expected_span);
+                check(multiple + 1, expected_span);
+            }
+        }
+    }
+}
+
 BOOST_AUTO_TEST_CASE(calculation_vectors)
 {
     BOOST_CHECK_EQUAL(params.nPowAveragingWindow, 510);

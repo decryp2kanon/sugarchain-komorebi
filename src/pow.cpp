@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <chain.h>
 #include <checkqueue.h>
+#include <crypto/common.h>
 #include <crypto/sha256.h>
 #include <cuckoocache.h>
 #include <primitives/block.h>
@@ -26,6 +27,21 @@
 #include <stdexcept>
 
 namespace {
+// Exact unsigned long division, eight base-2^32 limbs instead of 256 bit steps.
+// remainder < divisor <= UINT32_MAX keeps each intermediate within uint64_t.
+arith_uint256 DivideSugarShieldTarget(const arith_uint256& value, int64_t divisor)
+{
+    if (divisor <= 0 || uint64_t(divisor) > UINT32_MAX) return value / arith_uint256{uint64_t(divisor)};
+    uint256 quotient{ArithToUint256(value)};
+    uint64_t remainder{0};
+    for (int offset{28}; offset >= 0; offset -= 4) {
+        const uint64_t part{(remainder << 32) | ReadLE32(quotient.begin() + offset)};
+        WriteLE32(quotient.begin() + offset, part / uint64_t(divisor));
+        remainder = part % uint64_t(divisor);
+    }
+    return UintToArith256(quotient);
+}
+
 static_assert(MAX_YESPOWER_CACHE_BYTES / sizeof(uint256) <= std::numeric_limits<uint32_t>::max() / 45);
 // As with the signature cache, store only successful verification, under a
 // salted digest of the entire input. This is bounded, process-local evidence:
@@ -114,8 +130,8 @@ unsigned int CalculateSugarShieldWorkRequired(const arith_uint256& total, int64_
     const arith_uint256 limit = UintToArith256(params.powLimit);
     span = params.AveragingWindowTimespan() + (span - params.AveragingWindowTimespan()) / 4;
     span = std::clamp(span, params.MinActualTimespan(), params.MaxActualTimespan());
-    arith_uint256 next = total / params.nPowAveragingWindow;
-    next /= params.AveragingWindowTimespan();
+    arith_uint256 next = DivideSugarShieldTarget(total, params.nPowAveragingWindow);
+    next = DivideSugarShieldTarget(next, params.AveragingWindowTimespan());
     next *= span;
     if (next > limit) next = limit;
     return next.GetCompact();
