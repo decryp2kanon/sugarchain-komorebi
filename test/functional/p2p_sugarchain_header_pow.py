@@ -9,7 +9,7 @@ Only a localhost test peer connects. Mainnet minimum chainwork is unchanged;
 from io import BytesIO
 from pathlib import Path
 
-from test_framework.messages import CBlockHeader, MAGIC_BYTES, msg_headers
+from test_framework.messages import CBlock, CBlockHeader, MAGIC_BYTES, msg_headers
 from test_framework.p2p import P2PInterface
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.test_node import ErrorMatch
@@ -75,6 +75,20 @@ class SugarchainHeaderPoWTest(BitcoinTestFramework):
         self.wait_until(lambda: node.getpeerinfo()[0]["presynced_headers"] == 2000)
         assert_equal(node.getblockchaininfo()["headers"], 0)
         assert_equal(node.getblockcount(), 0)
+
+        # A cached valid header proves nothing about the supplied block body.
+        # Mutate only the coinbase output, leaving the header/PoW unchanged.
+        raw_block = bytes.fromhex((Path(__file__).parent / "data/sugarchain_block_1.hex").read_text())
+        block = CBlock()
+        block.deserialize(BytesIO(raw_block))
+        assert_equal(CBlockHeader(block).serialize(), headers[0].serialize())
+        block.vtx[0].vout[0].nValue -= 1
+        assert_equal(node.submitblock(block.serialize().hex()), "bad-txnmrklroot")
+        assert_equal(node.getblockcount(), 0)
+        # Rejecting the mutated body must not poison the genuine block either.
+        assert_equal(node.submitblock(raw_block.hex()), None)
+        assert_equal(node.getblockcount(), 1)
+        assert_equal(node.getbestblockhash(), "ce8a0df339f2edceb99c5325c95b2b0ae752e29de1193f6113549f0e1cae7c91")
 
         # Invalid budgets must fail startup rather than silently requesting an
         # unbounded allocation. Only these temporary test nodes are stopped.

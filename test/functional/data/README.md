@@ -1,5 +1,14 @@
 # Various test vectors
 
+## sugarchain_block_1.hex
+
+The complete 262-byte Sugarchain mainnet block at height 1, including its witness,
+extracted from the bootstrap's previously validated 6000-block offline fixture.
+Its hash is `ce8a0df339f2edceb99c5325c95b2b0ae752e29de1193f6113549f0e1cae7c91`;
+its first 80 bytes match the first header in `src/test/data/sugarchain_headers.raw`.
+The functional regression uses it to verify that cached header PoW does not
+accept a mutated block body or poison subsequent acceptance of the genuine body.
+
 ## mainnet_alt.json
 
 For easier testing the difficulty is maximally increased in the first (and only)
