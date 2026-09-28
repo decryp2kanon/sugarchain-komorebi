@@ -47,18 +47,28 @@ HeadersSyncState::HeadersSyncState(NodeId id,
     LogDebug(BCLog::NET, "Initial headers sync started with peer=%d: height=%i, max_commitments=%i, min_work=%s\n", m_id, m_current_height, m_max_commitments, m_minimum_required_work.ToString());
 }
 
+// Build temporary context for the existing SugarShield GetNextWorkRequired(), not a new DAA.
+// Low-work headers are not yet in the normal block index; each PRESYNC/REDOWNLOAD
+// pass needs its own recent history to check difficulty before accepting them.
 void HeadersSyncState::ResetDifficultyHistory()
 {
+    // Discard the previous pass's temporary history.
     m_difficulty_history.clear();
     if (!m_consensus_params.nPowAveragingWindow) return;
-    // 510 averaged blocks plus the earlier endpoint's 11-block median.
+    // For a candidate at height h, average targets h-1 through h-510.
+    // The older MTP endpoint is h-511: its median includes itself and 10 predecessors
+    // (nMedianTimeSpan = 11), reaching h-521. Thus retain 510 + 11 = 521 entries;
+    // the newer endpoint's median is already covered by the averaged blocks.
     const size_t limit = m_consensus_params.nPowAveragingWindow + CBlockIndex::nMedianTimeSpan;
+    // Copy backwards from the known chain start, storing oldest first. Near genesis,
+    // copy only the available ancestors, as the normal chain traversal would do.
     const CBlockIndex* index = &m_chain_start;
     while (index && m_difficulty_history.size() < limit) {
         m_difficulty_history.emplace_front(index->GetBlockHeader());
         m_difficulty_history.front().nHeight = index->nHeight;
         index = index->pprev;
     }
+    // Link the copies so the unchanged SugarShield calculation can follow pprev.
     CBlockIndex* previous = nullptr;
     for (auto& entry : m_difficulty_history) {
         entry.pprev = previous;
@@ -66,17 +76,23 @@ void HeadersSyncState::ResetDifficultyHistory()
     }
 }
 
+// Check the candidate's SugarShield difficulty, then retain it as context for the next header.
 bool HeadersSyncState::CheckDifficultyAndAppend(const CBlockHeader& header)
 {
     assert(!m_difficulty_history.empty());
+    // The newest retained entry is the candidate's predecessor. Reject a target
+    // that differs from GetNextWorkRequired() before changing the history.
     auto* previous = &m_difficulty_history.back();
     if (header.nBits != GetNextWorkRequired(previous, &header, m_consensus_params)) return false;
+    // Append the accepted header and connect its predecessor and height.
     m_difficulty_history.emplace_back(header);
     auto& entry = m_difficulty_history.back();
     entry.pprev = previous;
     entry.nHeight = previous->nHeight + 1;
+    // Keep the same 510 targets + 11 older MTP entries needed for the next check.
     const size_t limit = m_consensus_params.nPowAveragingWindow + CBlockIndex::nMedianTimeSpan;
     if (m_difficulty_history.size() > limit) {
+        // Drop the oldest entry and remove the now-dangling link to it.
         m_difficulty_history.pop_front();
         m_difficulty_history.front().pprev = nullptr;
     }
