@@ -494,3 +494,27 @@ same 6000-header/100-round component benchmark, measured 11.8674, 1.69143,
 1.69769, 12.0110 seconds respectively: 7.046x for the state-machine component.
 Initial genuine Yespower checks remain outside this timer. This is not a full
 IBD measurement or a claim of meeting the five-hour target.
+
+### Read-only live observation
+
+`contrib/bench/observe-ibd.py` records JSONL snapshots of chain progress, peer
+presync/in-flight counts and byte totals, plus Linux process CPU ticks, RSS,
+major faults and I/O counters. It calls only read-only RPCs, never changes or
+stops a node, uses CLI cookie authentication, and omits peer addresses. Missing
+progress and RPC failures remain explicit rather than becoming false zeros.
+It refuses to overwrite output and detects PID reuse. Clock ticks/page size
+are recorded so analysis can use actual elapsed time and process counter deltas.
+
+```sh
+python3 contrib/bench/test-observe-ibd.py
+python3 contrib/bench/observe-ibd.py --cli /path/to/sugarchain-cli \
+  --datadir /path/to/fresh/run/data --rpcport 38421 --pid NODE_PID \
+  --output /path/to/new-observations.jsonl --interval 10
+```
+
+Four deterministic parser/RPC-error tests passed, followed by a two-sample
+read-only smoke check against the fresh network run. The full network run uses
+an immutable copy of the binary from source `775ef0b94e`, `-parpow=8`,
+`-maxpowcache=2048`, `-dbcache=4096`, `-assumevalid=0`, unchanged minimum chainwork,
+and a new empty datadir. Startup and initial peer/PRESYNC progress are confirmed;
+completion time, block-stage throughput and full-IBD success remain unverified.
