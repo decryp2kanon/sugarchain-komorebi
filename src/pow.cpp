@@ -35,7 +35,7 @@ public:
     {
         const auto nonce{GetRandHash()};
         m_hasher.Write(nonce.begin(), nonce.size());
-        m_valid.setup_bytes(1 << 20);
+        m_valid.setup_bytes(16 << 20);
     }
 
     uint256 Entry(const CBlockHeader& header) const

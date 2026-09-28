@@ -115,7 +115,7 @@ multiprocess, unit tests and benchmarks with GUI ON, IPC ON and RelWithDebInfo.
 ## Bounded reuse of verified Yespower
 
 `CheckBlockProofOfWork` now caches successful YespowerSugar verification in a
-process-local cuckoo cache with a 1 MiB entry budget plus cache metadata. Entries
+process-local cuckoo cache with a 16 MiB entry budget plus cache metadata. Entries
 are salted SHA256 digests of the full SHA256d header identifier. No input field,
 including nBits, is omitted. Invalid results are never inserted. The current
 powLimit/target validity check runs before every lookup. Bitcoin-style and fuzz
@@ -126,7 +126,8 @@ or an on-disk TREE flag. Eviction/restart simply causes actual PoW computation
 again. It does not change SugarShield, contextual validation, script validation,
 PRESYNC/REDOWNLOAD, minimum chainwork, disk formats or durability.
 
-Measured A/B/B/A imports of the existing first 6000 mainnet blocks, each into a
+The initial 1 MiB implementation measured A/B/B/A imports of the existing first
+6000 mainnet blocks, each into a
 new empty datadir, networking and wallets disabled, `-assumevalid=0`, dbcache
 1024 MiB, including orderly shutdown and flush:
 
@@ -154,7 +155,7 @@ Added regression coverage for changes to every serialized header field, invalid
 compact targets, a stricter powLimit, SHA256d-vs-Yespower separation and concurrent
 cache readers. This is component-level validation, not full mainnet completion.
 
-A separate Debug `-O1 -g1` ASan/UBSan build also passed all four suites
+A separate Debug `-O1 -g1` ASan/UBSan build of that initial cache passed all four suites
 (78.08 seconds), with `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1` and
 `UBSAN_OPTIONS=halt_on_error=1`. That sanitizer configuration disabled GUI/IPC;
 the preceding normal production build included both. Existing baseline builds
@@ -194,6 +195,27 @@ gave eight-worker A/B/B/A raw rates of 2204.87 / 2484.80 / 2384.10 / 2240.18
 hashes/s on CPUs 0-3,8-11. All 6000 output hashes matched. Single-worker throughput
 was unchanged, so this has not been added to the serial production path. These
 are diagnostic experiments, not full IBD results or a production parallel queue.
+
+## Cache capacity comparison
+
+Read-only observation of the user's original node found eight simultaneous
+PRESYNC peers at heights 1,110,000 through 1,194,000. A 1 MiB cache cannot cover
+that spread. Separate 1 MiB / 16 MiB executables verified the first 40,000 linked
+mainnet headers twice, in A/B/B/A order, with identical original compiler flags:
+
+| Run | Capacity | First proof pass | Repeated pass |
+| --- | ---: | ---: | ---: |
+| A | 1 MiB | 117.297 s | 61.906 s |
+| B | 16 MiB | 117.549 s | 0.068 s |
+| B | 16 MiB | 118.433 s | 0.043 s |
+| A | 1 MiB | 118.016 s | 61.139 s |
+
+All proofs passed. This is about 1.52x for the two-pass workload, with no
+first-proof acceleration. The default entry budget is consequently 16 MiB,
+still bounded independently of peers or chain length. It does not retain an
+entire mainnet history. The downloaded 100,000-header input file (of which this
+experiment verified the first 40,000) has SHA256
+`f64a65677abdfa525b67d9a09291868fbfd1f9fb0d4089cdfafc3b2718dd07dd`.
 
 ## Existing peer-test timing assumption
 
