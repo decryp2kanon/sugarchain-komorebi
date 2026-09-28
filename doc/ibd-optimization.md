@@ -258,7 +258,12 @@ in 122.73 seconds, with leak detection and halt-on-error enabled. The localhost
 invalid-Yespower disconnection, 2001-header rejection, shutdown/restart and fresh
 PRESYNC. It uses unchanged mainnet minimum chainwork, no external peers and no
 wallet; accepted block/header heights correctly stay zero. Existing
-`feature_shutdown.py` passed as well. ThreadSanitizer validation is still pending.
+`feature_shutdown.py` passed as well. A separate ThreadSanitizer build
+(`Debug`, `-O1 -g1`, GUI/IPC/wallet disabled) passed all six `header_pow_tests`
+in 370.52 seconds, including the full 6000-header old/new comparison, and all
+18 cases selected by `checkqueue_tests,headers_sync_chainwork_tests,denialofservice_tests`.
+Both runs used `TSAN_OPTIONS=halt_on_error=1`; no races were reported. Sanitizer
+duration is not a performance measurement.
 
 Build with `-DBUILD_BENCH=ON` and run a fresh process for each comparison:
 
