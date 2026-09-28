@@ -12,6 +12,7 @@ from pathlib import Path
 from test_framework.messages import CBlockHeader, MAGIC_BYTES, msg_headers
 from test_framework.p2p import P2PInterface
 from test_framework.test_framework import BitcoinTestFramework
+from test_framework.test_node import ErrorMatch
 from test_framework.util import assert_equal
 
 
@@ -25,7 +26,7 @@ class SugarchainHeaderPoWTest(BitcoinTestFramework):
         self.num_nodes = 1
         self.supports_cli = False
         self.extra_args = [["-conf=bitcoin.conf", "-disablewallet=1", "-parpow=8",
-                            "-assumevalid=0", "-v2transport=0"]]
+                            "-assumevalid=0", "-v2transport=0", "-maxpowcache=1"]]
 
     def run_test(self):
         node = self.nodes[0]
@@ -68,12 +69,22 @@ class SugarchainHeaderPoWTest(BitcoinTestFramework):
 
         # Destroy a node-owned worker pool, restart, and verify that fresh
         # presync state is usable. No persisted flag substitutes for proof work.
-        self.restart_node(0)
+        self.restart_node(0, extra_args=self.extra_args[0] + ["-maxpowcache=2"])
         peer = node.add_p2p_connection(P2PInterface(), supports_v2_p2p=False)
         peer.send_and_ping(msg_headers(headers[:2000]))
         self.wait_until(lambda: node.getpeerinfo()[0]["presynced_headers"] == 2000)
         assert_equal(node.getblockchaininfo()["headers"], 0)
         assert_equal(node.getblockcount(), 0)
+
+        # Invalid budgets must fail startup rather than silently requesting an
+        # unbounded allocation. Only these temporary test nodes are stopped.
+        self.stop_node(0)
+        for budget in ("0", "-1", "2049", "invalid"):
+            node.assert_start_raises_init_error(
+                extra_args=self.extra_args[0] + [f"-maxpowcache={budget}"],
+                expected_msg="-maxpowcache must be between 1 and 2048 MiB",
+                match=ErrorMatch.PARTIAL_REGEX,
+            )
 
 
 if __name__ == "__main__":

@@ -26,7 +26,7 @@ const std::function<std::string(const char*)> G_TRANSLATION_FUN{nullptr};
 int main(int argc, char** argv)
 {
     try {
-        if (argc != 4) throw std::runtime_error("Usage: bench_header_pow RAW_HEADERS COUNT WORKERS (1-8)");
+        if (argc != 4 && argc != 5) throw std::runtime_error("Usage: bench_header_pow RAW_HEADERS COUNT WORKERS (1-8) [CACHE_MIB (1-2048)]");
         auto number = [](std::string_view arg, unsigned maximum) {
             unsigned value{0};
             auto [end, error]{std::from_chars(arg.data(), arg.data() + arg.size(), value)};
@@ -37,6 +37,7 @@ int main(int argc, char** argv)
         };
         const auto count{number(argv[2], 1'000'000)};
         const auto workers{number(argv[3], MAX_HEADER_POW_WORKERS)};
+        if (argc == 5) InitYespowerVerificationCache(size_t(number(argv[4], MAX_YESPOWER_CACHE_BYTES >> 20)) << 20);
         const auto chain{CChainParams::Main()};
         const auto& params{chain->GetConsensus()};
         std::ifstream input{argv[1], std::ios::binary};

@@ -662,6 +662,7 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
     argsman.AddArg("-capturemessages", "Capture all P2P messages to disk", ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::DEBUG_TEST);
     argsman.AddArg("-mocktime=<n>", "Replace actual time with " + UNIX_EPOCH_TIME + " (default: 0)", ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::DEBUG_TEST);
     argsman.AddArg("-maxsigcachesize=<n>", strprintf("Limit sum of signature cache and script execution cache sizes to <n> MiB (default: %u)", DEFAULT_VALIDATION_CACHE_BYTES >> 20), ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::DEBUG_TEST);
+    argsman.AddArg("-maxpowcache=<n>", strprintf("Verified Yespower header cache entry budget in MiB, plus metadata (1-2048, default: %u)", DEFAULT_YESPOWER_CACHE_BYTES >> 20), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-maxtipage=<n>",
                    strprintf("Maximum tip age in seconds to consider node in initial block download (default: %u)",
                              Ticks<std::chrono::seconds>(DEFAULT_MAX_TIP_AGE)),
@@ -1833,6 +1834,14 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
     const auto [index_cache_sizes, kernel_cache_sizes] = CalculateCacheSizes(args, g_enabled_filter_types.size());
 
     LogInfo("Cache configuration:");
+    const auto pow_cache_mib{args.GetIntArg("-maxpowcache", DEFAULT_YESPOWER_CACHE_BYTES >> 20)};
+    if (pow_cache_mib < 1 || pow_cache_mib > int64_t(MAX_YESPOWER_CACHE_BYTES >> 20)) {
+        return InitError(Untranslated("-maxpowcache must be between 1 and 2048 MiB"));
+    }
+    if (chainparams.GetConsensus().fYespowerSugar) {
+        InitYespowerVerificationCache(size_t(pow_cache_mib) << 20);
+        LogInfo("* Using %i MiB plus metadata for verified Yespower headers", pow_cache_mib);
+    }
     LogInfo("* Using %.1f MiB for block index database", kernel_cache_sizes.block_tree_db * (1.0 / 1024 / 1024));
     if (args.GetBoolArg("-txindex", DEFAULT_TXINDEX)) {
         LogInfo("* Using %.1f MiB for transaction index database", index_cache_sizes.tx_index * (1.0 / 1024 / 1024));

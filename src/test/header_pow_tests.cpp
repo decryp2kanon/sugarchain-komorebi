@@ -34,6 +34,11 @@ struct Observation {
     ~Observation() { observing = false; }
 };
 
+struct CacheBudget {
+    explicit CacheBudget(size_t bytes) { InitYespowerVerificationCache(bytes); }
+    ~CacheBudget() { InitYespowerVerificationCache(DEFAULT_YESPOWER_CACHE_BYTES); }
+};
+
 struct HeaderPoWSetup : BasicTestingSetup {
     const std::unique_ptr<const CChainParams> main{CChainParams::Main()};
     Consensus::Params params{main->GetConsensus()};
@@ -221,6 +226,64 @@ BOOST_AUTO_TEST_CASE(current_target_and_algorithm_rules_are_not_cached)
         invalid[8].nBits = bits;
         BOOST_CHECK(!verifier.Check(invalid, params));
     }
+}
+
+BOOST_AUTO_TEST_CASE(cache_budget_eviction_and_reset_only_trigger_reverification)
+{
+    const auto headers{Headers(90, 25)};
+    CacheBudget budget{64}; // Two entries: force eviction without a large fixture.
+    HeaderPoWVerifier verifier{8};
+    BOOST_REQUIRE(verifier.Check(headers, params));
+    {
+        Observation observation;
+        BOOST_REQUIRE(verifier.Check(headers, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_GE(calls.load(), headers.size() - 2);
+#endif
+    }
+    InitYespowerVerificationCache(1 << 20);
+    {
+        Observation observation;
+        BOOST_REQUIRE(verifier.Check(headers, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), headers.size());
+#endif
+    }
+    BOOST_CHECK_THROW(InitYespowerVerificationCache(0), std::invalid_argument);
+    BOOST_CHECK_THROW(InitYespowerVerificationCache(MAX_YESPOWER_CACHE_BYTES + 1), std::invalid_argument);
+    {
+        Observation observation;
+        BOOST_REQUIRE(verifier.Check(headers, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 0U); // Rejected sizes leave existing evidence intact.
+#endif
+    }
+}
+
+BOOST_AUTO_TEST_CASE(cache_reset_is_safe_during_verification)
+{
+    const auto headers{Headers(91, 33)};
+    auto invalid{headers.front()};
+    Invalidate(invalid);
+    CacheBudget budget{1 << 20};
+    HeaderPoWVerifier verifier{8};
+    std::atomic<bool> success{true};
+    {
+        std::jthread reset{[] {
+            for (int i{0}; i < 40; ++i) InitYespowerVerificationCache(i % 2 ? 64 : 1 << 20);
+        }};
+        std::jthread reader{[&] {
+            for (int i{0}; i < 4; ++i) {
+                if (!verifier.Check(headers, params)) success = false;
+                if (CheckBlockProofOfWork(invalid, params)) success = false;
+            }
+        }};
+        for (int i{0}; i < 4; ++i) {
+            if (!verifier.Check(headers, params)) success = false;
+        }
+    }
+    BOOST_CHECK(success.load());
+    BOOST_CHECK(!CheckBlockProofOfWork(invalid, params));
 }
 
 #ifdef ENABLE_YESPOWER_TEST_WRAP

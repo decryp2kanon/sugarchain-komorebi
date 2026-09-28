@@ -9,6 +9,7 @@
 #include <consensus/params.h>
 
 #include <cstdint>
+#include <cstddef>
 #include <memory>
 #include <span>
 
@@ -35,6 +36,12 @@ unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, int64_t nF
 bool CheckBlockProofOfWork(const CBlockHeader& header, const Consensus::Params& params);
 bool CheckProofOfWork(uint256 hash, unsigned int nBits, const Consensus::Params&);
 bool CheckProofOfWorkImpl(uint256 hash, unsigned int nBits, const Consensus::Params&);
+
+inline constexpr size_t DEFAULT_YESPOWER_CACHE_BYTES{16 << 20};
+// Also keeps CuckooCache's uint32_t epoch-size arithmetic below overflow.
+inline constexpr size_t MAX_YESPOWER_CACHE_BYTES{size_t{2048} << 20};
+/** Configure process-local proof evidence; resizing discards all old entries. */
+void InitYespowerVerificationCache(size_t bytes);
 
 inline constexpr int DEFAULT_HEADER_POW_WORKERS{1};
 inline constexpr int MAX_HEADER_POW_WORKERS{8};

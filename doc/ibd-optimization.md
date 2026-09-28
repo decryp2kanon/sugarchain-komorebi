@@ -217,6 +217,28 @@ entire mainnet history. The downloaded 100,000-header input file (of which this
 experiment verified the first 40,000) has SHA256
 `f64a65677abdfa525b67d9a09291868fbfd1f9fb0d4089cdfafc3b2718dd07dd`.
 
+`-maxpowcache=<MiB>` now exposes a bounded startup entry budget of 1-2048 MiB,
+with the 16 MiB default unchanged and two bits/entry of extra cache metadata.
+This supports explicit experiments on longer peer/pass separation without
+silently allocating gigabytes by default. The maximum also stays below the
+existing CuckooCache uint32 epoch-arithmetic overflow boundary; a static assertion
+guards that constraint. Cache initialization allocates a replacement before
+swapping under the existing exclusive lock. It neither reads nor writes proof
+evidence to disk, and eviction/reset requires a new real proof on the next miss.
+
+After the parallel/mapping changes, the production benchmark's optional fourth
+argument sets the cache budget. A/B/B/A with eight workers and 40,000 real headers
+measured 1 MiB cold passes of 18.7343/18.6379 seconds and repeated passes of
+9.78997/9.78405 seconds. At 16 MiB the corresponding times were
+18.5900/18.5187 and 0.04363/0.04415 seconds. This confirms reuse, not reduced
+first-proof work; it does not establish whole-mainnet retention or five-hour IBD.
+
+All 51 targeted normal and ASan/UBSan tests passed. Two new ThreadSanitizer cases
+passed (8.15 seconds), forcing eviction, reset during verification and rejection
+of invalid headers and invalid sizes. The localhost P2P regression passed with
+1 MiB, restart at 2 MiB, and startup rejection of 0, negative, oversized and
+non-numeric budgets. No shared node or external peer participates in that test.
+
 ## Existing peer-test timing assumption
 
 The expanded test selection found five assertions failing in

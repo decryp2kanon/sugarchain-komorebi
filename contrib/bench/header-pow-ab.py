@@ -52,11 +52,16 @@ def main():
     parser.add_argument("--headers", type=Path, required=True)
     parser.add_argument("--count", type=int, default=6000)
     parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--baseline-cache-mib", type=int)
+    parser.add_argument("--candidate-cache-mib", type=int)
     parser.add_argument("--work-dir", type=Path, required=True, help="must not exist")
     parser.add_argument("--timeout", type=int, default=600)
     args = parser.parse_args()
     if not 1 <= args.count <= 1_000_000 or not 1 <= args.workers <= 8 or args.timeout < 1:
         parser.error("count must be 1..1000000, workers 1..8, timeout positive")
+    cache_sizes = {name: getattr(args, f"{name}_cache_mib") for name in ("baseline", "candidate")}
+    if any(size is not None and not 1 <= size <= 2048 for size in cache_sizes.values()):
+        parser.error("cache budgets must be 1..2048 MiB")
     binaries = {name: getattr(args, name).resolve(strict=True) for name in ("baseline", "candidate")}
     headers = args.headers.resolve(strict=True)
     if headers.stat().st_size < args.count * 80:
@@ -64,13 +69,15 @@ def main():
     work = args.work_dir.resolve()
     work.mkdir(parents=True, exist_ok=False)
     fingerprints = {str(path): digest(path) for path in (*binaries.values(), headers)}
-    report = {"network": False, "count": args.count, "workers": args.workers,
+    report = {"network": False, "count": args.count, "workers": args.workers, "cache_mib": cache_sizes,
               "sha256": fingerprints, "runs": []}
     for number, name in enumerate(("baseline", "candidate", "candidate", "baseline")):
         # Never silently compare different input/build versions within one run.
         if any(digest(Path(path)) != value for path, value in fingerprints.items()):
             raise RuntimeError("Input or executable changed during comparison")
         command = [str(binaries[name]), str(headers), str(args.count), str(args.workers)]
+        if cache_sizes[name] is not None:
+            command.append(str(cache_sizes[name]))
         before = resource.getrusage(resource.RUSAGE_CHILDREN)
         started = time.monotonic()
         process = subprocess.run(command, capture_output=True, text=True, timeout=args.timeout)
@@ -84,6 +91,8 @@ def main():
         report["runs"].append(row)
         (work / "results.json").write_text(json.dumps(report, indent=2) + "\n")
         process.check_returncode()
+        if any(digest(Path(path)) != value for path, value in fingerprints.items()):
+            raise RuntimeError("Input or executable changed during comparison")
         row["measurements"] = parse_measurements(process.stdout, args.count, args.workers)
         (work / "results.json").write_text(json.dumps(report, indent=2) + "\n")
         print(json.dumps(row), flush=True)

@@ -21,15 +21,19 @@
 
 #include <mutex>
 #include <exception>
+#include <limits>
 #include <shared_mutex>
+#include <stdexcept>
 
 namespace {
+static_assert(MAX_YESPOWER_CACHE_BYTES / sizeof(uint256) <= std::numeric_limits<uint32_t>::max() / 45);
 // As with the signature cache, store only successful verification, under a
 // salted digest of the entire input. This is bounded, process-local evidence:
 // neither a peer nor a persisted block-index status can populate it.
 class YespowerVerificationCache {
+    using Cache = CuckooCache::cache<uint256, SignatureCacheHasher>;
     CSHA256 m_hasher;
-    CuckooCache::cache<uint256, SignatureCacheHasher> m_valid;
+    std::unique_ptr<Cache> m_valid{std::make_unique<Cache>()};
     std::shared_mutex m_mutex;
 
 public:
@@ -37,7 +41,15 @@ public:
     {
         const auto nonce{GetRandHash()};
         m_hasher.Write(nonce.begin(), nonce.size());
-        m_valid.setup_bytes(16 << 20);
+        m_valid->setup_bytes(DEFAULT_YESPOWER_CACHE_BYTES);
+    }
+
+    void Reset(size_t bytes)
+    {
+        auto replacement{std::make_unique<Cache>()};
+        replacement->setup_bytes(bytes);
+        std::unique_lock lock{m_mutex};
+        std::swap(m_valid, replacement);
     }
 
     uint256 Entry(const CBlockHeader& header) const
@@ -53,13 +65,13 @@ public:
     bool Contains(const uint256& entry)
     {
         std::shared_lock lock{m_mutex};
-        return m_valid.contains(entry, false);
+        return m_valid->contains(entry, false);
     }
 
     void Insert(const uint256& entry)
     {
         std::unique_lock lock{m_mutex};
-        m_valid.insert(entry);
+        m_valid->insert(entry);
     }
 };
 
@@ -86,6 +98,14 @@ struct HeaderPoWCheck {
     }
 };
 } // namespace
+
+void InitYespowerVerificationCache(size_t bytes)
+{
+    if (!bytes || bytes > MAX_YESPOWER_CACHE_BYTES) {
+        throw std::invalid_argument("Yespower cache size must be positive and at most 2048 MiB");
+    }
+    VerificationCache().Reset(bytes);
+}
 
 // Official Sugarchain SugarShield: average 510 targets, using endpoint MTPs.
 // Preserve integer operation ordering (divide before multiply) for consensus.
