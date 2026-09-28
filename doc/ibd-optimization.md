@@ -194,3 +194,13 @@ gave eight-worker A/B/B/A raw rates of 2204.87 / 2484.80 / 2384.10 / 2240.18
 hashes/s on CPUs 0-3,8-11. All 6000 output hashes matched. Single-worker throughput
 was unchanged, so this has not been added to the serial production path. These
 are diagnostic experiments, not full IBD results or a production parallel queue.
+
+## Existing peer-test timing assumption
+
+The expanded test selection found five assertions failing in
+`denialofservice_tests/stale_tip_peer_management`. The preserved, pre-optimization
+bootstrap test binary reproduced the same five failures. With five-second
+spacing, the test advanced mock time by only 16 seconds, but Core31's stale-tip
+check is scheduled every ten minutes. The fixture now advances beyond both
+thresholds; all five tests in `denialofservice_tests` pass. Production peer
+timers, connection limits and eviction rules are unchanged.
