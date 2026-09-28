@@ -528,3 +528,28 @@ components and localhost tests only. No completion-time claim follows from this
 short observation. The observer now also terminates on an exited/zombie process
 without waiting for the parent to reap its PID; five tests include this real
 child-process lifecycle case and verify that no RPC is attempted after exit.
+
+### Localhost block-download latency proxy
+
+`contrib/bench/block-download.py` uses the existing functional-test P2P framework,
+real regtest block validation and disk ingestion, four outbound localhost peers,
+and deterministic coinbase-only blocks. Every getdata response receives a fixed
+async delay; the network event loop itself is never slept. The harness checks
+peer/request bounds, exact tip, UTXO fingerprint and `verifychain(4, count)`.
+Node CPU and Python harness CPU are recorded separately to expose generator
+bottlenecks. The result file cannot be overwritten.
+
+Initial unchanged-code sensitivity runs over 4096 blocks measured 5.843s at
+0ms delay and 9.518s at 100ms, both with the existing 16-request per-peer bound,
+identical tip and UTXO results. A 1024-block smoke check also passed. These are
+latency/scheduler/ingestion proxies, not mainnet PoW, presync, complex late-chain
+scripts, Internet bandwidth or full IBD measurements. Pair them with the real
+header/PoW and offline mainnet-block benchmarks rather than extrapolating a
+full-chain completion time from these small synthetic blocks.
+
+```sh
+BITCOIND="$PWD/build-ibd-optimization/bin/sugarchaind" \
+  python3 contrib/bench/block-download.py \
+  --configfile=build-ibd-optimization/test/config.ini \
+  --blocks=4096 --latency-ms=100 --result=/tmp/new-download-result.json
+```
