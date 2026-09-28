@@ -406,6 +406,21 @@ attempt is not a successful measurement. Verification/restart/startup times are
 outside the reported phases; these single-run figures are diagnostic rather than
 a replacement for the A/B/B/A comparison or an extrapolated full IBD duration.
 
+## Isolated header-sync component benchmark
+
+`bench_headers_sync RAW_HEADERS COUNT ROUNDS` validates the input's linkage,
+difficulty, MTP and genuine PoW before timing repeated PRESYNC/REDOWNLOAD passes.
+For this isolated state-machine fixture only, its total chainwork is the transition
+threshold, as in the unit tests. No node runs and no production minimum work is
+changed. Every round checks state transitions and all returned header hashes.
+It measures header-sync computation alone; it must not be reported as network
+IBD throughput or proof-verification throughput.
+
+```sh
+cmake --build build-ibd-optimization --target bench_headers_sync
+build-ibd-optimization/bin/bench_headers_sync src/test/data/sugarchain_headers.raw 6000 100
+```
+
 Run the localhost mainnet functional regression using the framework's existing
 binary override (the test itself selects its temporary config explicitly):
 
