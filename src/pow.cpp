@@ -10,9 +10,57 @@
 #include <arith_uint256.h>
 #include <algorithm>
 #include <chain.h>
+#include <crypto/sha256.h>
+#include <cuckoocache.h>
 #include <primitives/block.h>
+#include <random.h>
 #include <uint256.h>
 #include <util/check.h>
+#include <util/hasher.h>
+
+#include <mutex>
+#include <shared_mutex>
+
+namespace {
+// As with the signature cache, store only successful verification, under a
+// salted digest of the entire input. This is bounded, process-local evidence:
+// neither a peer nor a persisted block-index status can populate it.
+class YespowerVerificationCache {
+    CSHA256 m_hasher;
+    CuckooCache::cache<uint256, SignatureCacheHasher> m_valid;
+    std::shared_mutex m_mutex;
+
+public:
+    YespowerVerificationCache()
+    {
+        const auto nonce{GetRandHash()};
+        m_hasher.Write(nonce.begin(), nonce.size());
+        m_valid.setup_bytes(1 << 20);
+    }
+
+    uint256 Entry(const CBlockHeader& header) const
+    {
+        // GetHash commits to all 80 serialized bytes, including nBits. The
+        // YespowerSugar algorithm and personalization are fixed in GetPoWHash.
+        const auto hash{header.GetHash()};
+        uint256 entry;
+        CSHA256{m_hasher}.Write(hash.begin(), hash.size()).Finalize(entry.begin());
+        return entry;
+    }
+
+    bool Contains(const uint256& entry)
+    {
+        std::shared_lock lock{m_mutex};
+        return m_valid.contains(entry, false);
+    }
+
+    void Insert(const uint256& entry)
+    {
+        std::unique_lock lock{m_mutex};
+        m_valid.insert(entry);
+    }
+};
+} // namespace
 
 // Official Sugarchain SugarShield: average 510 targets, using endpoint MTPs.
 // Preserve integer operation ordering (divide before multiply) for consensus.
@@ -198,9 +246,17 @@ bool CheckProofOfWorkImpl(uint256 hash, unsigned int nBits, const Consensus::Par
     return true;
 }
 
-// Validate the target before computing the expensive, uncached PoW hash.
+// Always validate the current network's target limit, including on cache hits.
 bool CheckBlockProofOfWork(const CBlockHeader& header, const Consensus::Params& params)
 {
     if (!DeriveTarget(header.nBits, params.powLimit)) return false;
-    return CheckProofOfWork(params.fYespowerSugar ? header.GetPoWHash() : header.GetHash(), header.nBits, params);
+    if (!params.fYespowerSugar || EnableFuzzDeterminism()) {
+        return CheckProofOfWork(params.fYespowerSugar ? header.GetPoWHash() : header.GetHash(), header.nBits, params);
+    }
+    static YespowerVerificationCache cache;
+    const auto entry{cache.Entry(header)};
+    if (cache.Contains(entry)) return true;
+    if (!CheckProofOfWork(header.GetPoWHash(), header.nBits, params)) return false;
+    cache.Insert(entry);
+    return true;
 }

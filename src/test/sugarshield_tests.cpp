@@ -22,12 +22,14 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <memory>
 #include <span>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -404,6 +406,59 @@ BOOST_AUTO_TEST_CASE(zero_window_uses_bitcoin_transition_rules)
     HeadersSyncState sync{0, bitcoin_style, {1, 7}, chain.index.front(), chain.index.back().nChainWork};
     BOOST_CHECK(!sync.ProcessNextHeaders(std::span{&bad, 1}, true).success);
     BOOST_CHECK(sync.GetState() == State::FINAL);
+}
+
+BOOST_AUTO_TEST_CASE(yespower_cache_binds_all_header_fields_and_current_rules)
+{
+    const CBlockHeader original{main->GenesisBlock()};
+    BOOST_REQUIRE(CheckProofOfWork(original.GetPoWHash(), original.nBits, params));
+    BOOST_REQUIRE(CheckBlockProofOfWork(original, params));
+    BOOST_REQUIRE(CheckBlockProofOfWork(original, params));
+
+    // Mutate each serialized field after caching a valid header. The uncached
+    // primitive is the oracle; a changed header may legitimately have valid PoW.
+    std::array<CBlockHeader, 6> changed;
+    changed.fill(original);
+    changed[0].nVersion ^= 1;
+    changed[1].hashPrevBlock.begin()[0] ^= 1;
+    changed[2].hashMerkleRoot.begin()[0] ^= 1;
+    ++changed[3].nTime;
+    changed[4].nBits = 0x1f1fffff;
+    ++changed[5].nNonce;
+    for (const auto& header : changed) {
+        const bool expected{CheckProofOfWork(header.GetPoWHash(), header.nBits, params)};
+        BOOST_CHECK_EQUAL(CheckBlockProofOfWork(header, params), expected);
+        BOOST_CHECK_EQUAL(CheckBlockProofOfWork(header, params), expected);
+    }
+
+    auto stricter{params};
+    stricter.powLimit = ArithToUint256(arith_uint256{}.SetCompact(original.nBits) / 2);
+    BOOST_CHECK(!CheckBlockProofOfWork(original, stricter));
+    auto bitcoin{params};
+    bitcoin.fYespowerSugar = false;
+    BOOST_REQUIRE(!CheckProofOfWork(original.GetHash(), original.nBits, bitcoin));
+    BOOST_CHECK(!CheckBlockProofOfWork(original, bitcoin));
+    auto invalid_target{original};
+    for (uint32_t bits : {0U, 0x1f800001U, 0x23000001U, 0x207fffffU}) {
+        invalid_target.nBits = bits;
+        BOOST_CHECK(!CheckBlockProofOfWork(invalid_target, params));
+    }
+
+    // Concurrent readers must neither corrupt the cache nor mix chain rules.
+    std::atomic<bool> correct{true};
+    {
+        std::vector<std::jthread> threads;
+        for (int i{0}; i < 8; ++i) {
+            threads.emplace_back([&] {
+                for (int j{0}; j < 100; ++j) {
+                    if (!CheckBlockProofOfWork(original, params) ||
+                        CheckBlockProofOfWork(original, stricter) ||
+                        CheckBlockProofOfWork(original, bitcoin)) correct = false;
+                }
+            });
+        }
+    }
+    BOOST_CHECK(correct.load());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

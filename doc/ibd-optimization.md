@@ -111,3 +111,45 @@ measurements with the user's applications left running, not a production change
 or a full-sync result. The benchmark also rejected missing/truncated input and
 invalid worker limits. The clean baseline build included daemon, CLI, Qt, IPC,
 multiprocess, unit tests and benchmarks with GUI ON, IPC ON and RelWithDebInfo.
+
+## Bounded reuse of verified Yespower
+
+`CheckBlockProofOfWork` now caches successful YespowerSugar verification in a
+process-local cuckoo cache with a 1 MiB entry budget plus cache metadata. Entries
+are salted SHA256 digests of the full SHA256d header identifier. No input field,
+including nBits, is omitted. Invalid results are never inserted. The current
+powLimit/target validity check runs before every lookup. Bitcoin-style and fuzz
+checks retain their previous paths. The raw `GetPoWHash()` remains uncached.
+
+The cache cannot be populated by peer-supplied status, an IBD flag, a checkpoint
+or an on-disk TREE flag. Eviction/restart simply causes actual PoW computation
+again. It does not change SugarShield, contextual validation, script validation,
+PRESYNC/REDOWNLOAD, minimum chainwork, disk formats or durability.
+
+Measured A/B/B/A imports of the existing first 6000 mainnet blocks, each into a
+new empty datadir, networking and wallets disabled, `-assumevalid=0`, dbcache
+1024 MiB, including orderly shutdown and flush:
+
+| Run | Original PoW checks | Cached PoW checks |
+| --- | ---: | ---: |
+| First | 71.879 s | 18.446 s |
+| Second | 71.483 s | 18.445 s |
+
+The mean ratio is 3.886x **for this small offline workload only**. All runs
+reached height 6000, tip
+`e7a04205f70e5b6e99d83a8f720748fee559a382701b39ff9891e391e6cf81d9`.
+The candidate was restarted offline and `verifychain 4 6000` returned true,
+with zero peers and no validation errors. UTXO `hash_serialized_3` was
+`94fda3c59b6d6410687bfacd26d858d0f85b86f6913b90016b7b02f72b3f13b8`.
+
+The fixture fits the cache; a tens-of-millions-of-headers separation between
+checks does not. This measurement must not be extrapolated to full IBD.
+First-time Yespower throughput is unchanged. The baseline executable was linked
+from the same clean build with the exact original committed pow.cpp object and
+identical compiler flags; the candidate differs in this production TU only.
+
+Validation: full GUI/IPC/multiprocess rebuild; `sugarshield_tests`,
+`headers_sync_chainwork_tests`, `pow_tests`, and `checkqueue_tests` all passed.
+Added regression coverage for changes to every serialized header field, invalid
+compact targets, a stricter powLimit, SHA256d-vs-Yespower separation and concurrent
+cache readers. This is component-level validation, not full mainnet completion.
