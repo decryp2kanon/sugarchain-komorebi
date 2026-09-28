@@ -154,6 +154,12 @@ Added regression coverage for changes to every serialized header field, invalid
 compact targets, a stricter powLimit, SHA256d-vs-Yespower separation and concurrent
 cache readers. This is component-level validation, not full mainnet completion.
 
+A separate Debug `-O1 -g1` ASan/UBSan build also passed all four suites
+(78.08 seconds), with `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1` and
+`UBSAN_OPTIONS=halt_on_error=1`. That sanitizer configuration disabled GUI/IPC;
+the preceding normal production build included both. Existing baseline builds
+and the user's running nodes were not modified.
+
 ### Reproducing the offline import comparison
 
 Keep separate baseline and candidate executables, and supply an existing raw
