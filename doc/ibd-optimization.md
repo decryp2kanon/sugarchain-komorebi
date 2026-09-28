@@ -553,3 +553,44 @@ BITCOIND="$PWD/build-ibd-optimization/bin/sugarchaind" \
   --configfile=build-ibd-optimization/test/config.ini \
   --blocks=4096 --latency-ms=100 --result=/tmp/new-download-result.json
 ```
+
+### Opt-in bounded IBD request budget
+
+`-maxibdblocksinflight=16..128` adjusts only bulk IBD requests. Default remains
+16; non-IBD/direct-fetch/compact-block limits remain 16, and the existing
+1024-block lookahead, stall detection/backoff, service eligibility, minimum work
+and validation gates are unchanged. Values outside the range clamp to its
+endpoints, including the full signed-64-bit input boundaries. Increasing this
+option explicitly allows more outstanding requests per peer; it does not
+increase wire-message size, receive-buffer or lookahead limits, nor remove any
+block validation. Do not conflate this bounded budget with PR 225's 122880-block
+scheduling horizon or install such a number as a per-peer cap.
+
+The first proxy used regtest's per-block exhaustive index diagnostics and the
+framework's trace logging. That inflated CPU cost (6.6–6.9 CPU seconds/4096
+blocks), unlike normal mainnet defaults. The performance harness now explicitly
+uses mainnet's diagnostic defaults (`-debug=0 -checkblockindex=0`) for **both**
+variants, while dedicated correctness/stalling tests keep exhaustive index
+checks enabled. Consensus, scripts and `verifychain` are not disabled.
+
+A/B/B/A with 4096 deterministic blocks, four peers and 100ms response delay:
+
+| Run | Per-peer IBD cap | Seconds | Node CPU seconds | Python CPU seconds |
+| --- | ---: | ---: | ---: | ---: |
+| A | 16 | 6.612860 | 0.90 | 0.811 |
+| B | 128 | 0.982984 | 0.76 | 0.583 |
+| B | 128 | 0.967126 | 0.66 | 0.561 |
+| A | 16 | 6.612844 | 0.83 | 0.845 |
+
+This latency-limited proxy improved 6.782x with identical tip/UTXO/verifychain
+results. It does not predict full mainnet speed or late-chain script/disk cost.
+
+Validation: seven peer/DoS unit cases passed normally and under ASan/UBSan;
+upstream's 1024-window stall/eviction/backoff/recovery scenarios passed with 128
+under both v1 and v2, and again with 16. A near-tip transition confirmed that
+subsequent request batches return to <=16 while previously issued requests
+drain. An eight-peer stress run with configured value 1000000 remained <=128
+per peer. A 128-block, 900000-byte-padding-per-block stress test transferred
+115220865 bytes with exhaustive index checks enabled and passed verifychain.
+These stress runs are correctness checks, not performance comparisons. The
+GUI/IPC/multiprocess production build passed.

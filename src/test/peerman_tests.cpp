@@ -3,7 +3,9 @@
 // file COPYING or https://www.opensource.org/licenses/mit-license.php.
 
 #include <chainparams.h>
+#include <common/args.h>
 #include <node/miner.h>
+#include <node/peerman_args.h>
 #include <net_processing.h>
 #include <pow.h>
 #include <test/util/setup_common.h>
@@ -12,6 +14,22 @@
 #include <boost/test/unit_test.hpp>
 
 BOOST_FIXTURE_TEST_SUITE(peerman_tests, RegTestingSetup)
+
+BOOST_AUTO_TEST_CASE(ibd_request_budget_is_opt_in_and_bounded)
+{
+    ArgsManager args;
+    PeerManager::Options options;
+    node::ApplyArgsManOptions(args, options);
+    BOOST_CHECK_EQUAL(options.ibd_block_request_limit, 16);
+    for (const auto& [text, expected] : std::vector<std::pair<const char*, int>>{
+             {"-9223372036854775808", 16}, {"0", 16}, {"15", 16}, {"16", 16},
+             {"64", 64}, {"128", 128}, {"129", 128}, {"9223372036854775807", 128}}) {
+        args.ForceSetArg("-maxibdblocksinflight", text);
+        node::ApplyArgsManOptions(args, options);
+        BOOST_CHECK_EQUAL(options.ibd_block_request_limit, expected);
+        BOOST_CHECK_EQUAL(options.header_pow_workers, DEFAULT_HEADER_POW_WORKERS);
+    }
+}
 
 /** Window, in blocks, for connecting to NODE_NETWORK_LIMITED peers */
 static constexpr int64_t NODE_NETWORK_LIMITED_ALLOW_CONN_BLOCKS = 144;

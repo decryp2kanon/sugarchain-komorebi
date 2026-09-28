@@ -29,6 +29,9 @@ void ApplyArgsManOptions(const ArgsManager& argsman, PeerManager::Options& optio
     if (auto value{argsman.GetIntArg("-parpow")}) {
         options.header_pow_workers = std::clamp<int64_t>(*value, 1, MAX_HEADER_POW_WORKERS);
     }
+    if (auto value{argsman.GetIntArg("-maxibdblocksinflight")}) {
+        options.ibd_block_request_limit = std::clamp<int64_t>(*value, DEFAULT_IBD_BLOCK_REQUEST_LIMIT, MAX_IBD_BLOCK_REQUEST_LIMIT);
+    }
 }
 
 } // namespace node

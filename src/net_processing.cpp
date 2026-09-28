@@ -6164,11 +6164,12 @@ bool PeerManagerImpl::SendMessages(CNode& node)
         // Message: getdata (blocks)
         //
         std::vector<CInv> vGetData;
-        if (CanServeBlocks(peer) && ((sync_blocks_and_headers_from_peer && !IsLimitedPeer(peer)) || !m_chainman.IsInitialBlockDownload()) && state.vBlocksInFlight.size() < MAX_BLOCKS_IN_TRANSIT_PER_PEER) {
+        const int inflight_limit{m_chainman.IsInitialBlockDownload() ? std::clamp(m_opts.ibd_block_request_limit, MAX_BLOCKS_IN_TRANSIT_PER_PEER, MAX_IBD_BLOCK_REQUEST_LIMIT) : MAX_BLOCKS_IN_TRANSIT_PER_PEER};
+        if (CanServeBlocks(peer) && ((sync_blocks_and_headers_from_peer && !IsLimitedPeer(peer)) || !m_chainman.IsInitialBlockDownload()) && state.vBlocksInFlight.size() < size_t(inflight_limit)) {
             std::vector<const CBlockIndex*> vToDownload;
             NodeId staller = -1;
-            auto get_inflight_budget = [&state]() {
-                return std::max(0, MAX_BLOCKS_IN_TRANSIT_PER_PEER - static_cast<int>(state.vBlocksInFlight.size()));
+            auto get_inflight_budget = [&state, inflight_limit]() {
+                return std::max(0, inflight_limit - static_cast<int>(state.vBlocksInFlight.size()));
             };
 
             // If there are multiple chainstates, download blocks for the

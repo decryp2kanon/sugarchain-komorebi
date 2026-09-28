@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT / 'test/functional'))
 from test_framework.blocktools import create_block, create_coinbase
 from test_framework.messages import CBlockHeader, MSG_BLOCK, MSG_TYPE_MASK, msg_block, msg_headers
 from test_framework.p2p import NetworkThread, P2PDataStore, p2p_lock
+from test_framework.script import CScript, OP_RETURN
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal
 
@@ -37,11 +38,13 @@ class DelayedPeer(P2PDataStore):
         self.peak_pending = 0
         self.requests = 0
         self.bytes_sent = 0
+        self.batch_sizes = []
 
     def on_getheaders(self, message):
         pass  # The harness announces the complete deterministic header chain.
 
     def on_getdata(self, message):
+        self.batch_sizes.append(sum(inv.type & MSG_TYPE_MASK == MSG_BLOCK for inv in message.inv))
         for inv in message.inv:
             if inv.type & MSG_TYPE_MASK != MSG_BLOCK:
                 continue
@@ -65,6 +68,8 @@ class BlockDownloadBenchmark(BitcoinTestFramework):
         parser.add_argument('--latency-ms', type=float, default=50)
         parser.add_argument('--expected-inflight', type=int, default=16)
         parser.add_argument('--node-arg', action='append', default=[])
+        parser.add_argument('--near-tip', action='store_true', help='exercise transition out of IBD')
+        parser.add_argument('--padding-bytes', type=int, default=0, help='valid unspendable output for large-block stress')
         parser.add_argument('--result', type=Path, required=True)
 
     def set_test_params(self):
@@ -72,20 +77,27 @@ class BlockDownloadBenchmark(BitcoinTestFramework):
         self.num_nodes = 1
         self.supports_cli = False
         self.extra_args = [['-conf=bitcoin.conf', '-disablewallet=1', '-assumevalid=0',
-                            '-v2transport=0', '-dbcache=256'] + self.options.node_arg]
+                            '-v2transport=0', '-dbcache=256', '-debug=0',
+                            # Match mainnet's default diagnostic policy; the
+                            # separate stall/regression tests keep index audits.
+                            '-checkblockindex=0'] + self.options.node_arg]
 
     def run_test(self):
         opt = self.options
         assert 1 <= opt.blocks <= 20000 and 1 <= opt.peers <= 8
         assert 0 <= opt.latency_ms <= 1000 and opt.expected_inflight >= 1
+        assert 0 <= opt.padding_bytes <= 900000
         assert not opt.result.exists()
         node = self.nodes[0]
         assert_equal(node.getpeerinfo(), [])
         tip = int(node.getbestblockhash(), 16)
         stamp = node.getblock(node.getbestblockhash())['time']
+        if opt.near_tip:
+            stamp = int(time.time()) - opt.blocks - 10
         blocks = []
+        padding = CScript([OP_RETURN, bytes(opt.padding_bytes)]) if opt.padding_bytes else None
         for height in range(1, opt.blocks + 1):
-            block = create_block(tip, create_coinbase(height), stamp + height)
+            block = create_block(tip, create_coinbase(height, extra_output_script=padding), stamp + height)
             block.solve()
             tip = block.hash_int
             blocks.append(block)
@@ -116,6 +128,9 @@ class BlockDownloadBenchmark(BitcoinTestFramework):
         with p2p_lock:
             assert all(peer.pending == 0 and peer.peak_pending <= opt.expected_inflight for peer in peers)
             counts = [{'requests': p.requests, 'peak_pending': p.peak_pending, 'bytes_sent': p.bytes_sent} for p in peers]
+            if opt.near_tip:
+                assert all(size <= 16 for peer in peers for size in peer.batch_sizes[1:])
+        assert_equal(node.getblockchaininfo()['initialblockdownload'], not opt.near_tip)
         result = {'proxy': 'localhost_regtest_block_download', 'blocks': opt.blocks,
                   'peers': opt.peers, 'response_delay_ms': opt.latency_ms,
                   'seconds': seconds, 'blocks_per_second': opt.blocks / seconds,
@@ -123,6 +138,8 @@ class BlockDownloadBenchmark(BitcoinTestFramework):
                   'peak_inflight_per_peer': peak_inflight, 'peer_counters': counts,
                   'tip': node.getbestblockhash(), 'utxo': utxo['hash_serialized_3'],
                   'verifychain': True, 'binary_sha256': hashlib.sha256(Path(node.process.args[0]).read_bytes()).hexdigest(),
+                  'near_tip': opt.near_tip,
+                  'padding_bytes': opt.padding_bytes,
                   'node_args': self.extra_args[0]}
         with opt.result.open('x') as output:
             output.write(json.dumps(result, indent=2) + '\n')
