@@ -227,6 +227,23 @@ check is scheduled every ten minutes. The fixture now advances beyond both
 thresholds; all five tests in `denialofservice_tests` pass. Production peer
 timers, connection limits and eviction rules are unchanged.
 
+## Existing subsidy-test assumptions
+
+The wider block/chainstate/cache regression selection initially reported two
+failures in `validation_tests`: a hardcoded 50-coin initial subsidy and a
+14-million-block sum expected to exhaust Bitcoin's subsidy schedule. Both
+failures were reproduced with the preserved pre-optimization bootstrap binary.
+Official Sugarchain `64bc05ccc1dc2dcd4db9e86715c14dee12be6460`
+(`src/validation.cpp`, `src/chainparams.cpp`) specifies 4,294,967,296 base units
+and 12,500,000-block epochs. Production already implements those values.
+
+The fixtures now assert those mainnet constants, test both sides of halving
+boundaries, retain Bitcoin-style synthetic interval tests, and sum all 64 epochs
+against the independent scheduled-reward total 107,374,182,387,500,000 base units.
+No monetary production code changed. All 45 cases selected by
+`validation_tests,validation_block_tests,validation_chainstatemanager_tests,validation_chainstate_tests,validation_flush_tests,blockmanager_tests,blockencodings_tests,txdownload_tests,peerman_tests,cuckoocache_tests`
+then passed.
+
 ## Bounded parallel header PoW
 
 `-parpow=1` preserves serial verification by default. Values are clamped to 1-8.
