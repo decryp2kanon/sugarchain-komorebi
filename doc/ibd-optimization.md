@@ -371,6 +371,41 @@ the ASan/UBSan selection (`header_pow_tests,sugarshield_tests,headers_sync_chain
 passed with leak detection and halt-on-error enabled. This is a local cold-proof
 measurement, not a full IBD result or a guarantee on other memory/page policies.
 
+## Header-first offline block validation diagnostic
+
+`contrib/bench/warm-block-import.py` uses the functional framework's isolated
+mainnet node and localhost peer, supplies genuine header proofs first, then
+submits the corresponding real blocks through RPC. It preserves the production
+minimum chainwork: the fixture must still be in PRESYNC with accepted height zero
+before explicit block submission. This measures proof/validation reuse, **not**
+public-network IBD or download scheduling. The fixture must begin at block 1 and
+contain a multiple of 2000 headers. The caller supplies expected tip and UTXO hash.
+
+```sh
+BITCOIND="$PWD/build-ibd-optimization/bin/sugarchaind" \
+  python3 contrib/bench/warm-block-import.py \
+  --configfile=build-ibd-optimization/test/config.ini \
+  --tmpdir=/path/to/new-benchmark-directory --nocleanup \
+  --blocks=/path/to/6000-blocks.dat --workers=8 \
+  --expected-tip=e7a04205f70e5b6e99d83a8f720748fee559a382701b39ff9891e391e6cf81d9 \
+  --expected-utxo=94fda3c59b6d6410687bfacd26d858d0f85b86f6913b90016b7b02f72b3f13b8
+```
+
+One diagnostic run of each variant gave:
+
+| Variant | First 6000 headers | RPC block submission/validation | Normal shutdown |
+| --- | ---: | ---: | ---: |
+| Original bootstrap | 17.8674 s | 39.5962 s | 0.1511 s |
+| Cache/parallel/mapping candidate | 2.9901 s | 2.4906 s | 0.1509 s |
+
+Both returned the exact expected tip and UTXO hash, passed `verifychain 4 6000`,
+shut down, restarted with no peers, and passed the same checks again. The tool's
+RPC timeout was increased after an initial baseline attempt exceeded the
+framework's 30-second RPC timeout during uncached verifychain. That interrupted
+attempt is not a successful measurement. Verification/restart/startup times are
+outside the reported phases; these single-run figures are diagnostic rather than
+a replacement for the A/B/B/A comparison or an extrapolated full IBD duration.
+
 Run the localhost mainnet functional regression using the framework's existing
 binary override (the test itself selects its temporary config explicitly):
 
