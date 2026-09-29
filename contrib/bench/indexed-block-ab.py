@@ -69,8 +69,8 @@ def main():
     p.add_argument('--timeout', type=int, default=1200)
     p.add_argument('--work-dir', type=Path, required=True, help='must not exist')
     args = p.parse_args()
-    if not 1 <= args.count <= 100000 or args.timeout <= 0:
-        p.error('count must be 1..100000 and timeout positive')
+    if not 1 <= args.count <= 1000000 or args.timeout <= 0:
+        p.error('count must be 1..1000000 and timeout positive')
     if args.dbcache_mib is not None and not 4 <= args.dbcache_mib <= 16384:
         p.error('dbcache-mib must be 4..16384')
     if args.mempool_mb is not None and not 5 <= args.mempool_mb <= 16384:

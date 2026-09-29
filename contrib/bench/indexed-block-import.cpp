@@ -108,7 +108,7 @@ int main(int argc, char** argv)
         while (input.read(reinterpret_cast<char*>(prefix.data()), prefix.size())) {
             if (!std::equal(prefix.begin(), prefix.begin()+4, chainman.GetParams().MessageStart().begin())) throw std::runtime_error("Wrong magic");
             const auto size{ReadLE32(prefix.data()+4)};
-            if (size <= 80 || size > 4'000'000 || blocks.size() >= 100'000) throw std::runtime_error("Fixture bounds");
+            if (size <= 80 || size > 4'000'000 || blocks.size() >= 1'000'000) throw std::runtime_error("Fixture bounds");
             std::vector<std::byte> data(size);
             if (!input.read(reinterpret_cast<char*>(data.data()), size)) throw std::runtime_error("Truncated block");
             DataStream stream{data};
@@ -128,6 +128,7 @@ int main(int argc, char** argv)
                   << ",\"dbcache_mib\":" << dbcache << ",\"transactions\":" << transactions
                   << ",\"non_coinbase_inputs\":" << non_coinbase_inputs
                   << ",\"fixture_bytes\":" << fixture_bytes
+                  << ",\"header_batch_size\":2000"
                   << ",\"coins_cache_bytes\":" << chainman.ActiveChainstate().m_coinstip_cache_size_bytes
                   << ",\"coins_db_cache_bytes\":" << chainman.ActiveChainstate().m_coinsdb_cache_size_bytes
                   << ",\"block_tree_cache_bytes\":" << setup->m_kernel_cache_sizes.block_tree_db
@@ -151,9 +152,16 @@ int main(int argc, char** argv)
         std::cout << "phase,blocks,seconds,yespower_calls,yespower_cpu_ns,chainstate_write_events,tip_log_events,log_bytes\n";
         run("headers", [&] {
             HeaderPoWVerifier verifier{8};
-            if (!verifier.Check(headers, chainman.GetConsensus())) throw std::runtime_error("Invalid proof");
-            BlockValidationState state;
-            if (!chainman.ProcessNewBlockHeaders(headers, true, state, nullptr)) throw std::runtime_error(state.ToString());
+            // Match wire-message-sized verification/acceptance. Verifying a
+            // million headers before accepting any artificially evicts early
+            // proofs and measures serial recomputation absent from this path.
+            for (size_t pos{0}; pos < headers.size(); pos += 2000) {
+                const auto last{std::min(headers.size(), pos + 2000)};
+                const std::vector<CBlockHeader> batch{headers.begin() + pos, headers.begin() + last};
+                if (!verifier.Check(batch, chainman.GetConsensus())) throw std::runtime_error("Invalid proof");
+                BlockValidationState state;
+                if (!chainman.ProcessNewBlockHeaders(batch, true, state, nullptr)) throw std::runtime_error(state.ToString());
+            }
         });
         if (std::string_view{argv[2]} == "cold") InitYespowerVerificationCache(DEFAULT_YESPOWER_CACHE_BYTES);
         run(argv[2], [&] {

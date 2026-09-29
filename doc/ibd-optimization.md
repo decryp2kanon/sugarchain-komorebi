@@ -706,8 +706,10 @@ remain unmeasured and belong to the user's final validation.
 ## Follow-up: user-reported block-stage bottleneck (2026-09-29)
 
 The additional development window started at 2026-09-29 15:23:24 +09:00.
-The user replaced the original 48-hour limit with a remaining 12-hour budget
-at 2026-09-29 19:31:55 +09:00, ending no later than 2026-09-30 07:31:55 +09:00.
+The user superseded all earlier 48-hour/12-hour budgets and deadlines with an
+absolute final deadline of 2026-09-30 00:00:00 +09:00 (KST).
+The final hour, starting 2026-09-29 23:00:00 +09:00, is reserved for landing:
+no new large experiments or long benchmarks, and no weakened validation gates.
 Validated logical checkpoints
 are pushed immediately; a checkpoint is not completion of this investigation.
 Startup, block-index loading, startup memory, shutdown and flush latency
@@ -1248,3 +1250,40 @@ full level-4 verifychain. Its block phase takes 5.07966s, recorded as a regressi
 check rather than a separate performance claim.
 The final real-header localhost P2P/restart and functional shutdown tests also
 pass. No public-mainnet run or user-node profiling was performed.
+
+### Million-block scale check and remaining file-I/O cost
+
+The indexed component harness now accepts up to one million blocks and verifies
+and accepts headers in 2000-header batches. Verifying an entire million-header
+vector before accepting any of it would evict early individual proofs and
+artificially introduce serial recomputation unlike the production message path.
+This is a benchmark correction, not a change to mainnet admission or validation.
+The harness continues to supply its explicit minimum-work precondition solely
+to isolate the indexed block component; it is not a network-IBD experiment.
+
+A read-only scan of preserved legacy block files found an unambiguous connected
+prefix from Sugarchain genesis. The million-block fixture contains 1119452
+transactions and 2132991 non-coinbase inputs in 669364143 bytes. Its block-file
+SHA256 is `ade30e041bcae02445b63614b0252ff2d55b76d3b80986dc663344ac22b754c0`.
+This local chain selection is not an independently authenticated canonical tip;
+all PoW, difficulty, transaction, script and chainstate checks still run.
+
+With eight PoW workers, 15 script workers, actual 512MiB DB / 300MB mempool
+budgets, ordinary progress file logging and a profiler enabled only for the
+block phase, the run reports:
+
+- Header phase: 434.597s, exactly 1000000 genuine Yespower calls.
+- Block phase: 56.0169s, zero additional Yespower calls.
+- Tip: `09246c3d203e709775281602bc710622ccbd4455010a745b0bdb13bb2c0858b0`.
+- UTXO: `81c16f59dc75a4d81bc624556ae9a942e845f63a369208ea24f0033df9360bab`.
+- Full level-4 verifychain: PASS. These larger-fixture hashes are newly recorded
+  regression references, not previously published mainnet checkpoint constants.
+
+The 17063-sample block-stage CPU profile attributes 22.8% cumulatively to script
+verification (including 19.2% ECDSA), 18.1% to FlatFileSeq::Open, 7.4% to fseek
+and 4.6% to CCoinsViewCache::Flush. Nested percentages overlap and must not be
+added. This identifies file-opening/positioning as a remaining measured cost;
+it does not establish a full-chain disk bottleneck. Input blocks are preloaded,
+Internet scheduling is absent, and this early million-block transaction mix and
+index size cannot represent all 44.65 million blocks. Profiled elapsed times are
+not a new unprofiled A/B speedup or a full-IBD forecast.
