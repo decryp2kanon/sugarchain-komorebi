@@ -877,3 +877,33 @@ daemon, CLI and IPC targets build; localhost in-flight/stall tests pass over
 both v1 and v2 transports, as does the existing shutdown test.
 ThreadSanitizer also passes four targeted cache-reset, live-index restoration,
 shared-worker-pool and worker-lifetime cases (64 assertions).
+
+### Separating peer supply from local validation
+
+`block-download.py --peer-service-ms VALUE` (repeat once per peer) adds a
+serial service cost per block, independently of response latency. The existing
+zero-service default remains available. External counters record request gaps,
+batch counts and timer delivery lateness so harness saturation is visible.
+This is a deliberately controlled regtest supply model, not a measurement of
+any public peer's CPU or throughput.
+
+With 50ms latency and 4ms/block service, one peer supplied 1024 blocks at
+244.97/s; four peers supplied 4096 at 909.22/s with the default 16 outstanding
+requests, or 951.37/s at the opt-in 128. Those results are close to the imposed
+250/s per-peer ceiling; simply raising the limit cannot eliminate that ceiling.
+
+A mixed fixture (one 20ms/block peer, three 1ms/block peers, all 50ms latency)
+exposes a different bottleneck. With 128 outstanding requests it took 10.586s
+(386.94 blocks/s), with roughly 6.7s of request gaps on each fast peer. At 16
+outstanding it took 4.677s (875.78/s), with no measured request gaps. Both runs
+produced the same tip/UTXO and passed verifychain. The node consumed only
+1.70s/1.27s CPU respectively. This reproduces head-of-line/window effects in
+the proxy and motivates a bounded delivery-aware budget experiment; it does
+not identify the lost public-mainnet run's peers as having these properties.
+
+A separate localhost two-peer diagnostic kept one peer at PRESYNC height 4000
+after the other had admitted 6000 headers. Initially only the latter was a
+block supplier. An INV for the already indexed tip immediately made the former
+a supplier too, even while its PRESYNC state remained active. Therefore stale
+PRESYNC alone does not prove a peer is unable to supply blocks. No production
+presync bypass or peer-state reset is added on that hypothesis.

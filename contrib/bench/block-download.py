@@ -3,8 +3,8 @@
 # Distributed under the MIT software license, see the accompanying file COPYING.
 """Localhost block-download pipeline proxy with deterministic regtest blocks.
 
-Adds a fixed response delay per getdata request without blocking the networking
-thread. Measures scheduling/validation/disk ingestion, NOT mainnet Yespower,
+Adds response latency and optional serial per-peer service time without blocking
+the networking thread. Measures scheduling/validation/disk ingestion, NOT mainnet Yespower,
 PRESYNC, Internet bandwidth, late-chain scripts or full IBD completion time.
 """
 import hashlib
@@ -30,10 +30,16 @@ def process_cpu(pid):
 
 
 class DelayedPeer(P2PDataStore):
-    def __init__(self, blocks, delay):
+    def __init__(self, blocks, delay, service=0):
         super().__init__()
         self.block_store = blocks
         self.delay = delay
+        self.service = service
+        self.next_delivery = 0
+        self.first_request = None
+        self.last_delivery = None
+        self.request_gap_seconds = 0
+        self.delivery_lateness_seconds = 0
         self.pending = 0
         self.peak_pending = 0
         self.requests = 0
@@ -44,6 +50,11 @@ class DelayedPeer(P2PDataStore):
         pass  # The harness announces the complete deterministic header chain.
 
     def on_getdata(self, message):
+        now = time.monotonic()
+        if self.first_request is None:
+            self.first_request = now
+        if self.pending == 0 and self.last_delivery is not None:
+            self.request_gap_seconds += now - self.last_delivery
         self.batch_sizes.append(sum(inv.type & MSG_TYPE_MASK == MSG_BLOCK for inv in message.inv))
         for inv in message.inv:
             if inv.type & MSG_TYPE_MASK != MSG_BLOCK:
@@ -52,13 +63,19 @@ class DelayedPeer(P2PDataStore):
             self.pending += 1
             self.peak_pending = max(self.peak_pending, self.pending)
             block = self.block_store[inv.hash]
-            def deliver(block=block):
+            # Latency can overlap, but one peer's work is serialized. This
+            # models a serving CPU/storage bottleneck independently of RTT.
+            due = max(now + self.delay, self.next_delivery) + self.service
+            self.next_delivery = due
+            def deliver(block=block, due=due):
                 with p2p_lock:
                     self.pending -= 1
+                    self.last_delivery = time.monotonic()
+                    self.delivery_lateness_seconds += max(0, self.last_delivery - due)
                     if self.is_connected:
                         self.bytes_sent += len(block.serialize())
                         self.send_without_ping(msg_block(block))
-            NetworkThread.network_event_loop.call_later(self.delay, deliver)
+            NetworkThread.network_event_loop.call_later(max(0, due - time.monotonic()), deliver)
 
 
 class BlockDownloadBenchmark(BitcoinTestFramework):
@@ -66,6 +83,8 @@ class BlockDownloadBenchmark(BitcoinTestFramework):
         parser.add_argument('--blocks', type=int, default=4096)
         parser.add_argument('--peers', type=int, default=4)
         parser.add_argument('--latency-ms', type=float, default=50)
+        parser.add_argument('--peer-service-ms', type=float, action='append', default=[],
+                            help='repeat once per peer; serial service cost per block (default 0)')
         parser.add_argument('--expected-inflight', type=int, default=16)
         parser.add_argument('--node-arg', action='append', default=[])
         parser.add_argument('--near-tip', action='store_true', help='exercise transition out of IBD')
@@ -87,6 +106,8 @@ class BlockDownloadBenchmark(BitcoinTestFramework):
         assert 1 <= opt.blocks <= 20000 and 1 <= opt.peers <= 8
         assert 0 <= opt.latency_ms <= 1000 and opt.expected_inflight >= 1
         assert 0 <= opt.padding_bytes <= 900000
+        services = opt.peer_service_ms or [0] * opt.peers
+        assert len(services) == opt.peers and all(0 <= value <= 100 for value in services)
         assert not opt.result.exists()
         node = self.nodes[0]
         assert_equal(node.getpeerinfo(), [])
@@ -102,7 +123,7 @@ class BlockDownloadBenchmark(BitcoinTestFramework):
             tip = block.hash_int
             blocks.append(block)
         store = {block.hash_int: block for block in blocks}
-        peers = [node.add_outbound_p2p_connection(DelayedPeer(store, opt.latency_ms / 1000),
+        peers = [node.add_outbound_p2p_connection(DelayedPeer(store, opt.latency_ms / 1000, services[i] / 1000),
                  p2p_idx=i, connection_type='outbound-full-relay') for i in range(opt.peers)]
         cpu_start = process_cpu(node.process.pid)
         python_start = time.process_time()
@@ -127,12 +148,16 @@ class BlockDownloadBenchmark(BitcoinTestFramework):
         utxo = node.gettxoutsetinfo()
         with p2p_lock:
             assert all(peer.pending == 0 and peer.peak_pending <= opt.expected_inflight for peer in peers)
-            counts = [{'requests': p.requests, 'peak_pending': p.peak_pending, 'bytes_sent': p.bytes_sent} for p in peers]
+            counts = [{'requests': p.requests, 'peak_pending': p.peak_pending, 'bytes_sent': p.bytes_sent,
+                       'service_ms': p.service * 1000, 'request_gap_seconds': p.request_gap_seconds,
+                       'delivery_lateness_seconds': p.delivery_lateness_seconds,
+                       'request_batches': len(p.batch_sizes)} for p in peers]
             if opt.near_tip:
                 assert all(size <= 16 for peer in peers for size in peer.batch_sizes[1:])
         assert_equal(node.getblockchaininfo()['initialblockdownload'], not opt.near_tip)
         result = {'proxy': 'localhost_regtest_block_download', 'blocks': opt.blocks,
                   'peers': opt.peers, 'response_delay_ms': opt.latency_ms,
+                  'peer_service_ms': services,
                   'seconds': seconds, 'blocks_per_second': opt.blocks / seconds,
                   'node_cpu_seconds': node_cpu, 'harness_cpu_seconds': python_cpu,
                   'peak_inflight_per_peer': peak_inflight, 'peer_counters': counts,
