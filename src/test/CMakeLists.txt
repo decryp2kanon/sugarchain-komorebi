@@ -52,6 +52,7 @@ add_executable(test_bitcoin
   header_pow_tests.cpp
   httpserver_tests.cpp
   i2p_tests.cpp
+  ibd_tip_logging_tests.cpp
   interfaces_tests.cpp
   key_io_tests.cpp
   key_tests.cpp

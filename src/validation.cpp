@@ -2928,6 +2928,13 @@ void Chainstate::UpdateTip(const CBlockIndex* pindexNew)
             }
         }
     }
+    // Keep IBD progress visible without formatting/writing every historical tip.
+    // Always log catch-up, normal operation, and explicitly requested detail.
+    const auto now{MockableSteadyClock::now()};
+    if (m_chainman.IsInitialBlockDownload() && pindexNew != m_chainman.m_best_header &&
+        !util::log::ShouldLog(BCLog::VALIDATION, BCLog::Level::Debug) &&
+        m_last_tip_log && now >= *m_last_tip_log && now - *m_last_tip_log < 1s) return;
+    m_last_tip_log = now;
     UpdateTipLog(m_chainman, coins_tip, pindexNew, __func__, "",
                  util::Join(warning_messages, Untranslated(", ")).original);
 }

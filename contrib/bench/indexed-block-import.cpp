@@ -36,12 +36,13 @@ const std::function<std::string()> G_TEST_GET_FULL_NAME{};
 unsigned long long YespowerProfileCalls();
 unsigned long long YespowerProfileCPU();
 static std::atomic<uint64_t> chainstate_write_events{0};
+static std::atomic<uint64_t> tip_log_events{0};
 
 int main(int argc, char** argv)
 {
     try {
         if (argc < 3 || argc > 7 || (std::string_view{argv[2]} != "warm" && std::string_view{argv[2]} != "cold")) {
-            throw std::runtime_error("Usage: indexed-block-import BLOCK_FILE warm|cold [SCRIPT_WORKERS(0-15) [DBCACHE_MIB(4-16384) [MEMPOOL_MB(5-16384) [--log-coindb]]]]");
+            throw std::runtime_error("Usage: indexed-block-import BLOCK_FILE warm|cold [SCRIPT_WORKERS(0-15) [DBCACHE_MIB(4-16384) [MEMPOOL_MB(5-16384) [--log-coindb|--log-info-file]]]]");
         }
         auto number = [](std::string_view input, int minimum, int maximum) {
             int value{};
@@ -54,12 +55,15 @@ int main(int argc, char** argv)
         const int script_workers{argc >= 4 ? number(argv[3], 0, MAX_SCRIPTCHECK_THREADS) : 2};
         const int dbcache{argc >= 5 ? number(argv[4], 4, 16384) : 512};
         const int mempool_mb{argc >= 6 ? number(argv[5], 5, 16384) : 300};
-        const bool log_coindb{argc == 7};
-        if (log_coindb && std::string_view{argv[6]} != "--log-coindb") throw std::runtime_error("Unknown diagnostic option");
+        const bool log_coindb{argc == 7 && std::string_view{argv[6]} == "--log-coindb"};
+        const bool log_info_file{argc == 7 && std::string_view{argv[6]} == "--log-info-file"};
+        if (argc == 7 && !log_coindb && !log_info_file) throw std::runtime_error("Unknown diagnostic option");
         const std::string dbcache_arg{"-dbcache=" + std::to_string(dbcache)};
         const std::string mempool_arg{"-maxmempool=" + std::to_string(mempool_mb)};
         const auto setup{MakeNoLogFileContext<ChainTestingSetup>(ChainType::MAIN,
-            TestOpts{.extra_args={"-checkblockindex=0", "-assumevalid=0", dbcache_arg.c_str(), mempool_arg.c_str()},
+            TestOpts{.extra_args={"-checkblockindex=0", "-assumevalid=0", dbcache_arg.c_str(), mempool_arg.c_str(),
+                                 log_info_file ? "-debuglogfile=benchmark-debug.log" : "-nodebuglogfile",
+                                 "-nologthreadnames", "-nologsourcelocations", "-nologtimemicros"},
                      .coins_db_in_memory=false, .block_tree_db_in_memory=false, .setup_net=false})};
         // Unit fixtures hard-code a full index audit after every header/block.
         // Match production mainnet's diagnostic policy on BOTH benchmark arms;
@@ -86,12 +90,13 @@ int main(int argc, char** argv)
         setup->m_coins_db_in_memory = false;
         setup->LoadVerifyActivateChainstate();
         auto& chainman{*setup->m_node.chainman};
-        if (log_coindb) {
+        if (log_coindb || log_info_file) {
             // Diagnostic-only: enabling a logger also enables formatting other
             // messages. Do not compare this timing with an unlogged run.
-            LogInstance().EnableCategory(BCLog::COINDB);
+            if (log_coindb) LogInstance().EnableCategory(BCLog::COINDB);
             LogInstance().PushBackCallback([](const std::string& message) {
                 if (message.find("Writing chainstate to disk:") != std::string::npos) ++chainstate_write_events;
+                if (message.find("UpdateTip: new best=") != std::string::npos) ++tip_log_events;
             });
         }
         std::ifstream input{argv[1], std::ios::binary};
@@ -127,19 +132,23 @@ int main(int argc, char** argv)
                   << ",\"coins_db_cache_bytes\":" << chainman.ActiveChainstate().m_coinsdb_cache_size_bytes
                   << ",\"block_tree_cache_bytes\":" << setup->m_kernel_cache_sizes.block_tree_db
                   << ",\"mempool_max_bytes\":" << node.mempool->m_opts.max_size_bytes
-                  << ",\"coindb_logging\":" << (log_coindb ? "true" : "false") << "}" << std::endl;
+                  << ",\"coindb_logging\":" << (log_coindb ? "true" : "false")
+                  << ",\"info_file_logging\":" << (log_info_file ? "true" : "false") << "}" << std::endl;
         InitYespowerVerificationCache(DEFAULT_YESPOWER_CACHE_BYTES);
         auto run = [&](const char* name, auto action) {
             const auto calls{YespowerProfileCalls()}, cpu{YespowerProfileCPU()};
             const auto writes{chainstate_write_events.load()};
+            const auto tips{tip_log_events.load()};
+            const auto log_bytes{log_info_file ? fs::file_size(LogInstance().m_file_path) : 0};
             const auto start{std::chrono::steady_clock::now()};
             action();
             std::cout << name << ',' << blocks.size() << ','
                       << std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count() << ','
                       << YespowerProfileCalls()-calls << ',' << YespowerProfileCPU()-cpu
-                      << ',' << chainstate_write_events.load()-writes << std::endl;
+                      << ',' << chainstate_write_events.load()-writes << ',' << tip_log_events.load()-tips
+                      << ',' << (log_info_file ? fs::file_size(LogInstance().m_file_path)-log_bytes : 0) << std::endl;
         };
-        std::cout << "phase,blocks,seconds,yespower_calls,yespower_cpu_ns,chainstate_write_events\n";
+        std::cout << "phase,blocks,seconds,yespower_calls,yespower_cpu_ns,chainstate_write_events,tip_log_events,log_bytes\n";
         run("headers", [&] {
             HeaderPoWVerifier verifier{8};
             if (!verifier.Check(headers, chainman.GetConsensus())) throw std::runtime_error("Invalid proof");

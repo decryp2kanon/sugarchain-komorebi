@@ -648,7 +648,7 @@ No source workaround or test expectation change was made. All other 24 selected
 network/peer/DoS cases passed ASan/UBSan (150395 assertions). Thus the full
 sanitizer suite is not claimed clean; this unrelated capture-path issue remains.
 
-## Final integration and measurement limits
+## Earlier integration checkpoint and measurement limits
 
 A separate clean `build-ibd-optimization-final` build completed with GUI, IPC,
 multiprocess, daemon, CLI and benchmarks enabled, using Cap'n Proto from
@@ -682,7 +682,7 @@ Two further experiments were not adopted:
   22.3435/21.9948 seconds versus pinned 23.0636/19.8457 seconds. No reliable
   affinity benefit was established and no CPU affinity policy was installed.
 
-No speculative larger scheduling window, adaptive peer scheduler, stall-timeout
+At that checkpoint, no speculative larger scheduling window, adaptive peer scheduler, stall-timeout
 override, block-index cache increase or tip-log suppression was retained. The
 available short fixtures do not establish those as current bottlenecks.
 
@@ -1134,3 +1134,51 @@ smokes pass, six invalid argument cases are rejected before fixture execution,
 and the runner rejects the preserved pre-fix binary's wrong actual cache split.
 Legacy binaries lacking active-budget telemetry are explicitly marked as not
 having verified actual cache budgets in the A/B result.
+
+### Periodic IBD tip logging without suppressing validation or notifications
+
+After the block-stage fixes, `UpdateTip` logging still represented 3.1% of the
+earlier CPU profile even without writing a log file. The indexed-import harness
+now offers `--log-info-file` to exercise ordinary unbuffered file logging in its
+own disposable directory. It reports tip-line counts and file-byte deltas, with
+normal production timestamp/source/thread-prefix defaults. Both A/B arms use
+the same logging mode and validated active resource budgets.
+
+During IBD, historical tips are logged at most once per second using the
+mockable steady clock. Reaching the best known header, leaving IBD, or enabling
+validation debug logging preserves the unthrottled tip output. Background
+chainstate logging is unchanged. The guard is after mempool notifications and
+warning handling, and changes only the final tip-log call. No consensus, block,
+script, state, flush or peer work is omitted.
+
+The 100000-real-block A/B/B/A comparison uses 15 script workers, eight PoW
+workers, an actual 512MiB DB budget and 300MB borrowable mempool on both arms:
+
+| Variant | Block-phase runs | Median | Tip lines | Log bytes per run |
+| --- | --- | --- | --- | --- |
+| Every historical tip | 6.72331s / 6.90980s | 6.81656s | 100000 | 23705468 |
+| Periodic IBD progress | 5.65889s / 5.58983s | 5.62436s | 7 | 1812 |
+
+This is 1.212x component throughput (17.5% less elapsed block-phase time), not a
+full-mainnet result. All four runs execute 100000 genuine first proofs and zero
+redundant block proofs, and match tip, UTXO digest and full level-4 verification.
+
+New deterministic tests cover the 999ms/1s boundary, repeated calls, elapsed and
+reset clocks, unchanged chainstate/mempool update notifications, non-IBD and
+debug behavior, and final catch-up visibility. A combined run initially exposed
+test-global logging categories inherited from another suite; the fixture now
+explicitly saves, clears and restores them. Production logic was not changed to
+hide that fixture problem. The corrected combined release run passes 67 cases /
+433165 assertions. Functional logging, shutdown and real-header localhost
+P2P/restart tests pass, as does the full GUI/daemon/CLI/IPC build.
+
+ASan/UBSan passes the 25 selected logging/validation cases (3424 assertions)
+with leak detection and halt-on-error enabled. TSan is **not recorded as a
+pass**: it reports a scheduler mutex double-lock during fixture construction,
+before the new test assertions. The same report is reproduced with the
+pre-change `validation.cpp` linked into a diagnostic binary (the unused new
+field remains for ABI consistency), as well as in existing validation tests.
+No suppression, sanitizer option weakening, scheduler modification or production
+workaround was added. This leaves the local TSan fixture limitation unresolved;
+it does not establish a new tip-logging race. The new timestamp is accessed only
+under the existing `cs_main` lock and introduces no thread or asynchronous work.

@@ -39,11 +39,12 @@ def measurements(output, count, mode, tip, utxo):
     result = {r['phase']: {'seconds': float(r['seconds']), 'yespower_calls': int(r['yespower_calls']),
                           'yespower_cpu_ns': int(r['yespower_cpu_ns'])} for r in rows}
     for row in rows:
-        if 'chainstate_write_events' in row:
-            writes = int(row['chainstate_write_events'])
-            if writes < 0:
-                raise ValueError('Invalid chainstate write counter')
-            result[row['phase']]['chainstate_write_events'] = writes
+        for field in ('chainstate_write_events', 'tip_log_events', 'log_bytes'):
+            if field in row:
+                value = int(row[field])
+                if value < 0:
+                    raise ValueError('Invalid diagnostic counter')
+                result[row['phase']][field] = value
     return result
 
 
@@ -62,7 +63,9 @@ def main():
     p.add_argument('--candidate-script-workers', type=int, choices=range(16), metavar='0..15')
     p.add_argument('--dbcache-mib', type=int, help='same DB cache budget for both arms (4..16384)')
     p.add_argument('--mempool-mb', type=int, help='same borrowable mempool budget in decimal MB (5..16384)')
-    p.add_argument('--log-coindb', action='store_true', help='count write events; adds logging overhead to BOTH arms')
+    logging = p.add_mutually_exclusive_group()
+    logging.add_argument('--log-coindb', action='store_true', help='count write events; adds logging overhead to BOTH arms')
+    logging.add_argument('--log-info-file', action='store_true', help='ordinary file logs and tip/byte counts on BOTH arms')
     p.add_argument('--timeout', type=int, default=1200)
     p.add_argument('--work-dir', type=Path, required=True, help='must not exist')
     args = p.parse_args()
@@ -86,15 +89,18 @@ def main():
             raise RuntimeError('Input/executable changed during comparison')
         command = [str(binaries[name]), str(blocks), args.mode]
         workers = getattr(args, f'{name}_script_workers')
-        resources_requested = workers is not None or args.dbcache_mib is not None or args.mempool_mb is not None or args.log_coindb
+        logged = args.log_coindb or args.log_info_file
+        resources_requested = workers is not None or args.dbcache_mib is not None or args.mempool_mb is not None or logged
         if resources_requested:
             command.append(str(2 if workers is None else workers))
-        if args.dbcache_mib is not None or args.mempool_mb is not None or args.log_coindb:
+        if args.dbcache_mib is not None or args.mempool_mb is not None or logged:
             command.append(str(512 if args.dbcache_mib is None else args.dbcache_mib))
-        if args.mempool_mb is not None or args.log_coindb:
+        if args.mempool_mb is not None or logged:
             command.append(str(300 if args.mempool_mb is None else args.mempool_mb))
         if args.log_coindb:
             command.append('--log-coindb')
+        if args.log_info_file:
+            command.append('--log-info-file')
         process = subprocess.run(command, capture_output=True,
                                  text=True, timeout=args.timeout)
         (args.work_dir / f'{number}-{name}.stdout').write_text(process.stdout)
@@ -112,7 +118,7 @@ def main():
                     or resources['transactions'] < args.count or resources['non_coinbase_inputs'] < 0
                     or resources['fixture_bytes'] != blocks.stat().st_size):
                 raise RuntimeError('Benchmark resource/input metadata mismatch')
-            if args.mempool_mb is not None or args.log_coindb or 'coins_cache_bytes' in resources:
+            if args.mempool_mb is not None or logged or 'coins_cache_bytes' in resources:
                 if (resources.get('mempool_max_bytes') != (300 if args.mempool_mb is None else args.mempool_mb) * 1_000_000
                         or resources.get('coindb_logging') != args.log_coindb):
                     raise RuntimeError('Mempool/logging metadata mismatch')
@@ -123,9 +129,14 @@ def main():
                         or resources.get('coins_db_cache_bytes') != coins_db
                         or resources.get('coins_cache_bytes') != total - block_tree - coins_db):
                     raise RuntimeError('Actual DB cache split mismatch')
+                if args.log_info_file and resources.get('info_file_logging') is not True:
+                    raise RuntimeError('File logging metadata mismatch')
         sample = measurements(process.stdout, args.count, args.mode, args.tip, args.utxo)
         if args.log_coindb and any('chainstate_write_events' not in phase for phase in sample.values()):
             raise RuntimeError('Missing requested write-event diagnostics')
+        if args.log_info_file and (sample[args.mode].get('log_bytes', 0) <= 0
+                                  or sample[args.mode].get('tip_log_events', 0) <= 0):
+            raise RuntimeError('Missing requested file/tip logging')
         if args.require_candidate_reuse and name == 'candidate' and sample[args.mode]['yespower_calls']:
             raise RuntimeError('Candidate repeated an indexed block proof')
         row = {'variant': name, 'command': command, 'resources': resources, 'measurements': sample}
