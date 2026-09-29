@@ -18,6 +18,7 @@
 #include <validation.h>
 
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <fstream>
 #include <iostream>
@@ -33,11 +34,22 @@ unsigned long long YespowerProfileCPU();
 int main(int argc, char** argv)
 {
     try {
-        if (argc != 3 || (std::string_view{argv[2]} != "warm" && std::string_view{argv[2]} != "cold")) {
-            throw std::runtime_error("Usage: indexed-block-import BLOCK_FILE warm|cold");
+        if (argc < 3 || argc > 5 || (std::string_view{argv[2]} != "warm" && std::string_view{argv[2]} != "cold")) {
+            throw std::runtime_error("Usage: indexed-block-import BLOCK_FILE warm|cold [SCRIPT_WORKERS(0-15) [DBCACHE_MIB(4-16384)]]");
         }
+        auto number = [](std::string_view input, int minimum, int maximum) {
+            int value{};
+            const auto [end, error]{std::from_chars(input.data(), input.data() + input.size(), value)};
+            if (error != std::errc{} || end != input.data() + input.size() || value < minimum || value > maximum) {
+                throw std::runtime_error("Invalid benchmark resource limit");
+            }
+            return value;
+        };
+        const int script_workers{argc >= 4 ? number(argv[3], 0, MAX_SCRIPTCHECK_THREADS) : 2};
+        const int dbcache{argc >= 5 ? number(argv[4], 4, 16384) : 512};
+        const std::string dbcache_arg{"-dbcache=" + std::to_string(dbcache)};
         const auto setup{MakeNoLogFileContext<ChainTestingSetup>(ChainType::MAIN,
-            TestOpts{.extra_args={"-checkblockindex=0", "-assumevalid=0", "-dbcache=512"},
+            TestOpts{.extra_args={"-checkblockindex=0", "-assumevalid=0", dbcache_arg.c_str()},
                      .coins_db_in_memory=false, .block_tree_db_in_memory=false, .setup_net=false})};
         // Unit fixtures hard-code a full index audit after every header/block.
         // Match production mainnet's diagnostic policy on BOTH benchmark arms;
@@ -47,7 +59,7 @@ int main(int argc, char** argv)
         ChainstateManager::Options options{
             .chainparams=Params(), .datadir=setup->m_args.GetDataDirNet(),
             .check_block_index=0, .notifications=*node.notifications,
-            .signals=node.validation_signals.get(), .worker_threads_num=2,
+            .signals=node.validation_signals.get(), .worker_threads_num=script_workers,
         };
         node::BlockManager::Options storage{
             .chainparams=options.chainparams, .blocks_dir=setup->m_args.GetBlocksDirPath(),
@@ -65,6 +77,7 @@ int main(int argc, char** argv)
         if (!input) throw std::runtime_error("Cannot open fixture");
         std::vector<std::shared_ptr<CBlock>> blocks;
         std::vector<CBlockHeader> headers;
+        uint64_t transactions{0}, non_coinbase_inputs{0}, fixture_bytes{0};
         std::array<unsigned char, 8> prefix;
         while (input.read(reinterpret_cast<char*>(prefix.data()), prefix.size())) {
             if (!std::equal(prefix.begin(), prefix.begin()+4, chainman.GetParams().MessageStart().begin())) throw std::runtime_error("Wrong magic");
@@ -76,10 +89,19 @@ int main(int argc, char** argv)
             auto block{std::make_shared<CBlock>()};
             stream >> TX_WITH_WITNESS(*block);
             if (!stream.empty()) throw std::runtime_error("Trailing block data");
+            transactions += block->vtx.size();
+            fixture_bytes += size + prefix.size();
+            for (const auto& tx : block->vtx) {
+                if (!tx->IsCoinBase()) non_coinbase_inputs += tx->vin.size();
+            }
             headers.push_back(*block);
             blocks.push_back(std::move(block));
         }
         if (!input.eof() || input.gcount() != 0 || blocks.empty()) throw std::runtime_error("Truncated/empty fixture or read failure");
+        std::cerr << "INDEXED_FIXTURE {\"script_workers\":" << script_workers
+                  << ",\"dbcache_mib\":" << dbcache << ",\"transactions\":" << transactions
+                  << ",\"non_coinbase_inputs\":" << non_coinbase_inputs
+                  << ",\"fixture_bytes\":" << fixture_bytes << "}" << std::endl;
         InitYespowerVerificationCache(DEFAULT_YESPOWER_CACHE_BYTES);
         auto run = [&](const char* name, auto action) {
             const auto calls{YespowerProfileCalls()}, cpu{YespowerProfileCPU()};

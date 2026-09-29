@@ -1015,3 +1015,40 @@ compilation of the unchanged yespower implementation measured 5.8571s versus
 Production allocator, instruction-set/compiler policy and system THP settings
 remain unchanged. These experiments are not claimed as speedups or full-IBD
 results; no new worker sweep was used for either A/B comparison.
+
+### Block CPU profile and representative script resources
+
+The 100000-block fixture contains 110846 transactions and 188638 non-coinbase
+inputs (62197382 serialized bytes). It therefore exercises genuine script
+validation, not only coinbase processing. A userspace CPU profile of the block
+phase, after all 100000 first header proofs, collected 2556 samples: 39.1% include
+script verification, 15.5% include `FlatFileSeq::Open`, and about 3.4% include
+directory creation/checking. These cumulative categories overlap and must not
+be added together. Block-phase Yespower calls were zero; tip/UTXO and level-4
+verification match the known fixture. This is an early-history fixture, not a
+profile of the deleted public run or of a 44-million-entry chainstate.
+
+Profiling used only a private build of [gperftools 2.16](https://github.com/gperftools/gperftools/tree/e1014dead2029b341d06027b4f2b5562d799d5b1),
+`libprofiler` (not tcmalloc), preloaded into the isolated benchmark. Its documented
+signal toggle started after the header row and stopped after the block row.
+Thus small phase-boundary scheduling delays are possible. No kernel profiling
+permission, system package, production binary or user node was changed.
+
+The benchmark previously fixed script workers at two. Optional positional
+arguments now select script workers (0--15) and DB cache MiB (4--16384), while
+preserving the old defaults and fixing Yespower at eight workers. Fixture and
+resource metadata go to stderr; the A/B runner verifies requested budgets and
+records complete commands. This is **not** further Yespower worker exploration.
+With the same binary and 512MiB DB cache, 100000-block A/B/B/A measured:
+
+| Additional script workers | Block-phase runs | Median |
+| --- | --- | --- |
+| 2 | 8.16022s / 7.94551s | 8.05287s |
+| 15 (existing Core31 cap) | 6.42140s / 6.30930s | 6.36535s |
+
+Both arms perform 100000 first proofs and no repeated block proofs, and match
+the exact tip/UTXO/verifychain result. The existing production auto-selection is
+retained: this comparison corrects proxy representativeness, not production
+code. Six malformed/out-of-range argument cases, a default-argument genuine
+block import, and a 0-versus-15 script-worker / 4MiB resource-boundary A/B smoke
+all pass. The one-block smoke is a tooling/correctness check, not speed evidence.
