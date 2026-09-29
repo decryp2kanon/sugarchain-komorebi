@@ -1411,3 +1411,37 @@ Only the two expected log strings now use the active chain's default port.
 All connection, duplicate-detection, peer-address and remaining log assertions
 are retained, and no production code changes are involved. The isolated peer
 connection case passes all 41 assertions before rerunning the broader gate.
+
+### Fresh production build and final-artifact checkpoint
+
+An empty, separate build directory was configured with `BUILD_GUI=ON`,
+`BUILD_BENCH=ON`, `ENABLE_IPC=ON`, `CMAKE_PREFIX_PATH=/usr/local` and
+`CMAKE_BUILD_TYPE=RelWithDebInfo`. The complete daemon, CLI, Qt, IPC/multiprocess
+and test build passed. The existing user build was not overwritten. Yespower
+still compiles with portable `-O2 -g -DNDEBUG` flags and the SSE2/x86-64 path;
+no `-march=native`, forced AVX path or compiler-policy change was introduced.
+
+After the two test-only port expectations above were corrected, the fresh
+binary passed 130 selected C++ cases / 660400 assertions. These include PoW,
+SugarShield, headers chainwork, peer management/connection/eviction, DoS,
+validation/chainstate, flatfile/block manager, queues, tip logging and IPC.
+Nine fresh-artifact functional scenarios also passed: Sugarchain header PoW,
+three download-limit configurations, both transport variants of IBD stalling,
+minimum-chainwork headers sync, initial headers sync and shutdown.
+
+A separate proof-trace daemon linked from this fresh build repeated the entire
+6000-block offline lifecycle gate. Initial import and restart each made 6003
+genuine calls, including every fixture header exactly once and three genesis
+checks; both matched the recorded tip/UTXO and full level-4 verifychain. The
+corrupted-header startup made 6004 calls, actually computed the altered proof
+and rejected the disk block. Networking stayed disabled and the supplied
+fixture checksum was unchanged. This tests evidence reconstruction and disk
+corruption rejection, not startup performance. The previously documented
+sanitizer limitations remain; this checkpoint does not claim every repository
+test or full sanitizer suite passes.
+
+The matched A/B/B/A measurements, input/output hashes, actual resource settings,
+genuine-proof counts and harness/binary hashes are preserved in
+[`indexed-block-ab-20260929.json`](../contrib/bench/results/indexed-block-ab-20260929.json).
+All eight runs passed the recorded correctness gates. These are repeatable
+offline component observations, not a full-mainnet result or a five-hour claim.
