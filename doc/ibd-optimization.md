@@ -1477,3 +1477,25 @@ IBD time, peer supply and CPU/RAM/disk/network behavior at full scale. Startup,
 block-index loading, startup RAM and shutdown/flush-latency optimization remain
 outside this PR. The fixed development deadline is 2026-09-30 00:00 KST; from
 23:00 KST only landing, necessary verification and documentation are scheduled.
+
+### Fixed-eight-worker cold-proof profile
+
+The fresh `eeadb41ca6` build's `bench_header_pow` was sampled over 100000 real
+headers at exactly eight workers and a 16MiB cache, with the separate local
+gperftools profiler. No worker sweep or production flag change was made.
+The cold pass performed 100000 genuine proofs; the repeated pass performed
+zero. Of 13255 CPU samples, the flat profile attributes 66.6% to
+`blockmix_xor_1_0` and 24.9% to `blockmix_xor_save_1_0` (91.4% together).
+Inline XOR accounts for another 4.4%, reported separately rather than added to
+overlapping cumulative percentages. This corroborates the earlier raw profile:
+the unchanged Yespower mixing core, not the queue or header serialization,
+dominates this cold component. It does not establish memory-stall attribution.
+
+This run includes profiler overhead and contextual fixture preparation; its
+41.1808-second cold / 0.110252-second repeated timings are diagnostic only,
+not a new A/B improvement or a full-IBD estimate. The input SHA256 is
+`f64a65677abdfa525b67d9a09291868fbfd1f9fb0d4089cdfafc3b2718dd07dd`;
+benchmark binary SHA256 is
+`60e5ab0e4e0049cfcc19eee4b9b07c3c6d989203e6a8366a6fb8faeb9c7685e1`.
+No further queue/worker tuning or speculative rewrite of the consensus-critical
+mixing core is justified by this profile alone.
