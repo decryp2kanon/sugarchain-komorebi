@@ -1287,3 +1287,38 @@ it does not establish a full-chain disk bottleneck. Input blocks are preloaded,
 Internet scheduling is absent, and this early million-block transaction mix and
 index size cannot represent all 44.65 million blocks. Profiled elapsed times are
 not a new unprofiled A/B speedup or a full-IBD forecast.
+
+### Rejected: descriptor positioning before stdio construction
+
+The million-block profile motivated a POSIX prototype that seeks a descriptor
+before `fdopen`, avoiding libc `fseek` prefix reads on newly opened streams.
+This uses the specified [fdopen offset semantics](https://www.man7.org/linux/man-pages/man3/fdopen.3p.html),
+not unsynchronized descriptor operations on an existing buffered stream. An
+initial 100000-block A/B/B/A prototype measured 5.25249s versus 4.89537s medians
+(6.8% less block-phase time). The smaller 21-line production candidate, retaining
+all Windows, zero-offset and file-creation paths, did not establish a similarly
+reliable gain: baseline 4.92361/5.19364s versus candidate 4.87841/5.09181s, medians
+5.05863s versus 4.98511s (1.45%), with overlapping ranges. It was **removed**;
+there is no retained descriptor-positioning production change.
+
+A separately traced 6000-block full import/verification explains the tradeoff:
+read calls fall from 84345 to 48355, but lseek rises from 36005 to 72004 and
+fcntl from 24 to 36023. Open/close counts match, as do 14 fdatasync and two fsync
+calls. Buffer alignment also changes write-call counts (12665 to 12161), while
+both tip/UTXO and full verifychain match. Strace timings are not benchmark
+results, and fewer reads alone do not establish a worthwhile throughput gain.
+Further variants were not pursued because expected benefit no longer justified
+expanding platform-specific file-I/O code in this iteration.
+
+Useful independent regression tests remain: offset/tell/read/write behavior at
+unaligned positions and page boundaries, sparse gaps, byte-for-byte preservation,
+update-stream direction changes and Linux failed-seek descriptor lifetime.
+The candidate had passed 80 release cases / 450585 assertions, then the added
+failed-seek case passed with all eight flatfile cases / 267 assertions. ASan/UBSan
+passed 15 flatfile/block-manager cases / 342 assertions. Functional blocksdir,
+readonly reindex, fastprune, XOR block/undo files and shutdown passed; the optional
+immutable-file `chattr` subcase was unavailable, while ordinary readonly checks
+ran. The retained tests are also checked against the restored production code.
+After removing the production candidate, the retained 15 flatfile/block-manager
+cases pass again in both release and ASan/UBSan (342 assertions each); the failed
+seek case also passes alone, without depending on other test initialization.

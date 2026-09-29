@@ -9,7 +9,17 @@
 #include <test/util/setup_common.h>
 
 #include <boost/test/unit_test.hpp>
+#include <algorithm>
+#include <array>
 #include <fstream>
+#include <iterator>
+#include <span>
+
+#ifdef __linux__
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 BOOST_FIXTURE_TEST_SUITE(flatfile_tests, BasicTestingSetup)
 
@@ -126,6 +136,74 @@ BOOST_AUTO_TEST_CASE(flatfile_open_directory_lifecycle)
         // The next open must recreate a removed parent; no cached existence bit.
     }
 }
+
+BOOST_AUTO_TEST_CASE(flatfile_offset_stream_position_and_contents)
+{
+    FlatFileSeq seq{m_args.GetDataDirBase(), "offset", 4096};
+    std::string expected(16384, '\0');
+    for (size_t i{0}; i < expected.size(); ++i) expected[i] = char(i % 251);
+    {
+        AutoFile file{seq.Open({0, 0})};
+        file.write(std::as_bytes(std::span{expected}));
+        BOOST_REQUIRE_EQUAL(file.fclose(), 0);
+    }
+    // Include unaligned/page-boundary offsets, existing data and a sparse gap.
+    for (const unsigned int offset : {0U, 1U, 255U, 4095U, 4096U, 4097U, 8192U, 16640U}) {
+        for (const bool read_only : {false, true}) {
+            FILE* file{seq.Open({0, offset}, read_only)};
+            BOOST_REQUIRE(file);
+            BOOST_CHECK_EQUAL(ftell(file), offset);
+            const int value{fgetc(file)};
+            if (offset < expected.size()) {
+                BOOST_CHECK_EQUAL(value, static_cast<unsigned char>(expected[offset]));
+                BOOST_CHECK_EQUAL(ftell(file), offset + 1);
+            } else {
+                BOOST_CHECK_EQUAL(value, EOF);
+                BOOST_CHECK(feof(file));
+                BOOST_CHECK_EQUAL(ftell(file), offset);
+            }
+            BOOST_REQUIRE_EQUAL(fclose(file), 0);
+        }
+        const std::array<unsigned char, 5> replacement{1, 2, 3, 4, 5};
+        {
+            FILE* file{seq.Open({0, offset})};
+            BOOST_REQUIRE(file);
+            BOOST_CHECK_EQUAL(ftell(file), offset);
+            BOOST_REQUIRE_EQUAL(fwrite(replacement.data(), 1, replacement.size(), file), replacement.size());
+            BOOST_CHECK_EQUAL(ftell(file), offset + replacement.size());
+            // An explicit seek switches an update stream from writing to reading.
+            BOOST_REQUIRE_EQUAL(fseek(file, offset, SEEK_SET), 0);
+            for (const auto value : replacement) BOOST_CHECK_EQUAL(fgetc(file), value);
+            BOOST_REQUIRE_EQUAL(fclose(file), 0);
+        }
+        if (expected.size() < offset + replacement.size()) expected.resize(offset + replacement.size(), '\0');
+        std::copy(replacement.begin(), replacement.end(), expected.begin() + offset);
+        std::ifstream input{seq.FileName({0, 0}).std_path(), std::ios::binary};
+        const std::string actual{std::istreambuf_iterator<char>{input}, {}};
+        BOOST_CHECK(actual == expected); // No truncation, shifted write or changed gap.
+        BOOST_CHECK_EQUAL(fs::file_size(seq.FileName({0, 0})), expected.size());
+    }
+    BOOST_CHECK(seq.Flush({0, static_cast<unsigned int>(expected.size())}));
+}
+
+#ifdef __linux__
+BOOST_AUTO_TEST_CASE(flatfile_failed_seek_closes_descriptor)
+{
+    FlatFileSeq seq{m_args.GetDataDirBase(), "fifo", 4096};
+    // Linux permits opening a FIFO read/write without a peer; seeking fails.
+    BOOST_REQUIRE_EQUAL(mkfifo(seq.FileName({0, 0}).c_str(), 0600), 0);
+    const int available{open("/dev/null", O_RDONLY)};
+    BOOST_REQUIRE_GE(available, 0);
+    BOOST_REQUIRE_EQUAL(close(available), 0);
+    for (int attempt{0}; attempt < 8; ++attempt) {
+        BOOST_CHECK(!seq.Open({0, 1}));
+        const int probe{open("/dev/null", O_RDONLY)};
+        BOOST_REQUIRE_GE(probe, 0);
+        BOOST_CHECK_EQUAL(probe, available); // Failed seek must not leak the fd.
+        BOOST_REQUIRE_EQUAL(close(probe), 0);
+    }
+}
+#endif
 
 BOOST_AUTO_TEST_CASE(flatfile_open_non_directory_parent)
 {
