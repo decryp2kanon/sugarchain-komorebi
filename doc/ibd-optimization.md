@@ -1354,3 +1354,45 @@ header but reject later headers. All callers finish with correct results and
 no active worker remains. Release passes all 16 header-PoW cases / 24264
 assertions; the new concurrency case independently passes ASan/UBSan and TSan
 (10 assertions each). No production code changes are part of this gate.
+
+### Matched-harness integration comparison
+
+The current indexed-import harness and genuine-call wrapper were compiled and
+linked separately against baseline `8ea9f131d9` and candidate `74f5902f41`.
+Both arms use eight PoW tasks, 15 script workers, an actually applied 512MiB DB
+cache / 300MB mempool budget, 2000-header batches and ordinary file logging.
+Two serialized A/B/B/A comparisons use the same 100000-block fixture: one
+deliberately resets the proof cache before blocks, the other retains it. This
+controls for earlier harness/resource corrections instead of combining numbers
+from different tools. No profiler, competing agent build or network run was
+started during these comparisons; unrelated host load remains uncontrolled.
+
+| Component / cache condition | Baseline runs (seconds) | Candidate runs (seconds) | Median ratio |
+| --- | --- | --- | --- |
+| Block phase, deliberately cold proof cache | 294.973 / 293.553 | 4.96177 / 5.05271 | 58.77x |
+| Block phase, retained proof cache | 6.36754 / 6.61234 | 5.06188 / 5.05790 | 1.283x |
+| Header + block phases, cold-cache mode | 336.68110 / 335.04670 | 47.17657 / 47.37201 | 7.105x |
+| Header + block phases, retained-cache mode | 48.39154 / 49.02244 | 47.52818 / 47.41700 | 1.026x |
+
+Every run performs exactly 100000 genuine first header proofs and matches the
+previously recorded tip/UTXO/full level-4 verifychain result. Cold baseline
+blocks perform another 100000 proofs (286.80 / 285.43 CPU seconds inside
+Yespower); candidate blocks perform none. Both warm arms perform no extra block
+proofs. Baseline block progress produces 100000 tip lines / 23705468 log bytes;
+candidate progress produces six or seven tip lines / 1574 or 1813 bytes, while
+RPC/state updates and validation still run for every block.
+
+These are combined component results, not a full-IBD forecast. The deliberately
+cold mode demonstrates the large redundant-proof cost removed; it does not
+identify the lost public run's miss rate or imply that a 2GiB cache was missing.
+The much smaller warm combined improvement is equally important: unique first
+Yespower work remains dominant, and no unique-cold-proof speedup is established
+by this comparison. Input is preloaded, Internet peer supply is absent, and the
+early 100000-block index/UTXO/script mix is not the entire chain. The five-hour
+target remains unverified; these ratios must not be multiplied into other proxy
+ratios or applied to the user's 69-hour projection.
+
+The current integration checkpoint also passes 116 selected C++ cases / 649700
+assertions, nine localhost P2P/shutdown scenarios, and a complete incremental
+daemon/CLI/Qt/IPC/multiprocess build. The separate fresh final build is tracked
+below when completed. No production changes were made for this comparison.
