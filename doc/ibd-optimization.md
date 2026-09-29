@@ -785,3 +785,48 @@ shutdown are included in process totals; neither is an optimization target.
 This is evidence that cold-proof import is CPU dominated, not evidence that the
 lost public-mainnet run had the same profile. Header-first/cold-cache and warm
 block-processing comparisons are the next required controls.
+
+### Reproducible indexed-block component control
+
+The Linux `bench_indexed_block_import` target accepts a raw block fixture and
+`warm` or `cold`. It genuinely verifies all header proofs and contextual rules,
+then processes the blocks through `ProcessNewBlock`, computes the exact UTXO
+digest and runs level-4 verification over the fixture. `cold` resets only the
+bounded proof cache between the header and block phases; `warm` retains it.
+Timing excludes startup, final flush, UTXO hashing and verifychain.
+
+This models **the post-admission validation component**, using the internal
+caller's `min_pow_checked` precondition. A 6000-header fixture does not satisfy
+mainnet's minimum chainwork, so this is not a P2P admission, PRESYNC/REDOWNLOAD
+or network-IBD measurement. No production minimum-chainwork value is changed.
+The separate real-mainnet localhost P2P regression still requires those same
+6000 headers to remain in PRESYNC. Component timing must not be presented as
+complete IBD timing or proof of passing mainnet's admission threshold.
+
+The ordinary unit fixture hard-codes a full index-consistency audit after every
+header/block, ignoring its `-checkblockindex` argument. The benchmark therefore
+constructs its isolated chain manager with production-mainnet's diagnostic
+policy (`check_block_index=0`) in **both** arms. All consensus/body/script checks
+remain active, and regression tests keep the exhaustive index audits enabled.
+
+`contrib/bench/indexed-block-ab.py` automates A/B/B/A, checks binary/input hashes,
+requires genuine initial proof calls, and rejects a wrong tip, UTXO hash or
+missing verifychain success. Example for the 6000-block fixture:
+
+```
+python3 contrib/bench/indexed-block-ab.py \
+  --baseline /path/to/baseline/bench_indexed_block_import \
+  --candidate /path/to/candidate/bench_indexed_block_import \
+  --blocks /path/to/blocks-6000.dat --count 6000 \
+  --tip e7a04205f70e5b6e99d83a8f720748fee559a382701b39ff9891e391e6cf81d9 \
+  --utxo 94fda3c59b6d6410687bfacd26d858d0f85b86f6913b90016b7b02f72b3f13b8 \
+  --mode cold --work-dir /path/to/new-results-directory
+```
+
+An exact pre-evidence production checkout (`8ea9f131d9`) with the same benchmark
+tooling measured cold-cache block phases of 19.1155/18.9455 seconds versus
+warm-cache phases of 0.277371/0.281326 seconds. Cold phases each made 6000
+additional yespower calls; warm phases made none. Both modes verified the same
+tip and UTXO digest. The user's node continued running throughout: these are
+controlled component comparisons on a shared machine, not isolated-hardware
+peak throughput or an attribution of the deleted public run.

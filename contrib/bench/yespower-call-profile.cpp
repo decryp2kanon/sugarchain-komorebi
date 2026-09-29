@@ -26,6 +26,9 @@ struct Report {
 } report;
 }
 
+unsigned long long YespowerProfileCalls() { return calls.load(); }
+unsigned long long YespowerProfileCPU() { return cpu_ns.load(); }
+
 extern "C" int __real_yespower(yespower_local_t*, const uint8_t*, size_t, const yespower_params_t*, yespower_binary_t*);
 extern "C" int __wrap_yespower(yespower_local_t* local, const uint8_t* input, size_t size,
                               const yespower_params_t* params, yespower_binary_t* output)
