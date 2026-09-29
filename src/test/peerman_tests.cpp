@@ -5,6 +5,7 @@
 #include <chainparams.h>
 #include <common/args.h>
 #include <node/miner.h>
+#include <node/ibd_download.h>
 #include <node/peerman_args.h>
 #include <net_processing.h>
 #include <pow.h>
@@ -12,8 +13,66 @@
 #include <validation.h>
 
 #include <boost/test/unit_test.hpp>
+#include <limits>
 
 BOOST_FIXTURE_TEST_SUITE(peerman_tests, RegTestingSetup)
+
+BOOST_AUTO_TEST_CASE(ibd_delivery_budget_is_bounded_and_ignores_idle_time)
+{
+    node::IBDBlockDelivery delivery;
+    BOOST_CHECK_EQUAL(delivery.Limit(16, 128), 128);
+    BOOST_CHECK_EQUAL(delivery.Limit(16, 16), 16);
+    delivery.Received(1'000'000, true);
+    BOOST_CHECK_EQUAL(delivery.Limit(16, 128), 128);
+    delivery.Received(1'000'000, true); // Same timestamp is not an infinite rate.
+    BOOST_CHECK_EQUAL(delivery.Limit(16, 128), 128);
+    delivery.Received(1'020'000, true); // Slow 20ms service stays at upstream floor.
+    BOOST_CHECK_EQUAL(delivery.Limit(16, 128), 16);
+    int64_t now{1'020'000};
+    for (int i{0}; i < 100; ++i) {
+        delivery.Received(now += 1'000, true);
+        BOOST_CHECK_GE(delivery.Limit(16, 128), 16);
+        BOOST_CHECK_LE(delivery.Limit(16, 128), 128);
+        BOOST_CHECK_EQUAL(delivery.Limit(16, 16), 16);
+        BOOST_CHECK_LE(delivery.Limit(16, 64), 64);
+    }
+    BOOST_CHECK_EQUAL(delivery.Limit(16, 128), 128);
+    delivery.Received(now += 1'000, false); // Drain the queue.
+    delivery.Received(now += 60'000'000, true); // New request after idle gap.
+    BOOST_CHECK_EQUAL(delivery.Limit(16, 128), 128);
+    for (int i{0}; i < 100; ++i) delivery.Received(now += 20'000, true);
+    BOOST_CHECK_EQUAL(delivery.Limit(16, 128), 16);
+    delivery.Received(-1, true);
+    delivery.Received(0, true);
+    delivery.Received(1, true);
+    delivery.Received(std::numeric_limits<int64_t>::max(), true);
+    BOOST_CHECK_EQUAL(delivery.Limit(16, 128), 16);
+    node::IBDBlockDelivery new_peer;
+    BOOST_CHECK_EQUAL(new_peer.Limit(16, 128), 128);
+    // A high RTT must not be mistaken for low service throughput: retain
+    // enough outstanding requests to cover the first-response latency too.
+    node::IBDBlockDelivery distant;
+    distant.Started(1'000'000);
+    distant.Received(2'000'000, true);
+    distant.Received(2'004'000, true);
+    BOOST_CHECK_EQUAL(distant.Limit(16, 128), 128);
+    BOOST_CHECK_EQUAL(distant.Limit(16, 64), 64);
+    distant.Received(2'008'000, false);
+    distant.Started(5'000'000);
+    distant.Received(5'050'000, true);
+    distant.Received(5'054'000, true);
+    BOOST_CHECK_EQUAL(distant.Limit(16, 128), 75);
+    distant.Started(65'000'000); // Previous requests were cancelled while pending.
+    distant.Received(65'050'000, true);
+    distant.Received(65'054'000, true);
+    BOOST_CHECK_EQUAL(distant.Limit(16, 128), 75);
+    distant.Started(-1);
+    distant.Received(1, true);
+    distant.Started(10);
+    distant.Received(std::numeric_limits<int64_t>::max(), true);
+    BOOST_CHECK_GE(distant.Limit(16, 128), 16);
+    BOOST_CHECK_LE(distant.Limit(16, 128), 128);
+}
 
 BOOST_AUTO_TEST_CASE(ibd_request_budget_is_opt_in_and_bounded)
 {

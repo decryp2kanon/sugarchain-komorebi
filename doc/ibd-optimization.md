@@ -907,3 +907,56 @@ block supplier. An INV for the already indexed tip immediately made the former
 a supplier too, even while its PRESYNC state remained active. Therefore stale
 PRESYNC alone does not prove a peer is unable to supply blocks. No production
 presync bypass or peer-state reset is added on that hypothesis.
+
+### Delivery-aware opt-in request budget
+
+For `-maxibdblocksinflight` above 16, preserve the configured initial budget,
+then estimate delivery intervals from requested, non-mutated full blocks.
+An integer EWMA covers measured first-response latency plus 250ms of service
+work, bounded by 16 and the user's existing ceiling (never more than 128).
+Use message consumption timestamps: socket timestamps can be identical for
+coalesced messages. Idle/cancelled queues reset the interval baseline;
+same/backwards timestamps cannot create an infinite rate. Unsolicited blocks
+cannot update the estimate. State is per-peer under the existing `cs_main` lock.
+
+This only changes the allocation hint. It does not cancel existing requests,
+change consensus/validation, increase the 1024-block window, modify compact-block
+limits, or change stall/disconnect/backoff behavior. Default 16 and non-IBD 16
+remain unchanged. A malicious peer can at most earn the same opt-in ceiling that
+the old implementation gave immediately, not additional resource exposure.
+
+`block-download-ab.py` runs pinned binaries in A/B/B/A order and verifies binary
+hashes, identical tip/UTXO, level-4 verification and the in-flight ceiling:
+
+| Localhost case | Baseline median | Candidate median | Interpretation |
+| --- | ---: | ---: | --- |
+| 4096 blocks, one 20ms + three 1ms peers, 50ms latency | 10.5814s | 3.9657s | 2.67x proxy speedup |
+| 4096 blocks, four 4ms peers, 50ms latency | 4.2279s | 4.2417s | 0.3% difference |
+| 1024 blocks, four 4ms peers, 1000ms latency | 2.5747s | 2.5744s | High-RTT control preserved |
+| 20000 blocks, latency only, 50ms latency, serialized measurement | 2.9782s | 3.0003s | 0.7% difference; individual runs overlap |
+
+These are controlled supply models, not public-mainnet performance claims.
+Short latency-only trials initially showed 3--6% slower results; the longer
+serialized control above avoids overlapping our build/regression jobs and
+shows overlapping run times (baseline 2.9553/3.0011s, candidate 2.9956/3.0049s).
+The discarded first design started at 16 and ignored RTT: despite a larger
+mixed-peer gain it regressed the 1000ms control from 2.57s to 5.59s. Adding RTT
+alone still cost an extra initial round trip. Neither version was committed.
+
+Tests cover cold start, changing rates, duplicate timestamps,
+backwards/negative/extreme clocks, idle/cancelled queues, reconnect state and
+configured limits. Unit and ASan/UBSan tests pass (3 cases / 440 assertions).
+TSan passes network/peer-manager suites (21 cases / 157206 assertions).
+Both transports pass the existing stall/backoff/recovery test; all GUI, daemon,
+CLI and IPC targets build. A near-tip 256-block/20KB-padding run passes
+UTXO/level-4 verification with the configured initial IBD ceiling of 128.
+An initial test invocation incorrectly demanded 16 for that pre-transition
+batch; it failed as expected under the preserved initial budget. This short
+fixture does not independently exercise subsequent non-IBD request refills.
+
+The longer 100000-block real-fixture control also completed: baseline cold
+block processing made 100000 extra yespower calls in 338.830s, versus zero extra
+calls in the live-evidence candidate's 8.668s. Both produced the expected tip,
+the same `d252a11a...ed183c` UTXO hash and successful level-4 verification.
+These longer runs were not interleaved A/B/B/A and ran under different background
+load; use the earlier repeated 6000-block control for the measured effect size.
