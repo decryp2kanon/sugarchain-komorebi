@@ -1396,3 +1396,18 @@ The current integration checkpoint also passes 116 selected C++ cases / 649700
 assertions, nine localhost P2P/shutdown scenarios, and a complete incremental
 daemon/CLI/Qt/IPC/multiprocess build. The separate fresh final build is tracked
 below when completed. No production changes were made for this comparison.
+
+### Broader peer-connection test compatibility
+
+The fresh-build gate exposed an existing test mismatch: `LogIPsTestingSetup`
+uses mainnet and `AddPeer` uses `Params().GetDefaultPort()`, but two exact log
+expectations hard-coded Bitcoin's port 8333. The same isolated case fails in the
+preserved earlier `916273`-era binary; its source had not changed in this
+follow-up. The initial assertion abort also prevented normal fixture cleanup,
+causing subsequent cases in that process to abort. Those cascading aborts are
+not counted as independent production failures.
+
+Only the two expected log strings now use the active chain's default port.
+All connection, duplicate-detection, peer-address and remaining log assertions
+are retained, and no production code changes are involved. The isolated peer
+connection case passes all 41 assertions before rerunning the broader gate.
