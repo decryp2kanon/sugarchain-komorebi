@@ -1322,3 +1322,35 @@ ran. The retained tests are also checked against the restored production code.
 After removing the production candidate, the retained 15 flatfile/block-manager
 cases pass again in both release and ASan/UBSan (342 assertions each); the failed
 seek case also passes alone, without depending on other test initialization.
+
+### Offline proof-evidence lifecycle and concurrent reset gate
+
+`contrib/bench/build-proof-trace.py` links a separate diagnostic daemon from a
+completed CMake Makefiles build. Its `yespower-proof-trace.cpp` wrapper always
+calls the real implementation and records exact 80-byte inputs and call counts
+in an exclusive output file. It does not replace proof results, change normal
+build targets or provide timing measurements. Recorded calls also check the
+fixed YespowerSugar version, N, r and personalization.
+
+`contrib/bench/offline-proof-restart.py` imports the supplied real 6000-block
+fixture with networking entirely disabled, unchanged minimum chainwork and
+`assumevalid=0`. It checks the known tip/UTXO and full level-4 verifychain, stops
+and restarts its own disposable node, and then corrupts one disk header nonce
+in its own datadir. The supplied fixture is never changed; the modified test
+datadir bytes are restored in a finally block. Both normal runs record exactly
+one genuine Yespower call for every fixture header: 6003 total calls, including
+three genesis startup checks. Thus process-local evidence is recreated after
+restart, rather than treating persisted index status as proof. The corrupt
+startup records 6004 calls, including a genuine call for the altered header,
+and rejects it with `ReadBlock failed at 1` / `Corrupted block database detected`.
+All three runs use the expected consensus parameters. This is a lifecycle safety
+test, not startup/shutdown optimization or a performance benchmark.
+
+The new unit case concurrently replaces 1KiB/2KiB caches while two callers use
+one eight-worker verifier. Both budgets enable batch evidence but evict
+individual proofs. It first confirms a successful batch restore, then mixes
+valid input, an invalid final proof and stricter limits that accept the first
+header but reject later headers. All callers finish with correct results and
+no active worker remains. Release passes all 16 header-PoW cases / 24264
+assertions; the new concurrency case independently passes ASan/UBSan and TSan
+(10 assertions each). No production code changes are part of this gate.

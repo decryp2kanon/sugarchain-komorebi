@@ -630,6 +630,55 @@ BOOST_AUTO_TEST_CASE(batch_evidence_never_authorizes_mutations_or_stricter_later
     BOOST_REQUIRE(verifier.Check(headers, params));
 }
 
+BOOST_AUTO_TEST_CASE(batch_evidence_is_safe_during_concurrent_cache_resets)
+{
+    // Both budgets enable batch evidence, but cannot retain all individual
+    // proofs. Exercise RestoreBatch concurrently with table replacement.
+    CacheBudget budget{1024};
+    auto headers{Headers(122, 65)};
+    headers.front() = main->GenesisBlock();
+    auto invalid{headers};
+    Invalidate(invalid.back());
+    HeaderPoWVerifier verifier{8};
+    BOOST_REQUIRE(verifier.Check(headers, params));
+    {
+        Observation observation;
+        BOOST_REQUIRE(verifier.Check(headers, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_LE(calls.load(), 1U); // Confirm the intended batch-hit path.
+#endif
+    }
+    std::atomic<bool> start{false}, success{true};
+    Observation observation;
+    auto reader = [&] {
+        while (!start.load()) std::this_thread::yield();
+        for (int i{0}; i < 8; ++i) {
+            if (!verifier.Check(headers, params)) success = false;
+            if (verifier.Check(invalid, params)) success = false;
+            // The first proof meets this limit; later easy-target proofs do
+            // not. Reset/reuse must never bypass per-header target admission.
+            if (verifier.Check(headers, main->GetConsensus())) success = false;
+        }
+    };
+    {
+        std::jthread a{reader}, b{reader};
+        std::jthread resetter{[&] {
+            start = true;
+            for (int i{0}; i < 40; ++i) {
+                InitYespowerVerificationCache(i % 2 ? 1024 : 2048);
+                std::this_thread::sleep_for(std::chrono::milliseconds{5});
+            }
+        }};
+    }
+    BOOST_CHECK(success.load());
+    BOOST_CHECK(verifier.Check(headers, params));
+    BOOST_CHECK(!verifier.Check(invalid, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+    BOOST_CHECK_LE(peak.load(), 8U);
+    BOOST_CHECK_EQUAL(active.load(), 0U);
+#endif
+}
+
 BOOST_AUTO_TEST_CASE(mainnet_batch_evidence_after_individual_cache_pressure)
 {
     CacheBudget budget{128 << 10};
