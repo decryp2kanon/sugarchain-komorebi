@@ -45,6 +45,9 @@ inline constexpr size_t MAX_YESPOWER_CACHE_BYTES{size_t{2048} << 20};
 /** Configure process-local proof evidence; resizing discards all old entries. */
 void InitYespowerVerificationCache(size_t bytes);
 
+/** With cs_main held, restore an evicted proof from a genuinely checked live index. */
+void CacheVerifiedBlockIndexProof(const CBlockIndex& index, const Consensus::Params& params);
+
 inline constexpr int DEFAULT_HEADER_POW_WORKERS{1};
 inline constexpr int MAX_HEADER_POW_WORKERS{8};
 

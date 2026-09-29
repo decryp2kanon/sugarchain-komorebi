@@ -2,6 +2,8 @@
 // Distributed under the MIT software license, see the accompanying file COPYING.
 
 #include <crypto/yespower-1.0.1/yespower.h>
+#include <consensus/validation.h>
+#include <node/blockstorage.h>
 #include <kernel/chainparams.h>
 #include <pow.h>
 #include <primitives/block.h>
@@ -9,6 +11,8 @@
 #include <test/data/sugarchain_headers.raw.h>
 #include <test/util/setup_common.h>
 #include <util/chaintype.h>
+#include <util/strencodings.h>
+#include <validation.h>
 
 #include <boost/test/unit_test.hpp>
 
@@ -90,6 +94,178 @@ extern "C" int __wrap_yespower(yespower_local_t* local, const uint8_t* input, si
 #endif
 
 BOOST_FIXTURE_TEST_SUITE(header_pow_tests, HeaderPoWSetup)
+
+BOOST_FIXTURE_TEST_CASE(indexed_proofs_survive_eviction_but_not_disk_copies, TestingSetup)
+{
+    CacheBudget budget{DEFAULT_YESPOWER_CACHE_BYTES};
+    auto& chainman{*m_node.chainman};
+    const auto& params{chainman.GetConsensus()};
+    DataStream stream{test::data::sugarchain_headers};
+    std::vector<CBlockHeader> headers(6000);
+    for (auto& header : headers) stream >> header;
+    HeaderPoWVerifier verifier{8};
+    BOOST_REQUIRE(verifier.Check(headers, params));
+    BlockValidationState state;
+    // Isolate the post-minimum-work validation layer; P2P/PRESYNC tests cover
+    // the caller's chainwork precondition without lowering the mainnet value.
+    BOOST_REQUIRE(chainman.ProcessNewBlockHeaders(headers, true, state, nullptr));
+    LOCK(cs_main);
+    InitYespowerVerificationCache(64);
+    {
+        Observation observation;
+        for (const auto& header : headers) {
+            const auto* index{chainman.m_blockman.LookupBlockIndex(header.GetHash())};
+            BOOST_REQUIRE(index);
+            CacheVerifiedBlockIndexProof(*index, params);
+            BOOST_REQUIRE(CheckBlockProofOfWork(header, params));
+        }
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 0U);
+#endif
+    }
+    auto* index{chainman.m_blockman.LookupBlockIndex(headers.front().GetHash())};
+    BOOST_REQUIRE(index);
+    CDiskBlockIndex disk{index};
+    DataStream encoded;
+    encoded << disk;
+    CDiskBlockIndex loaded;
+    encoded >> loaded;
+    // Supply the reconstructed links and even the strongest disk status.
+    // None of them is current-process proof evidence.
+    loaded.phashBlock = index->phashBlock;
+    loaded.pprev = index->pprev;
+    loaded.nStatus = BLOCK_VALID_SCRIPTS;
+    for (const CBlockIndex* untrusted : {static_cast<CBlockIndex*>(&disk), static_cast<CBlockIndex*>(&loaded)}) {
+        InitYespowerVerificationCache(64);
+        Observation observation;
+        CacheVerifiedBlockIndexProof(*untrusted, params);
+        BOOST_REQUIRE(CheckBlockProofOfWork(headers.front(), params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 1U);
+#endif
+    }
+    {
+        InitYespowerVerificationCache(64);
+        Consensus::Params stricter{params};
+        stricter.powLimit = uint256{1};
+        Observation observation;
+        CacheVerifiedBlockIndexProof(*index, stricter);
+        BOOST_CHECK(!CheckBlockProofOfWork(headers.front(), stricter));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 0U); // Invalid target rejected before hashing.
+#endif
+    }
+    {
+        InitYespowerVerificationCache(64);
+        index->nNonce ^= 1;
+        Observation observation;
+        CacheVerifiedBlockIndexProof(*index, params);
+        BOOST_CHECK(!CheckBlockProofOfWork(index->GetBlockHeader(), params));
+        index->nNonce ^= 1;
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 1U); // Altered header cannot inherit evidence.
+#endif
+    }
+}
+
+BOOST_FIXTURE_TEST_CASE(indexed_proof_does_not_accept_mutated_body_or_disk_header, TestingSetup)
+{
+    CacheBudget budget{DEFAULT_YESPOWER_CACHE_BYTES};
+    auto& chainman{*m_node.chainman};
+    // Same public height-1 fixture as the localhost P2P regression.
+    DataStream data{ParseHex("00000020dc0a1b811b38833a4f9df704828c1dbccab7784c52faadfe995fb7dbc2ae5e7d79ec153afd87d19a5bf3d4b58737e26afe991832d7da6c45dfeb2f3343917541fc4e615dffff3f1f4d07000001020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff03510101ffffffff02000000000100000023210267e719468109813a051f8e95a67fe3644fc99d3e6bcccfa00badd1776e58db58ac0000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000")};
+    auto block{std::make_shared<CBlock>()};
+    data >> TX_WITH_WITNESS(*block);
+    BOOST_REQUIRE(data.empty());
+    const CBlockHeader header{*block};
+    BlockValidationState state;
+    {
+        Observation observation;
+        BOOST_REQUIRE(chainman.ProcessNewBlockHeaders(std::span{&header, 1}, true, state, nullptr));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 1U); // The first proof is still mandatory.
+#endif
+    }
+    auto bad{std::make_shared<CBlock>(*block)};
+    CMutableTransaction tx{*bad->vtx.front()};
+    tx.vin.front().scriptSig.push_back(0);
+    bad->vtx.front() = MakeTransactionRef(tx);
+    InitYespowerVerificationCache(64);
+    {
+        Observation observation;
+        BOOST_CHECK(!chainman.ProcessNewBlock(bad, true, true, nullptr));
+        BOOST_REQUIRE(chainman.ProcessNewBlock(block, true, true, nullptr));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 0U);
+#endif
+    }
+    LOCK(cs_main);
+    BOOST_CHECK_EQUAL(chainman.ActiveChain().Height(), 1);
+    auto* index{chainman.m_blockman.LookupBlockIndex(block->GetHash())};
+    BOOST_REQUIRE(index);
+    InitYespowerVerificationCache(64);
+    {
+        Observation observation;
+        CBlock read;
+        BOOST_REQUIRE(chainman.m_blockman.ReadBlock(read, *index));
+        BOOST_CHECK(read.GetHash() == block->GetHash());
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 0U);
+#endif
+    }
+    CBlock corrupt{*block};
+    corrupt.nNonce ^= 1;
+    const auto saved{index->GetBlockPos()};
+    const auto pos{chainman.m_blockman.WriteBlock(corrupt, 1)};
+    index->nFile = pos.nFile;
+    index->nDataPos = pos.nPos;
+    InitYespowerVerificationCache(64);
+    {
+        Observation observation;
+        CBlock read;
+        BOOST_CHECK(!chainman.m_blockman.ReadBlock(read, *index));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 1U);
+#endif
+    }
+    index->nFile = saved.nFile;
+    index->nDataPos = saved.nPos;
+}
+
+BOOST_FIXTURE_TEST_CASE(indexed_proof_restore_is_safe_during_cache_resets, TestingSetup)
+{
+    CacheBudget budget{DEFAULT_YESPOWER_CACHE_BYTES};
+    auto& chainman{*m_node.chainman};
+    DataStream data{test::data::sugarchain_headers};
+    CBlockHeader header;
+    data >> header;
+    BlockValidationState state;
+    BOOST_REQUIRE(chainman.ProcessNewBlockHeaders(std::span{&header, 1}, true, state, nullptr));
+    const auto* index{WITH_LOCK(cs_main, return chainman.m_blockman.LookupBlockIndex(header.GetHash()))};
+    BOOST_REQUIRE(index);
+    CBlockHeader invalid{header};
+    invalid.nNonce ^= 1;
+    std::atomic<unsigned> failures{0};
+    {
+        std::jthread resetter{[] {
+            for (int i{0}; i < 1000; ++i) InitYespowerVerificationCache(64 + 32 * (i % 5));
+        }};
+        std::vector<std::jthread> readers;
+        for (int n{0}; n < 4; ++n) {
+            readers.emplace_back([&] {
+                for (int i{0}; i < 25; ++i) {
+                    {
+                        LOCK(cs_main);
+                        CacheVerifiedBlockIndexProof(*index, chainman.GetConsensus());
+                    }
+                    if (!CheckBlockProofOfWork(header, chainman.GetConsensus())) ++failures;
+                    if (CheckBlockProofOfWork(invalid, chainman.GetConsensus())) ++failures;
+                }
+            });
+        }
+    }
+    BOOST_CHECK_EQUAL(failures.load(), 0U);
+}
 
 BOOST_AUTO_TEST_CASE(mainnet_hashes_match_legacy_tls_bit_for_bit)
 {

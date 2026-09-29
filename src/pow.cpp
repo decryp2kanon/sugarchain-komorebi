@@ -327,6 +327,16 @@ bool CheckBlockProofOfWork(const CBlockHeader& header, const Consensus::Params& 
     return true;
 }
 
+void CacheVerifiedBlockIndexProof(const CBlockIndex& index, const Consensus::Params& params)
+{
+    AssertLockHeld(cs_main);
+    if (!params.fYespowerSugar || EnableFuzzDeterminism() || !index.m_checked_yespower || !index.phashBlock) return;
+    const auto header{index.GetBlockHeader()};
+    if (header.GetHash() != index.GetBlockHash() || !DeriveTarget(header.nBits, params.powLimit)) return;
+    auto& cache{VerificationCache()};
+    cache.Insert(cache.Entry(header));
+}
+
 struct HeaderPoWVerifier::Impl {
     const int workers;
     std::mutex caller_mutex;

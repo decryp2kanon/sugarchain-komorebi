@@ -4283,6 +4283,10 @@ bool ChainstateManager::AcceptBlockHeader(const CBlockHeader& block, BlockValida
         return state.Invalid(BlockValidationResult::BLOCK_HEADER_LOW_WORK, "too-little-chainwork");
     }
     CBlockIndex* pindex{m_blockman.AddToBlockIndex(block, m_best_header)};
+    // Only the actual successful CheckBlockHeader above establishes evidence;
+    // genesis takes a separate path, and fuzz's simplified check is not proof.
+    pindex->m_checked_yespower = hash != GetConsensus().hashGenesisBlock &&
+        GetConsensus().fYespowerSugar && !EnableFuzzDeterminism();
 
     if (ppindex)
         *ppindex = pindex;
@@ -4465,6 +4469,11 @@ bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& blo
         // malleability that cause CheckBlock() to fail; see e.g. CVE-2012-2459 and
         // https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2019-February/016697.html.  Because CheckBlock() is
         // not very expensive, the anti-DoS benefits of caching failure (of a definitely-invalid block) are not substantial.
+        if (GetConsensus().fYespowerSugar) {
+            if (const auto* known{m_blockman.LookupBlockIndex(block->GetHash())}) {
+                CacheVerifiedBlockIndexProof(*known, GetConsensus());
+            }
+        }
         bool ret = CheckBlock(*block, state, GetConsensus());
         if (ret) {
             // Store to disk

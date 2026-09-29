@@ -149,6 +149,8 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
                     LogError("%s: CheckProofOfWork failed: %s\n", __func__, pindexNew->ToString());
                     return false;
                 }
+                // Recomputed in this process, never restored from disk flags.
+                pindexNew->m_checked_yespower = consensusParams.fYespowerSugar && !EnableFuzzDeterminism();
 
                 pcursor->Next();
             } else {
@@ -1076,7 +1078,12 @@ bool BlockManager::ReadBlock(CBlock& block, const FlatFilePos& pos, const std::o
 
 bool BlockManager::ReadBlock(CBlock& block, const CBlockIndex& index) const
 {
-    const FlatFilePos block_pos{WITH_LOCK(cs_main, return index.GetBlockPos())};
+    FlatFilePos block_pos;
+    {
+        LOCK(cs_main);
+        CacheVerifiedBlockIndexProof(index, GetConsensus());
+        block_pos = index.GetBlockPos();
+    }
     return ReadBlock(block, block_pos, index.GetBlockHash());
 }
 

@@ -830,3 +830,50 @@ additional yespower calls; warm phases made none. Both modes verified the same
 tip and UTXO digest. The user's node continued running throughout: these are
 controlled component comparisons on a shared machine, not isolated-hardware
 peak throughput or an attribution of the deleted public run.
+
+### Live index evidence after bounded-cache eviction
+
+An accepted block index now keeps a private, nonserialized proof-evidence bit.
+Only successful proof checking during header acceptance or the existing disk
+index loader can establish it. Genesis' special acceptance path and fuzz's
+simplified proofs cannot. Disk copies explicitly clear the bit; persisted TREE
+or SCRIPTS validity never supplies this evidence. Restart still performs the
+existing real proof checks: an offline 6000-block restart made 6003 yespower
+calls, with zero primitive errors.
+
+Before checking a block whose header is already indexed, or reading its disk
+block, the node may restore that checked header to the ordinary bounded cache.
+It requires `cs_main`, reconstructs the complete header, checks its hash against
+the immutable block-map key, and validates the current target range. The normal
+proof check remains in place, as do body, contextual, script and UTXO checks.
+Changed disk headers therefore cannot borrow the original header's proof.
+This is current-process evidence, not a persistent verification shortcut.
+On the measured x86-64 build the bit fits existing padding: `sizeof(CBlockIndex)`
+remains 152 bytes, with no per-header auxiliary allocation.
+
+The 6000-block A/B/B/A cold-cache component measured baseline block phases of
+19.1155/18.9455s versus candidate 0.280487/0.290110s (66.70x median component
+speedup). Extra block-phase yespower calls fell from 6000 to zero; both versions
+performed all 6000 first header proofs and produced the identical tip, UTXO
+digest and successful level-4 verification. Warm-cache controls were
+0.277371/0.281326s baseline versus 0.280610/0.271923s candidate: no meaningful
+regression was observed. This does not establish a full-IBD speedup, nor prove
+cache eviction caused the user's deleted run to be slow.
+
+Regression coverage includes all 6000 indexed headers with a two-entry cache,
+disk copies and serialization, forged validity flags, a stricter target limit,
+mutated index fields, mutated block bodies and disk headers, and concurrent
+cache resets/restoration. The localhost mainnet test still leaves 6000 headers
+in PRESYNC under the unchanged minimum chainwork, rejects invalid proofs and
+body mutations, and exercises restart. Existing minimum-chainwork and initial
+header-sync functional tests also pass.
+
+The candidate also validated 100000 historical blocks offline: 100000 genuine
+first header proofs, zero repeated block-phase proofs, exact expected tip, UTXO
+digest `d252a11a14d2802c6157b58860441cefe51aa735e4ebe2ef2839346a6ced183c`,
+and level-4 verification success. Release regression ran 83 cases / 597125
+assertions; ASan/UBSan ran 63 cases / 433160 assertions without errors. GUI,
+daemon, CLI and IPC targets build; localhost in-flight/stall tests pass over
+both v1 and v2 transports, as does the existing shutdown test.
+ThreadSanitizer also passes four targeted cache-reset, live-index restoration,
+shared-worker-pool and worker-lifetime cases (64 assertions).
