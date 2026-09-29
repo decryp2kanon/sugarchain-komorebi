@@ -10,6 +10,9 @@
 #include <streams.h>
 #include <test/data/sugarchain_headers.raw.h>
 #include <test/util/setup_common.h>
+#include <test/util/net.h>
+#include <test/util/logging.h>
+#include <node/protocol_version.h>
 #include <util/chaintype.h>
 #include <util/strencodings.h>
 #include <validation.h>
@@ -17,7 +20,9 @@
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <span>
 #include <stdexcept>
 #include <thread>
@@ -94,6 +99,68 @@ extern "C" int __wrap_yespower(yespower_local_t* local, const uint8_t* input, si
 #endif
 
 BOOST_FIXTURE_TEST_SUITE(header_pow_tests, HeaderPoWSetup)
+
+BOOST_FIXTURE_TEST_CASE(indexed_header_messages_after_cache_eviction, TestingSetup)
+{
+    CacheBudget budget{DEFAULT_YESPOWER_CACHE_BYTES};
+    auto& chainman{*m_node.chainman};
+    DataStream stream{test::data::sugarchain_headers};
+    std::vector<CBlockHeader> headers(2000);
+    for (auto& header : headers) stream >> header;
+    HeaderPoWVerifier verifier{8};
+    BOOST_REQUIRE(verifier.Check(headers, chainman.GetConsensus()));
+    BlockValidationState state;
+    // This fixture isolates an already admitted index. Separate P2P tests
+    // retain the actual mainnet minimum-chainwork admission requirement.
+    BOOST_REQUIRE(chainman.ProcessNewBlockHeaders(headers, true, state, nullptr));
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    CNode peer{0, nullptr, CAddress{}, 0, 0, CService{}, "", ConnectionType::INBOUND, false, 0};
+    auto& connman{static_cast<ConnmanTestMsg&>(*m_node.connman)};
+    connman.Handshake(peer, true, ServiceFlags(NODE_NETWORK | NODE_WITNESS),
+                     NODE_NETWORK, PROTOCOL_VERSION, true);
+    BOOST_REQUIRE(peer.fSuccessfullyConnected);
+    auto receive = [&](std::span<const CBlockHeader> batch, [[maybe_unused]] unsigned expected_calls) {
+        connman.FlushSendBuffer(peer);
+        auto message{NetMsg::Make(NetMsgType::HEADERS)};
+        VectorWriter writer{message.data, 0};
+        WriteCompactSize(writer, batch.size());
+        for (const auto& header : batch) writer << header << uint8_t{0};
+        Observation observation;
+        const auto start{std::chrono::steady_clock::now()};
+        BOOST_REQUIRE(connman.ReceiveMsgFrom(peer, std::move(message)));
+        peer.fPauseSend = false;
+        connman.ProcessMessagesOnce(peer);
+        BOOST_TEST_MESSAGE("indexed HEADERS seconds=" << std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count()
+                           << " yespower_calls=" << calls.load());
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), expected_calls);
+#endif
+    };
+    InitYespowerVerificationCache(DEFAULT_YESPOWER_CACHE_BYTES);
+    receive(headers, 0); // Known headers with an empty bounded cache.
+    receive(headers, 0); // Ordinary warm-cache control.
+    BOOST_CHECK(!peer.fDisconnect);
+
+    CBlockHeader next;
+    stream >> next;
+    std::array<CBlockHeader, 2> mixed{headers.back(), next};
+    InitYespowerVerificationCache(DEFAULT_YESPOWER_CACHE_BYTES);
+    receive(mixed, 1); // An unknown header still requires its first real proof.
+    BOOST_CHECK(!peer.fDisconnect);
+    {
+        LOCK(cs_main);
+        // The short chain still has not met mainnet's admission threshold.
+        BOOST_CHECK(!chainman.m_blockman.LookupBlockIndex(next.GetHash()));
+    }
+
+    auto invalid{headers.front()};
+    do { ++invalid.nNonce; } while (CheckProofOfWorkImpl(invalid.GetPoWHash(), invalid.nBits, chainman.GetConsensus()));
+    {
+        ASSERT_DEBUG_LOG("header with invalid proof of work");
+        receive(std::span{&invalid, 1}, 1); // A changed header cannot inherit evidence.
+    }
+    m_node.peerman->FinalizeNode(peer);
+}
 
 BOOST_FIXTURE_TEST_CASE(indexed_proofs_survive_eviction_but_not_disk_copies, TestingSetup)
 {

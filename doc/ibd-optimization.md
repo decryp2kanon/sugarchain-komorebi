@@ -960,3 +960,50 @@ calls in the live-evidence candidate's 8.668s. Both produced the expected tip,
 the same `d252a11a...ed183c` UTXO hash and successful level-4 verification.
 These longer runs were not interleaved A/B/B/A and ran under different background
 load; use the earlier repeated 6000-block control for the measured effect size.
+
+### Already indexed header messages after cache eviction
+
+A real P2P message-handler fixture first genuinely verifies and contextually
+indexes 2000 historical headers, then clears the bounded cache and receives
+the same HEADERS message. Before the change this performs 2000 extra yespower
+calls and occupies the message handler for 6.5722s. Refilling the cache from the
+existing live-index evidence reduces this to zero extra calls and 0.1902s;
+the warm control takes 0.1864s. These unit-fixture timings include index audits
+and are not full-mainnet throughput measurements.
+
+The header path uses the same evidence gate as block reception and disk reads:
+an index must carry current-process proof evidence, reconstruct the exact hash
+bound to its index key, and satisfy the current target limit. Unknown or changed
+headers still run real Yespower. The ordinary verifier, continuity check,
+PRESYNC/REDOWNLOAD, commitments and minimum-chainwork admission remain in place.
+The lock is held only for the bounded index lookup/cache refill, not for worker
+execution. No persistent proof flag or TREE-validity shortcut is introduced.
+
+The new regression case exercises cold and warm known messages, a mixed
+known/unknown batch (one genuine new proof, still below mainnet admission work),
+and a nonce-mutated previously known header (one genuine failed proof and the
+normal rejection log). It does not establish how often the deleted public run
+encountered this condition.
+
+Validation: 62 release regression cases / 432867 assertions pass, including
+SugarShield, header sync, PoW, queues, peer-manager and block-manager suites.
+ASan/UBSan passes the three targeted evidence/message cases (12038 assertions),
+and TSan passes four message/cache/pool concurrency cases (28 assertions).
+The localhost mainnet functional test passes with unchanged minimum chainwork,
+invalid-proof rejection, block-body checks and restart.
+
+### Rejected scratch-layout and compiler experiments
+
+Additional worker-count exploration is closed: the production cap remains 8,
+and no test/benchmark may run more than 16 actual PoW workers. The earlier
+16-worker measurement is only an upper-bound observation, not a candidate.
+
+An external-only 2MiB scratch-alignment experiment at eight workers measured
+5.8811s baseline versus 5.7532s candidate medians. Existing scratch mappings
+already had roughly 93--96% transparent-huge-page coverage; individual runs
+varied much more than the 2.2% difference. A separate external-only `-O3`
+compilation of the unchanged yespower implementation measured 5.8571s versus
+5.7484s (1.9%), again smaller than observed variation. Neither change is adopted.
+Production allocator, instruction-set/compiler policy and system THP settings
+remain unchanged. These experiments are not claimed as speedups or full-IBD
+results; no new worker sweep was used for either A/B comparison.
