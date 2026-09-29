@@ -1052,3 +1052,41 @@ retained: this comparison corrects proxy representativeness, not production
 code. Six malformed/out-of-range argument cases, a default-argument genuine
 block import, and a 0-versus-15 script-worker / 4MiB resource-boundary A/B smoke
 all pass. The one-block smoke is a tooling/correctness check, not speed evidence.
+
+### Avoid repeated directory checks when opening existing block files
+
+The block CPU profile identified repeated directory checking inside
+`FlatFileSeq::Open`. Try the existing file first; only if opening fails, run the
+original directory-creation and writable-file-creation fallback. There is no
+cached directory state or file handle. Seeking, file closure, truncation,
+`FileCommit`, `DirectoryCommit`, flush ordering and validation are unchanged.
+
+With 15 script workers, eight PoW workers and 512MiB DB cache on both arms,
+the 100000-real-block A/B/B/A block-phase results were:
+
+| Variant | Runs | Median |
+| --- | --- | --- |
+| Before | 6.56246s / 6.58724s | 6.57485s |
+| Existing-file fast path | 6.38067s / 6.09289s | 6.23678s |
+
+This is a 1.054x component speedup, not a full-IBD measurement. Every run performs
+100000 genuine first proofs, zero redundant block-phase proofs, and matches the
+known tip, UTXO digest and level-4 verifychain result. Header timing is variable
+and is not attributed to this file-opening change.
+
+A separate `strace -f -c` comparison of the entire 6000-block harness, including
+verification, reduces `newfstatat` from 72093 to 36089 calls. Both variants still
+make 36109 `openat`, 36098 `close`, 14 `fdatasync` and two `fsync` calls. Traced
+wall time is not used as performance evidence. No user node was traced.
+
+New unit cases cover null positions, missing read-only files, parent creation,
+non-truncating existing-file opens, parent removal/recreation and non-directory
+parents. The flatfile/block-manager suites pass 13 cases / 119 assertions.
+Functional blocksdir and read-only reindex pass; the latter checks filesystem
+read-only permissions, while its optional immutable-file flag is unavailable
+without elevated privileges on this host.
+Fastprune also passes. The combined release flatfile, block-manager, PoW,
+header-PoW, header-chainwork and SugarShield suites pass 55 cases / 430041
+assertions. The full GUI/daemon/CLI/IPC production build passes.
+ASan/UBSan with leak checking and halt-on-error also passes the 13 flatfile and
+block-manager cases / 119 assertions.

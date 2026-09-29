@@ -9,6 +9,7 @@
 #include <test/util/setup_common.h>
 
 #include <boost/test/unit_test.hpp>
+#include <fstream>
 
 BOOST_FIXTURE_TEST_SUITE(flatfile_tests, BasicTestingSetup)
 
@@ -91,6 +92,49 @@ BOOST_AUTO_TEST_CASE(flatfile_open)
         BOOST_CHECK_THROW(file >> LIMITED_STRING(text, 256), std::ios_base::failure);
         BOOST_REQUIRE_EQUAL(file.fclose(), 0);
     }
+}
+
+BOOST_AUTO_TEST_CASE(flatfile_open_directory_lifecycle)
+{
+    const auto directory{m_args.GetDataDirBase() / "nested" / "blocks"};
+    FlatFileSeq seq{directory, "blk", 4096};
+    const FlatFilePos pos{0, 0};
+    BOOST_CHECK(!seq.Open(FlatFilePos{}));
+    BOOST_CHECK(!fs::exists(directory));
+    // Preserve the existing read-only failure/parent-creation behavior.
+    BOOST_CHECK(!seq.Open(pos, true));
+    BOOST_CHECK(fs::is_directory(directory));
+    BOOST_CHECK(!fs::exists(seq.FileName(pos)));
+    for (int pass{0}; pass < 2; ++pass) {
+        {
+            AutoFile file{seq.Open(pos)};
+            BOOST_REQUIRE(!file.IsNull());
+            file << uint32_t{123456};
+            BOOST_REQUIRE_EQUAL(file.fclose(), 0);
+        }
+        // Opening an existing file must not truncate it.
+        {
+            AutoFile file{seq.Open(pos)};
+            uint32_t value{};
+            file >> value;
+            BOOST_CHECK_EQUAL(value, 123456U);
+            BOOST_REQUIRE_EQUAL(file.fclose(), 0);
+        }
+        BOOST_CHECK_EQUAL(fs::file_size(seq.FileName(pos)), sizeof(uint32_t));
+        BOOST_CHECK(fs::remove(seq.FileName(pos)));
+        BOOST_CHECK(fs::remove(directory));
+        // The next open must recreate a removed parent; no cached existence bit.
+    }
+}
+
+BOOST_AUTO_TEST_CASE(flatfile_open_non_directory_parent)
+{
+    const auto blocker{m_args.GetDataDirBase() / "not-a-directory"};
+    { std::ofstream file{blocker.std_path()}; file << "preserve"; }
+    FlatFileSeq seq{blocker / "blocks", "blk", 4096};
+    BOOST_CHECK_THROW(seq.Open({0, 0}), fs::filesystem_error);
+    BOOST_CHECK_THROW(seq.Open({0, 0}, true), fs::filesystem_error);
+    BOOST_CHECK_EQUAL(fs::file_size(blocker), 8U);
 }
 
 BOOST_AUTO_TEST_CASE(flatfile_allocate)
