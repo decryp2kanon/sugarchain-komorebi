@@ -42,6 +42,11 @@ def parse_measurements(output, count, workers):
                 or not math.isclose(rate * seconds, count, rel_tol=0.0001)):
             raise ValueError("Invalid or inconsistent benchmark measurement")
         result[row["pass"]] = {"seconds": seconds, "headers_per_second": rate}
+        if row.get("yespower_calls", "unavailable") != "unavailable":
+            calls = int(row["yespower_calls"])
+            if not 0 <= calls <= count or (row["pass"] == "cold" and calls != count):
+                raise ValueError("Unexpected genuine PoW count")
+            result[row["pass"]]["yespower_calls"] = calls
     return result
 
 

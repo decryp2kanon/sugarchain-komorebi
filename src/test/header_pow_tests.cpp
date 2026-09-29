@@ -529,6 +529,135 @@ BOOST_AUTO_TEST_CASE(cache_reset_is_safe_during_verification)
     BOOST_CHECK(!CheckBlockProofOfWork(invalid, params));
 }
 
+BOOST_AUTO_TEST_CASE(batch_evidence_survives_individual_eviction_and_binds_order_and_count)
+{
+    // The individual table cannot hold these 65 inputs; the separate table
+    // retains their complete, successfully checked batch within the same KiB.
+    CacheBudget budget{1024};
+    const auto headers{Headers(120, 65)};
+    HeaderPoWVerifier verifier{8};
+    {
+        Observation observation;
+        BOOST_REQUIRE(verifier.Check(headers, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), headers.size());
+#endif
+    }
+    {
+        Observation observation;
+        BOOST_REQUIRE(verifier.Check(headers, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_LE(calls.load(), 1U); // First-header admission is retained.
+#endif
+    }
+    {
+        Observation observation;
+        BOOST_REQUIRE(CheckBlockProofOfWork(headers.back(), params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 0U); // A hit refills ordinary evidence.
+#endif
+    }
+    auto reordered{headers};
+    std::reverse(reordered.begin(), reordered.end());
+    {
+        Observation observation;
+        BOOST_REQUIRE(verifier.Check(reordered, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_GT(calls.load(), 1U); // Different order must miss the batch.
+#endif
+    }
+    reordered.pop_back();
+    {
+        Observation observation;
+        BOOST_REQUIRE(verifier.Check(reordered, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_GT(calls.load(), 1U); // Different count is a different key.
+#endif
+    }
+    InitYespowerVerificationCache(1024);
+    {
+        Observation observation;
+        BOOST_REQUIRE(verifier.Check(headers, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), headers.size());
+#endif
+    }
+    // One-worker callers can use the same successful evidence, without
+    // creating any additional parallel workers.
+    HeaderPoWVerifier serial{1};
+    Observation observation;
+    BOOST_REQUIRE(serial.Check(headers, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+    BOOST_CHECK_LE(calls.load(), 1U);
+#endif
+}
+
+BOOST_AUTO_TEST_CASE(batch_evidence_never_authorizes_mutations_or_stricter_later_targets)
+{
+    CacheBudget budget{1024};
+    auto headers{Headers(121, 33)};
+    // This first header satisfies mainnet's tighter target; later easy proofs
+    // do not. A first-header-only limit check would incorrectly authorize them.
+    headers.front() = main->GenesisBlock();
+    BOOST_REQUIRE(CheckProofOfWorkImpl(headers.front().GetPoWHash(), headers.front().nBits, main->GetConsensus()));
+    HeaderPoWVerifier verifier{8};
+    BOOST_REQUIRE(verifier.Check(headers, params));
+    BOOST_CHECK(!verifier.Check(headers, main->GetConsensus()));
+    auto invalid{headers};
+    Invalidate(invalid.back());
+    BOOST_CHECK(!verifier.Check(invalid, params));
+    BOOST_CHECK(!verifier.Check(invalid, params)); // Failure must not be cached.
+    invalid = headers;
+    invalid.back().nBits = 0;
+    BOOST_CHECK(!verifier.Check(invalid, params));
+    const std::array<void (*)(CBlockHeader&), 5> mutate{
+        [](CBlockHeader& h) { ++h.nVersion; },
+        [](CBlockHeader& h) { ++h.hashPrevBlock.begin()[0]; },
+        [](CBlockHeader& h) { ++h.hashMerkleRoot.begin()[0]; },
+        [](CBlockHeader& h) { ++h.nTime; },
+        [](CBlockHeader& h) { --h.nBits; },
+    };
+    for (const auto change : mutate) {
+        invalid = headers;
+        unsigned attempts{0};
+        do {
+            BOOST_REQUIRE_LT(++attempts, 1000U);
+            change(invalid.back());
+        } while (CheckProofOfWorkImpl(invalid.back().GetPoWHash(), invalid.back().nBits, params));
+        BOOST_REQUIRE(DeriveTarget(invalid.back().nBits, params.powLimit));
+        BOOST_CHECK(!verifier.Check(invalid, params));
+    }
+    BOOST_REQUIRE(verifier.Check(headers, params));
+}
+
+BOOST_AUTO_TEST_CASE(mainnet_batch_evidence_after_individual_cache_pressure)
+{
+    CacheBudget budget{128 << 10};
+    DataStream stream{test::data::sugarchain_headers};
+    std::vector<CBlockHeader> headers(6000);
+    for (auto& header : headers) stream >> header;
+    BOOST_REQUIRE(stream.empty());
+    HeaderPoWVerifier verifier{8};
+    const auto& consensus{main->GetConsensus()};
+    for (bool repeat : {false, true}) {
+        Observation observation;
+        for (size_t offset{0}; offset < headers.size(); offset += 2000) {
+            BOOST_REQUIRE(verifier.Check(std::span{headers}.subspan(offset, 2000), consensus));
+        }
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        if (repeat) {
+            BOOST_CHECK_LE(calls.load(), 3U);
+        } else {
+            BOOST_CHECK_EQUAL(calls.load(), headers.size());
+        }
+#endif
+    }
+    // Changing a real header cannot inherit the successful batch's evidence.
+    auto& changed{headers[1500]};
+    do { ++changed.nNonce; } while (CheckProofOfWorkImpl(changed.GetPoWHash(), changed.nBits, consensus));
+    BOOST_CHECK(!verifier.Check(std::span{headers}.first(2000), consensus));
+}
+
 #ifdef ENABLE_YESPOWER_TEST_WRAP
 BOOST_AUTO_TEST_CASE(local_worker_failure_reaches_caller_without_poisoning_queue)
 {
@@ -538,6 +667,14 @@ BOOST_AUTO_TEST_CASE(local_worker_failure_reaches_caller_without_poisoning_queue
         Observation observation{/*fail=*/2};
         BOOST_CHECK_THROW(verifier.Check(headers, params), std::runtime_error);
         BOOST_CHECK_LE(calls.load(), 9U);
+        BOOST_CHECK_EQUAL(active.load(), 0U);
+    }
+    {
+        // A partial/failed batch must not become successful batch evidence.
+        // Fail the next remaining cold proof on the retry as well.
+        Observation observation{/*fail=*/1};
+        BOOST_CHECK_THROW(verifier.Check(headers, params), std::runtime_error);
+        BOOST_CHECK_GT(calls.load(), 0U);
         BOOST_CHECK_EQUAL(active.load(), 0U);
     }
     BOOST_CHECK(verifier.Check(headers, params));

@@ -50,6 +50,7 @@ class YespowerVerificationCache {
     using Cache = CuckooCache::cache<uint256, SignatureCacheHasher>;
     CSHA256 m_hasher;
     std::unique_ptr<Cache> m_valid{std::make_unique<Cache>()};
+    std::unique_ptr<Cache> m_batches;
     std::shared_mutex m_mutex;
 
 public:
@@ -57,15 +58,24 @@ public:
     {
         const auto nonce{GetRandHash()};
         m_hasher.Write(nonce.begin(), nonce.size());
-        m_valid->setup_bytes(DEFAULT_YESPOWER_CACHE_BYTES);
+        Reset(DEFAULT_YESPOWER_CACHE_BYTES);
     }
 
     void Reset(size_t bytes)
     {
         auto replacement{std::make_unique<Cache>()};
-        replacement->setup_bytes(bytes);
+        // Reserve within the configured budget, not in addition to it. Tiny
+        // test caches keep their original minimum-allocation behavior.
+        const size_t batch_bytes{bytes >= 1024 ? std::min(bytes / 8, size_t{2} << 20) : 0};
+        std::unique_ptr<Cache> batches;
+        if (batch_bytes) {
+            batches = std::make_unique<Cache>();
+            batches->setup_bytes(batch_bytes);
+        }
+        replacement->setup_bytes(bytes - batch_bytes);
         std::unique_lock lock{m_mutex};
         std::swap(m_valid, replacement);
+        std::swap(m_batches, batches);
     }
 
     uint256 Entry(const CBlockHeader& header) const
@@ -88,6 +98,40 @@ public:
     {
         std::unique_lock lock{m_mutex};
         m_valid->insert(entry);
+    }
+
+    uint256 BatchEntry(std::span<const CBlockHeader> headers) const
+    {
+        // Bind order, count and all header bytes. Separate the batch domain
+        // from individual proofs; neither kind of evidence survives restart.
+        const unsigned char domain{1};
+        unsigned char count[8];
+        WriteLE64(count, headers.size());
+        auto hasher{m_hasher};
+        hasher.Write(&domain, 1).Write(count, sizeof(count));
+        for (const auto& header : headers) {
+            const auto hash{header.GetHash()};
+            hasher.Write(hash.begin(), hash.size());
+        }
+        uint256 entry;
+        hasher.Finalize(entry.begin());
+        return entry;
+    }
+
+    bool RestoreBatch(const uint256& entry, std::span<const CBlockHeader> headers)
+    {
+        std::unique_lock lock{m_mutex};
+        if (!m_batches || !m_batches->contains(entry, false)) return false;
+        // Repopulate ordinary proof evidence for subsequent AcceptBlockHeader
+        // checks. The caller must first recheck every current target limit.
+        for (const auto& header : headers) m_valid->insert(Entry(header));
+        return true;
+    }
+
+    void InsertBatch(const uint256& entry)
+    {
+        std::unique_lock lock{m_mutex};
+        if (m_batches) m_batches->insert(entry);
     }
 };
 
@@ -351,21 +395,35 @@ HeaderPoWVerifier::~HeaderPoWVerifier() = default;
 
 bool HeaderPoWVerifier::Check(std::span<const CBlockHeader> headers, const Consensus::Params& params)
 {
-    if (!m_impl || !params.fYespowerSugar || EnableFuzzDeterminism()) {
+    if (!params.fYespowerSugar || EnableFuzzDeterminism()) {
         return std::ranges::all_of(headers, [&](const auto& header) { return CheckBlockProofOfWork(header, params); });
     }
-    std::lock_guard call_lock{m_impl->caller_mutex};
+    std::unique_lock<std::mutex> call_lock;
+    if (m_impl) call_lock = std::unique_lock{m_impl->caller_mutex};
     if (headers.empty()) return true;
     // An invalid first header must not cause speculative work for the message.
     if (!CheckBlockProofOfWork(headers.front(), params)) return false;
-    headers = headers.subspan(1);
+    if (headers.size() == 1) return true;
     auto& cache{VerificationCache()};
+    bool all_cached{true};
+    for (const auto& header : headers) {
+        if (!DeriveTarget(header.nBits, params.powLimit)) return false;
+        all_cached = all_cached && cache.Contains(cache.Entry(header));
+    }
+    if (all_cached) return true; // Preserve the ordinary warm-cache fast path.
+    const auto entry{cache.BatchEntry(headers)};
+    if (cache.RestoreBatch(entry, headers)) return true;
+    headers = headers.subspan(1);
+    if (!m_impl) {
+        if (!std::ranges::all_of(headers, [&](const auto& header) { return CheckBlockProofOfWork(header, params); })) return false;
+        cache.InsertBatch(entry);
+        return true;
+    }
     while (!headers.empty()) {
         std::vector<HeaderPoWCheck> batch;
         batch.reserve(m_impl->workers);
         while (!headers.empty() && batch.size() < size_t(m_impl->workers)) {
             const auto& header{headers.front()};
-            if (!DeriveTarget(header.nBits, params.powLimit)) return false;
             if (!cache.Contains(cache.Entry(header))) batch.push_back({&header, &params});
             headers = headers.subspan(1);
         }
@@ -379,5 +437,6 @@ bool HeaderPoWVerifier::Check(std::span<const CBlockHeader> headers, const Conse
             return false;
         }
     }
+    cache.InsertBatch(entry);
     return true;
 }

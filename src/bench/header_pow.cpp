@@ -78,8 +78,11 @@ int main(int argc, char** argv)
             previous_hash = header.GetHash();
         }
         HeaderPoWVerifier verifier{int(workers)};
-        std::cout << "workers,pass,headers,seconds,headers_per_second\n";
+        std::cout << "workers,pass,headers,seconds,headers_per_second,yespower_calls\n";
         for (const auto* pass : {"cold", "repeat"}) {
+#ifdef ENABLE_YESPOWER_BENCH_WRAP
+            pow_calls = 0;
+#endif
             const auto start{std::chrono::steady_clock::now()};
             for (size_t pos{0}; pos < headers.size(); pos += 2000) {
                 if (!verifier.Check(std::span{headers}.subspan(pos, std::min(size_t{2000}, headers.size() - pos)), params)) {
@@ -88,7 +91,13 @@ int main(int argc, char** argv)
             }
             const double seconds{std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count()};
             std::cout << workers << ',' << pass << ',' << headers.size() << ',' << seconds << ','
-                      << headers.size() / seconds << std::endl;
+                      << headers.size() / seconds << ',';
+#ifdef ENABLE_YESPOWER_BENCH_WRAP
+            std::cout << pow_calls.load();
+#else
+            std::cout << "unavailable";
+#endif
+            std::cout << std::endl;
         }
         if (block_stage) {
             // Isolate the serial proof check used by block validation. Reset is

@@ -705,8 +705,10 @@ remain unmeasured and belong to the user's final validation.
 
 ## Follow-up: user-reported block-stage bottleneck (2026-09-29)
 
-The additional development window starts at 2026-09-29 15:23:24 +09:00 and
-ends no later than 2026-10-01 15:23:24 +09:00. Validated logical checkpoints
+The additional development window started at 2026-09-29 15:23:24 +09:00.
+The user replaced the original 48-hour limit with a remaining 12-hour budget
+at 2026-09-29 19:31:55 +09:00, ending no later than 2026-09-30 07:31:55 +09:00.
+Validated logical checkpoints
 are pushed immediately; a checkpoint is not completion of this investigation.
 Startup, block-index loading, startup memory, shutdown and flush latency
 optimization are outside this follow-up's scope.
@@ -1182,3 +1184,67 @@ No suppression, sanitizer option weakening, scheduler modification or production
 workaround was added. This leaves the local TSan fixture limitation unresolved;
 it does not establish a new tip-logging race. The new timestamp is accessed only
 under the existing `cs_main` lock and introduces no thread or asynchronous work.
+
+### Bounded evidence for repeated, successfully verified header batches
+
+Delayed peers can replay an identical historical PRESYNC chain after its
+individual PoW entries have been evicted. A process-local successful-batch cache
+now retains evidence for the ordered header sequence. Its salted key binds the
+count and every serialized header through its block hash. Only a wholly
+successful verification inserts evidence; exceptions and rejected batches do
+not. Nothing is persisted or inferred from disk/TREE validity.
+
+The cache reserves one eighth of the configured entry budget, capped at 2MiB,
+within that budget. Tiny test caches retain their previous allocation behavior.
+Every call still validates the first header before speculative work and checks
+every compact target against the applicable limit. YespowerSugar parameters are
+fixed by the existing consensus implementation. Hits refill individual proof
+entries so subsequent contextual acceptance does not merely inherit deferred
+PoW cost. Fully warm individual entries retain their fast path. Changed order,
+count, header fields, or batch boundaries cannot reuse unrelated batch evidence.
+Difficulty, commitments, chainwork and contextual validation are unchanged.
+
+A/B/B/A uses 40000 real mainnet headers, eight workers and identical portable
+compiler flags. Medians below compare the previous implementation with the final
+batch implementation, including the warm-cache fast path:
+
+| Entry budget | Phase | Previous | Batch evidence |
+| --- | --- | --- | --- |
+| 1MiB | Cold unique headers | 17.12740s | 16.94865s |
+| 1MiB | Repeated headers | 8.97568s | 0.12378s |
+| 16MiB | Cold unique headers | 16.52580s | 16.83405s |
+| 16MiB | Fully warm repeat | 0.04302s | 0.04453s |
+
+Every cold run performs all 40000 genuine proofs. The two 1MiB candidate repeats
+perform 19 and 18 proofs; fully warm 16MiB repeats perform zero in both arms.
+There is no demonstrated unique-cold speedup. The approximately 1.9% cold cost
+in the 16MiB comparison and shared-machine variation remain visible rather than
+being presented as a gain. An initial implementation added about 29ms of warm
+batch-key/refill overhead per 40000 headers; the final individual-cache fast
+path reduces the measured difference to about 1.5ms.
+
+`contrib/bench/presync-peer-overlap.py` reproduces delayed overlap through two
+inbound localhost peers with real mainnet parameters and unchanged minimum
+chainwork. It disables external discovery/connections, keeps blocks/indexed
+headers at zero, and checks PRESYNC progress after every 2000-header message.
+This exercises PRESYNC rather than outbound scheduling or Internet throughput.
+The baseline two-run median delayed pass takes 9.81515s / 65.865 CPU seconds.
+The final candidate takes 1.29013s / 0.16 CPU seconds, after a 17.73430s unique
+first pass. Its process total is 40022 genuine proofs including startup checks;
+the two baseline totals were 61005 and 61001. Message/ping pacing imposes a wall
+time floor. Batch boundaries must match to obtain this benefit; cold unique
+work is not eliminated. These are component/localhost results, not full IBD.
+
+Regression coverage binds order/count, all mutable header fields, stricter
+later target limits, failure/exception behavior, cache reset, scalar reuse,
+concurrent callers and 6000 real headers under eviction pressure. The final
+release run passes 70 cases / 433332 assertions; ASan/UBSan passes all 15
+header-PoW cases / 24254 assertions, and TSan passes five selected batch,
+exception and concurrency cases / 67 assertions. A broader earlier ASan/UBSan
+run also covered SugarShield, PoW and headers sync. Full daemon/CLI/Qt/IPC build
+passes. The final 100000-block offline import performs all 100000 first proofs,
+zero repeated block proofs, matches the recorded tip and UTXO digest, and passes
+full level-4 verifychain. Its block phase takes 5.07966s, recorded as a regression
+check rather than a separate performance claim.
+The final real-header localhost P2P/restart and functional shutdown tests also
+pass. No public-mainnet run or user-node profiling was performed.
