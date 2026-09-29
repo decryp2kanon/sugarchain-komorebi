@@ -1039,7 +1039,8 @@ arguments now select script workers (0--15) and DB cache MiB (4--16384), while
 preserving the old defaults and fixing Yespower at eight workers. Fixture and
 resource metadata go to stderr; the A/B runner verifies requested budgets and
 records complete commands. This is **not** further Yespower worker exploration.
-With the same binary and 512MiB DB cache, 100000-block A/B/B/A measured:
+With the same binary and an actual 1GiB DB cache on both arms, 100000-block
+A/B/B/A measured (512MiB was requested but not applied; see the correction below):
 
 | Additional script workers | Block-phase runs | Median |
 | --- | --- | --- |
@@ -1050,8 +1051,9 @@ Both arms perform 100000 first proofs and no repeated block proofs, and match
 the exact tip/UTXO/verifychain result. The existing production auto-selection is
 retained: this comparison corrects proxy representativeness, not production
 code. Six malformed/out-of-range argument cases, a default-argument genuine
-block import, and a 0-versus-15 script-worker / 4MiB resource-boundary A/B smoke
-all pass. The one-block smoke is a tooling/correctness check, not speed evidence.
+block import, and a 0-versus-15 script-worker A/B smoke all pass. That smoke
+requested 4MiB but did not apply it, so it did not validate the lower DB-cache
+boundary. The one-block smoke is a tooling/correctness check, not speed evidence.
 
 ### Avoid repeated directory checks when opening existing block files
 
@@ -1061,7 +1063,7 @@ original directory-creation and writable-file-creation fallback. There is no
 cached directory state or file handle. Seeking, file closure, truncation,
 `FileCommit`, `DirectoryCommit`, flush ordering and validation are unchanged.
 
-With 15 script workers, eight PoW workers and 512MiB DB cache on both arms,
+With 15 script workers, eight PoW workers and an actual 1GiB DB cache on both arms,
 the 100000-real-block A/B/B/A block-phase results were:
 
 | Variant | Runs | Median |
@@ -1090,3 +1092,45 @@ header-PoW, header-chainwork and SugarShield suites pass 55 cases / 430041
 assertions. The full GUI/daemon/CLI/IPC production build passes.
 ASan/UBSan with leak checking and halt-on-error also passes the 13 flatfile and
 block-manager cases / 119 assertions.
+
+### Cache-budget measurement correction
+
+Reporting the active cache sizes exposed a benchmark plumbing error:
+`ChainTestingSetup` computes its initial cache budget from its local `m_args`,
+but parses `extra_args` into `node.args` (the global argument manager). The old
+harness supplied `-dbcache` through `extra_args` without recalculating that
+budget. Thus the earlier 512MiB requests, and the initial 4MiB diagnostic, used
+the same 1GiB host default. Matched A/B comparisons still used equal budgets;
+the requested-size labels and the claim of exercising a 4MiB boundary were
+incorrect. The preserved raw evidence is not rewritten.
+
+The benchmark now calculates the budget from the arguments actually parsed,
+before constructing/loading its replacement chainstate. It reports active UTXO,
+coins-DB, block-index and borrowable mempool budgets; the runner checks the
+actual split. This changes only tooling, not production cache policy.
+
+Small `dbcache` alone does not imply pressure: Core31 can borrow the empty
+mempool budget. An optional decimal-MB mempool argument controls that budget
+in the isolated harness. Optional `--log-coindb` counts existing chainstate-write
+log events within each timed phase. These are attempted write events, not a
+new durability guarantee; final tip/UTXO and full verifychain still gate success.
+Enabling a logger adds message-formatting overhead, so logged diagnostic timings
+must not be compared with unlogged benchmark timings. A zero counter with logging
+disabled is not evidence that no flush occurred.
+
+The corrected 100000-block diagnostic uses 1835008 bytes each for UTXO cache and
+coins DB, 524288 bytes for the block-index DB, and 5000000 borrowable mempool
+bytes. It observes seven chainstate write events during block import (7.04153s
+with diagnostic logging). All 100000 first proofs are performed; redundant
+block proofs remain zero, and the known tip/UTXO/full verifychain match. This
+demonstrates real cache-pressure writes in a small historical fixture, not
+late-mainnet database scale or a comparison with the unlogged timings above.
+
+Full level-4 verification receives at least 128MiB UTXO cache **after** the timed
+import and UTXO digest calculation. This separate verification budget is printed
+to stderr; `SKIPPED_L3_CHECKS` is never accepted as success. Import budgets are
+not enlarged during measurement. Default-argument and real 4MiB/5MB diagnostic
+smokes pass, six invalid argument cases are rejected before fixture execution,
+and the runner rejects the preserved pre-fix binary's wrong actual cache split.
+Legacy binaries lacking active-budget telemetry are explicitly marked as not
+having verified actual cache budgets in the A/B result.
