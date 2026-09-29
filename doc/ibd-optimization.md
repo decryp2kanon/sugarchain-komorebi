@@ -694,3 +694,65 @@ Their speedup ratios cannot be multiplied into a full-IBD prediction. PR 225's
 10h49m15s result also uses a different validation/trust policy. Final full IBD
 time, improvement ratio against a full-run baseline, and the five-hour target
 remain unmeasured and belong to the user's final validation.
+
+## Follow-up: user-reported block-stage bottleneck (2026-09-29)
+
+The additional development window starts at 2026-09-29 15:23:24 +09:00 and
+ends no later than 2026-10-01 15:23:24 +09:00. Validated logical checkpoints
+are pushed immediately; a checkpoint is not completion of this investigation.
+Startup, block-index loading, startup memory, shutdown and flush latency
+optimization are outside this follow-up's scope.
+
+The user reports 11h18 elapsed, all 44,647,416 headers downloaded, and
+2,009,394 blocks connected. Block throughput was approximately 204.8/s current,
+170.5/s average, usually 150--250/s and occasionally 294/s. The graph projected
+57h49 remaining, or approximately **69h07 total**. This is an incomplete-run
+projection, NOT a measured completed full IBD. PRESYNC was 1400--1600 headers/s,
+REDOWNLOAD/replay 9000--10700/s. Block-stage profiling now has priority.
+
+At investigation start, local and origin both pointed to `916273c2de`; the
+currently running user Qt reported blocks=0 and headers=0. It therefore does
+not provide a live sample of the reported slow block stage. No user node was
+stopped or restarted. The previous run's datadir/log and actual resource
+arguments are needed to attribute its bottleneck, rather than assuming it used
+the example resource arguments above.
+
+### Proof-cost and cache-retention diagnostics
+
+`bench_header_pow HEADERS 6000 8 16 --block-stage` adds two explicitly isolated
+serial block-proof passes after the original cold/repeated header passes. On
+Linux, a linker wrapper counts actual yespower calls without production
+instrumentation. The warm pass keeps genuinely verified entries; the cold pass
+resets the cache to model all misses. Neither is complete block validation or
+network throughput. Existing benchmark invocation/output remains unchanged
+without the additional option.
+
+First measured run: warm block-proof pass 0.00647043 seconds, **0** yespower
+calls; cold pass 17.2746 seconds (347.331 proofs/s), **6000** calls. This proves
+the potentially large cost of misses, but does not establish the real run's
+miss rate. Measurements overlapped a single-thread cache-policy diagnostic;
+use isolated repeated runs before making performance claims.
+
+`contrib/bench/pow-cache-retention.cpp` independently exercises the exact
+production CuckooCache type with deterministic SHA256 keys. These synthetic
+entries never enter a node or bypass proof verification. For example:
+
+```
+c++ -std=c++20 -O2 -Isrc -Ibuild-ibd-optimization-final/src \
+  contrib/bench/pow-cache-retention.cpp \
+  build-ibd-optimization-final/lib/libbitcoin_crypto.a -o /tmp/pow-cache-retention
+/tmp/pow-cache-retention 2048 44647416 100
+```
+
+After 44,647,416 distinct insertions, sampling every 100th key in each decile:
+
+| Cache | Entries capacity | First nine deciles | Last decile |
+|---|---:|---:|---:|
+| 16 MiB | 524,288 | 0/401,832 retained | 5,248/44,648 retained |
+| 2048 MiB | 67,108,864 | 401,832/401,832 retained | 44,648/44,648 retained |
+
+Thus full-chain eviction is a demonstrated risk at the default budget, but
+**not demonstrated at 2048 MiB** for this unique-chain workload. Salt, ordering,
+competing chains and reinsertion can differ in a real process. This diagnostic
+does not measure actual live cache hits and does not justify trusting disk
+flags, old software's block-index validity, or unverified header evidence.

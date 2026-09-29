@@ -8,9 +8,11 @@
 #include <pow.h>
 #include <streams.h>
 #include <util/translation.h>
+#include <crypto/yespower-1.0.1/yespower.h>
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <charconv>
 #include <chrono>
 #include <deque>
@@ -23,10 +25,23 @@
 
 const std::function<std::string(const char*)> G_TRANSLATION_FUN{nullptr};
 
+#ifdef ENABLE_YESPOWER_BENCH_WRAP
+static std::atomic<uint64_t> pow_calls{0};
+extern "C" int __real_yespower(yespower_local_t*, const uint8_t*, size_t, const yespower_params_t*, yespower_binary_t*);
+extern "C" int __wrap_yespower(yespower_local_t* local, const uint8_t* input, size_t size,
+                              const yespower_params_t* params, yespower_binary_t* output)
+{
+    ++pow_calls;
+    return __real_yespower(local, input, size, params, output);
+}
+#endif
+
 int main(int argc, char** argv)
 {
     try {
-        if (argc != 4 && argc != 5) throw std::runtime_error("Usage: bench_header_pow RAW_HEADERS COUNT WORKERS (1-8) [CACHE_MIB (1-2048)]");
+        if (argc < 4 || argc > 6) throw std::runtime_error("Usage: bench_header_pow RAW_HEADERS COUNT WORKERS (1-8) [CACHE_MIB (1-2048)] [--block-stage]");
+        const bool block_stage{argc == 6};
+        if (block_stage && std::string_view{argv[5]} != "--block-stage") throw std::runtime_error("Unknown mode");
         auto number = [](std::string_view arg, unsigned maximum) {
             unsigned value{0};
             auto [end, error]{std::from_chars(arg.data(), arg.data() + arg.size(), value)};
@@ -37,7 +52,8 @@ int main(int argc, char** argv)
         };
         const auto count{number(argv[2], 1'000'000)};
         const auto workers{number(argv[3], MAX_HEADER_POW_WORKERS)};
-        if (argc == 5) InitYespowerVerificationCache(size_t(number(argv[4], MAX_YESPOWER_CACHE_BYTES >> 20)) << 20);
+        const size_t cache_bytes{argc >= 5 ? size_t(number(argv[4], MAX_YESPOWER_CACHE_BYTES >> 20)) << 20 : DEFAULT_YESPOWER_CACHE_BYTES};
+        InitYespowerVerificationCache(cache_bytes);
         const auto chain{CChainParams::Main()};
         const auto& params{chain->GetConsensus()};
         std::ifstream input{argv[1], std::ios::binary};
@@ -73,6 +89,29 @@ int main(int argc, char** argv)
             const double seconds{std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count()};
             std::cout << workers << ',' << pass << ',' << headers.size() << ',' << seconds << ','
                       << headers.size() / seconds << std::endl;
+        }
+        if (block_stage) {
+            // Isolate the serial proof check used by block validation. Reset is
+            // a controlled all-miss case, not an assertion about live retention.
+            std::cout << "block_proof_pass,headers,seconds,headers_per_second,yespower_calls\n";
+            for (const bool reset : {false, true}) {
+                if (reset) InitYespowerVerificationCache(cache_bytes);
+#ifdef ENABLE_YESPOWER_BENCH_WRAP
+                pow_calls = 0;
+#endif
+                const auto start{std::chrono::steady_clock::now()};
+                for (const auto& header : headers) {
+                    if (!CheckBlockProofOfWork(header, params)) throw std::runtime_error("Invalid block proof");
+                }
+                const double seconds{std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count()};
+                std::cout << (reset ? "cold" : "warm") << ',' << headers.size() << ',' << seconds << ',' << headers.size() / seconds << ',';
+#ifdef ENABLE_YESPOWER_BENCH_WRAP
+                std::cout << pow_calls.load();
+#else
+                std::cout << "unavailable";
+#endif
+                std::cout << std::endl;
+            }
         }
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
