@@ -1460,7 +1460,7 @@ proof or a substitute for the documented sanitizer findings.
 
 | Remaining question | Evidence now | Next useful measurement / constraint |
 | --- | --- | --- |
-| Unique cold Yespower cost | Every matched header phase performs all 100000 proofs and takes about 42 seconds; the million-header phase takes 434.597 seconds. | Still a major cost. These short/early fixtures do not justify a full-run estimate. Do not repeat worker-count, affinity or compiler sweeps already lacking benefit. |
+| Unique cold Yespower cost | Every matched header phase performs all 100000 proofs. The idle-host PMU run took 39.465 seconds (2533.89 headers/s); the million-header phase takes 434.597 seconds. | Still a major cost. These short/early fixtures do not justify a full-run estimate. Do not repeat worker-count, affinity or compiler sweeps already lacking benefit. |
 | Actual redundant block proofs in the deleted run | Controlled cold baseline repeats every proof; live-index evidence removes those repetitions. The deleted run has no raw call counts. | The user's eventual new run must distinguish genuine first proofs from repeats; the graph alone cannot recover cache misses. No persistent disk status may replace proof. |
 | Internet peer supply and scheduling | Bounded mixed-speed localhost peers benefit; uniform/high-RTT cases do not show the same gain. | Observe peer delivery, in-flight occupancy and validation starvation together in the user's final run. Do not infer Internet improvement or enlarge the 1024 lookahead from a localhost ratio. |
 | Full-chain script/UTXO/DB costs | Early million-block profile shows script verification, file opening and cache flush costs; correctness checks pass. | Later-chain transaction mix, 44M-entry index scale and actual cache/flush pressure are not represented. Preserve script verification and durability; no broad DB/cache rewrite is supported by this evidence. |
@@ -1499,6 +1499,26 @@ benchmark binary SHA256 is
 `60e5ab0e4e0049cfcc19eee4b9b07c3c6d989203e6a8366a6fb8faeb9c7685e1`.
 No further queue/worker tuning or speculative rewrite of the consensus-critical
 mixing core is justified by this profile alone.
+
+An idle-host `perf stat` run of the same binary and fixture completed its cold
+pass in 39.465 seconds (2533.89 headers/s) and its repeated pass in 0.107848
+seconds (927230 headers/s). The cold pass performed all 100000 genuine
+Yespower checks; the repeated pass performed none. The process-wide counters
+were 1,345,192,603,605 user cycles, 2,449,177,712,825 user instructions (1.82
+instructions/cycle), 760,578,078,944 cache references and 23,268,327,529 cache
+misses (3.059%). It used 303789.43 ms task-clock (7.507 CPUs), with 112079
+context switches, 68 CPU migrations and 15473 page faults; elapsed time was
+40.468371986 seconds, comprising 302.882552 seconds user CPU and 0.711076
+seconds system CPU.
+
+These counters cover the complete benchmark process rather than only the timed
+cold loop. IPC and the generic cache-miss ratio do not by themselves establish
+whether the mixing core is memory-bound or compute-bound. A concurrent-load run
+that took 94.4911 seconds was resource-contention-sensitive and is not used as
+the final PMU reference. This remains a cold Yespower component measurement,
+not a full IBD result or forecast; extrapolating its isolated throughput across
+the mainnet header count does not include networking, SugarShield or block
+validation costs.
 
 ### Proof-regression mutation check
 
