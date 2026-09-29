@@ -1499,3 +1499,20 @@ benchmark binary SHA256 is
 `60e5ab0e4e0049cfcc19eee4b9b07c3c6d989203e6a8366a6fb8faeb9c7685e1`.
 No further queue/worker tuning or speculative rewrite of the consensus-critical
 mixing core is justified by this profile alone.
+
+### Proof-regression mutation check
+
+Three deliberately incorrect `pow.cpp` copies were compiled outside the source
+and normal build directories and linked into disposable test executables.
+Each selected test passed in the unchanged binary and failed with explicit
+Boost assertions (exit 201, not a crash) in its corresponding mutant:
+
+- Unconditionally accepting PoW: `invalid_first_and_later_proofs_have_bounded_speculation`.
+- Removing the live-index proof-evidence guard: `indexed_proofs_survive_eviction_but_not_disk_copies`.
+- Omitting current per-header target limits before batch restoration:
+  `batch_evidence_never_authorizes_mutations_or_stricter_later_targets`.
+
+Normal binary and production-source hashes remained unchanged. These checks
+confirm that the selected regressions detect three concrete trust failures;
+they are not proof that every possible validation bypass is covered. No mutant
+source/object is installed, committed or linked into production binaries.
