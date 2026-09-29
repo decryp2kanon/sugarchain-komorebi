@@ -25,7 +25,8 @@ class SugarchainHeaderPoWTest(BitcoinTestFramework):
         self.setup_clean_chain = True
         self.num_nodes = 1
         self.supports_cli = False
-        self.extra_args = [["-conf=bitcoin.conf", "-disablewallet=1", "-parpow=8",
+        # Exercise the production default of eight workers without an override.
+        self.extra_args = [["-conf=bitcoin.conf", "-disablewallet=1",
                             "-assumevalid=0", "-v2transport=0", "-maxpowcache=1"]]
 
     def run_test(self):

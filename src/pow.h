@@ -48,7 +48,7 @@ void InitYespowerVerificationCache(size_t bytes);
 /** With cs_main held, restore an evicted proof from a genuinely checked live index. */
 void CacheVerifiedBlockIndexProof(const CBlockIndex& index, const Consensus::Params& params);
 
-inline constexpr int DEFAULT_HEADER_POW_WORKERS{1};
+inline constexpr int DEFAULT_HEADER_POW_WORKERS{8};
 inline constexpr int MAX_HEADER_POW_WORKERS{8};
 
 /** Bounded, node-owned verification workers; no trust from peer/index status. */

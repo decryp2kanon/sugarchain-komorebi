@@ -17,6 +17,22 @@
 
 BOOST_FIXTURE_TEST_SUITE(peerman_tests, RegTestingSetup)
 
+BOOST_AUTO_TEST_CASE(header_pow_default_and_explicit_override)
+{
+    ArgsManager args;
+    PeerManager::Options options;
+    node::ApplyArgsManOptions(args, options);
+    BOOST_CHECK_EQUAL(options.header_pow_workers, 8);
+    BOOST_CHECK_EQUAL(MAX_HEADER_POW_WORKERS, 8);
+    // Configuration bounds only: this test does not launch worker threads.
+    for (const auto& [value, expected] : std::vector<std::pair<const char*, int>>{
+             {"1", 1}, {"2", 2}, {"4", 4}, {"8", 8}, {"0", 1}, {"16", 8}}) {
+        args.ForceSetArg("-parpow", value);
+        node::ApplyArgsManOptions(args, options);
+        BOOST_CHECK_EQUAL(options.header_pow_workers, expected);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(ibd_delivery_budget_is_bounded_and_ignores_idle_time)
 {
     node::IBDBlockDelivery delivery;

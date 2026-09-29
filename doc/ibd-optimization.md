@@ -284,7 +284,15 @@ then passed.
 
 ## Bounded parallel header PoW
 
-`-parpow=1` preserves serial verification by default. Values are clamped to 1-8.
+Header verification defaults to eight workers. Explicit `-parpow=1` preserves
+serial verification; explicit values are still clamped to 1-8.
+The default change exposes the already measured parallel path to ordinary
+invocations; it is not an additional speedup over runs already using `-parpow=8`.
+The default/override unit case checks 1/2/4/8 and clamping without launching a
+worker sweep. After changing the default, 41 related release cases (431795
+assertions), three TSan pool/reset/lifetime cases (61 assertions), the localhost
+mainnet P2P/restart test without a `-parpow` override, and the shutdown functional
+test pass. GUI, daemon, CLI and IPC targets rebuild successfully.
 In parallel mode a single node-owned `HeaderPoWVerifier` reuses Core31's
 `CCheckQueue`; peers do not create their own pools. The first header is checked
 synchronously. Subsequent batches contain at most eight uncached proofs, and a
