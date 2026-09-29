@@ -756,3 +756,32 @@ Thus full-chain eviction is a demonstrated risk at the default budget, but
 competing chains and reinsertion can differ in a real process. This diagnostic
 does not measure actual live cache hits and does not justify trusting disk
 flags, old software's block-index validity, or unverified header evidence.
+
+The user subsequently confirmed that the slow run's datadir/debug.log were
+accidentally deleted. A preserved graph records 11h18m09s elapsed and 57h49m20s
+projected remaining (69h07m29s total), 2,009,394 blocks, 44,647,416 headers,
+204.8/s current, 170.5/s average and 294.0/s maximum block speed. Block download
+overlaps the final part of header sync in the graph. This supports prioritizing
+the block stage but cannot identify its cache budget, miss rate or CPU stacks.
+Do not wait for lost telemetry or disturb the user's replacement node.
+
+Existing local historical block files yielded fixtures without networking or
+modifying their source. The recovered 6000-block fixture matches the prior
+SHA256 `39ba457e491589267dbc4c3d916aa863a4112fdf99b6d4b86ddaf0ede23769ed`.
+A 100000-block fixture has SHA256
+`8b541d086a7496a5681f60521c9e0ad81b59916a070efca09a670d86abc0e058`
+and tip `b62290c6914adee9b29326b8a4567114fff1f9013acb9c3b6ff68612a2947f99`.
+Fixture extraction checks framing/hash continuity; production validation still
+has to verify their PoW, difficulty, transactions and chainstate.
+
+`contrib/bench/yespower-call-profile.cpp` can be linked into a separate
+diagnostic executable using `-Wl,--wrap=yespower`. It invokes the unchanged
+primitive, counts calls/errors and accumulates thread CPU time (not overlapping
+wall time). It is not linked into production targets. A first 6000-block cold
+offline import, with networking/assumevalid disabled, reached the exact tip
+and stopped normally: 21.361s elapsed, 21.528s process CPU, 6003 actual yespower
+calls, 20.140s yespower CPU (93.55%), zero primitive errors. Initialization and
+shutdown are included in process totals; neither is an optimization target.
+This is evidence that cold-proof import is CPU dominated, not evidence that the
+lost public-mainnet run had the same profile. Header-first/cold-cache and warm
+block-processing comparisons are the next required controls.
