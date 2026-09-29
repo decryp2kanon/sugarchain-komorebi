@@ -1445,3 +1445,35 @@ genuine-proof counts and harness/binary hashes are preserved in
 [`indexed-block-ab-20260929.json`](../contrib/bench/results/indexed-block-ab-20260929.json).
 All eight runs passed the recorded correctness gates. These are repeatable
 offline component observations, not a full-mainnet result or a five-hour claim.
+
+### Remaining bottlenecks and evidence required
+
+The post-checkpoint source audit follows successful proof evidence through
+`CheckBlockProofOfWork`, `AcceptBlockHeader`, live-index restoration and disk
+loading. Individual and ordered-batch hits still check current target limits;
+index restoration checks the reconstructed header against its index key. Disk
+copies do not carry the live evidence flag. Body/Merkle, contextual, script and
+chainstate validation remain independent of proof reuse. The real-header,
+mutated-body, current-rules, concurrent-reset and offline corruption tests above
+exercise those boundaries. This audit is not a claim of exhaustive security
+proof or a substitute for the documented sanitizer findings.
+
+| Remaining question | Evidence now | Next useful measurement / constraint |
+| --- | --- | --- |
+| Unique cold Yespower cost | Every matched header phase performs all 100000 proofs and takes about 42 seconds; the million-header phase takes 434.597 seconds. | Still a major cost. These short/early fixtures do not justify a full-run estimate. Do not repeat worker-count, affinity or compiler sweeps already lacking benefit. |
+| Actual redundant block proofs in the deleted run | Controlled cold baseline repeats every proof; live-index evidence removes those repetitions. The deleted run has no raw call counts. | The user's eventual new run must distinguish genuine first proofs from repeats; the graph alone cannot recover cache misses. No persistent disk status may replace proof. |
+| Internet peer supply and scheduling | Bounded mixed-speed localhost peers benefit; uniform/high-RTT cases do not show the same gain. | Observe peer delivery, in-flight occupancy and validation starvation together in the user's final run. Do not infer Internet improvement or enlarge the 1024 lookahead from a localhost ratio. |
+| Full-chain script/UTXO/DB costs | Early million-block profile shows script verification, file opening and cache flush costs; correctness checks pass. | Later-chain transaction mix, 44M-entry index scale and actual cache/flush pressure are not represented. Preserve script verification and durability; no broad DB/cache rewrite is supported by this evidence. |
+| File opening/positioning | Measured CPU cost exists, but the final descriptor-seek candidate improves only 1.45% with overlapping runs and more syscalls. | Rejected rather than shipped. A future candidate needs stable end-to-end benefit, portable semantics and unchanged write durability. |
+
+Already rejected experiments include the asynchronous proof window, physical
+core affinity, scratch alignment, `-O3`/AVX compiler variants and descriptor
+positioning. Their results above remain recorded; they are not pending changes.
+Large fixed download windows, checkpoint/AssumeValid shortcuts and persisted
+TREE-based proof trust are not fallback routes to the five-hour target.
+
+The user's final public-mainnet run remains necessary to measure elapsed full
+IBD time, peer supply and CPU/RAM/disk/network behavior at full scale. Startup,
+block-index loading, startup RAM and shutdown/flush-latency optimization remain
+outside this PR. The fixed development deadline is 2026-09-30 00:00 KST; from
+23:00 KST only landing, necessary verification and documentation are scheduled.
