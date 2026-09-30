@@ -22,6 +22,8 @@
 #include <string>
 #include <vector>
 
+namespace kernel { class BlockTreeDB; }
+
 /**
  * Maximum amount of time that a block timestamp is allowed to exceed the
  * current time before the block will be accepted.
@@ -150,6 +152,17 @@ public:
 
     //! (memory only) Maximum nTime in the chain up to and including this block.
     unsigned int nTimeMax{0};
+
+private:
+    // Current-process evidence only, bound to this immutable block-map key.
+    // Neither disk status nor TREE validity establishes a successful proof.
+    bool m_checked_yespower GUARDED_BY(::cs_main){false};
+    friend class ChainstateManager;
+    friend class kernel::BlockTreeDB;
+    friend class CDiskBlockIndex;
+    friend void CacheVerifiedBlockIndexProof(const CBlockIndex&, const Consensus::Params&);
+
+public:
 
     explicit CBlockIndex(const CBlockHeader& block)
         : nVersion{block.nVersion},
@@ -334,6 +347,7 @@ public:
 
     explicit CDiskBlockIndex(const CBlockIndex* pindex) : CBlockIndex(*pindex)
     {
+        m_checked_yespower = false; // A disk representation never carries live proof evidence.
         hashPrev = (pprev ? pprev->GetBlockHash() : uint256());
     }
 

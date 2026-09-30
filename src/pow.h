@@ -9,6 +9,9 @@
 #include <consensus/params.h>
 
 #include <cstdint>
+#include <cstddef>
+#include <memory>
+#include <span>
 
 class CBlockHeader;
 class CBlockIndex;
@@ -33,6 +36,31 @@ unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, int64_t nF
 bool CheckBlockProofOfWork(const CBlockHeader& header, const Consensus::Params& params);
 bool CheckProofOfWork(uint256 hash, unsigned int nBits, const Consensus::Params&);
 bool CheckProofOfWorkImpl(uint256 hash, unsigned int nBits, const Consensus::Params&);
+
+inline constexpr size_t DEFAULT_YESPOWER_CACHE_BYTES{16 << 20};
+// Also keeps CuckooCache's uint32_t epoch-size arithmetic below overflow.
+inline constexpr size_t MAX_YESPOWER_CACHE_BYTES{size_t{2048} << 20};
+/** Configure process-local proof evidence; resizing discards all old entries. */
+void InitYespowerVerificationCache(size_t bytes);
+
+/** With cs_main held, restore an evicted proof from a genuinely checked live index. */
+void CacheVerifiedBlockIndexProof(const CBlockIndex& index, const Consensus::Params& params);
+
+inline constexpr int DEFAULT_HEADER_POW_WORKERS{8};
+inline constexpr int MAX_HEADER_POW_WORKERS{8};
+
+/** Bounded, node-owned verification workers; no trust from peer/index status. */
+class HeaderPoWVerifier {
+    struct Impl;
+    std::unique_ptr<Impl> m_impl;
+
+public:
+    explicit HeaderPoWVerifier(int workers);
+    ~HeaderPoWVerifier();
+    HeaderPoWVerifier(const HeaderPoWVerifier&) = delete;
+    HeaderPoWVerifier& operator=(const HeaderPoWVerifier&) = delete;
+    bool Check(std::span<const CBlockHeader> headers, const Consensus::Params& params);
+};
 
 /**
  * Return false if the proof-of-work requirement specified by new_nbits at a

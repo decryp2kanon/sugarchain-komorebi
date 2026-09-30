@@ -10,9 +10,146 @@
 #include <arith_uint256.h>
 #include <algorithm>
 #include <chain.h>
+#include <checkqueue.h>
+#include <crypto/sha256.h>
+#include <cuckoocache.h>
 #include <primitives/block.h>
+#include <random.h>
 #include <uint256.h>
 #include <util/check.h>
+#include <util/hasher.h>
+
+#include <mutex>
+#include <exception>
+#include <limits>
+#include <shared_mutex>
+#include <stdexcept>
+
+namespace {
+static_assert(MAX_YESPOWER_CACHE_BYTES / sizeof(uint256) <= std::numeric_limits<uint32_t>::max() / 45);
+// As with the signature cache, store only successful verification, under a
+// salted digest of the entire input. This is bounded, process-local evidence:
+// neither a peer nor a persisted block-index status can populate it.
+class YespowerVerificationCache {
+    using Cache = CuckooCache::cache<uint256, SignatureCacheHasher>;
+    CSHA256 m_hasher;
+    std::unique_ptr<Cache> m_valid{std::make_unique<Cache>()};
+    std::unique_ptr<Cache> m_batches;
+    std::shared_mutex m_mutex;
+
+public:
+    YespowerVerificationCache()
+    {
+        const auto nonce{GetRandHash()};
+        m_hasher.Write(nonce.begin(), nonce.size());
+        Reset(DEFAULT_YESPOWER_CACHE_BYTES);
+    }
+
+    void Reset(size_t bytes)
+    {
+        auto replacement{std::make_unique<Cache>()};
+        // Reserve within the configured budget, not in addition to it. Tiny
+        // test caches keep their original minimum-allocation behavior.
+        const size_t batch_bytes{bytes >= 1024 ? std::min(bytes / 8, size_t{2} << 20) : 0};
+        std::unique_ptr<Cache> batches;
+        if (batch_bytes) {
+            batches = std::make_unique<Cache>();
+            batches->setup_bytes(batch_bytes);
+        }
+        replacement->setup_bytes(bytes - batch_bytes);
+        std::unique_lock lock{m_mutex};
+        std::swap(m_valid, replacement);
+        std::swap(m_batches, batches);
+    }
+
+    uint256 Entry(const CBlockHeader& header) const
+    {
+        // GetHash commits to all 80 serialized bytes, including nBits. The
+        // YespowerSugar algorithm and personalization are fixed in GetPoWHash.
+        const auto hash{header.GetHash()};
+        uint256 entry;
+        CSHA256{m_hasher}.Write(hash.begin(), hash.size()).Finalize(entry.begin());
+        return entry;
+    }
+
+    bool Contains(const uint256& entry)
+    {
+        std::shared_lock lock{m_mutex};
+        return m_valid->contains(entry, false);
+    }
+
+    void Insert(const uint256& entry)
+    {
+        std::unique_lock lock{m_mutex};
+        m_valid->insert(entry);
+    }
+
+    uint256 BatchEntry(std::span<const CBlockHeader> headers) const
+    {
+        // Bind order, count and all header bytes. Separate the batch domain
+        // from individual proofs; neither kind of evidence survives restart.
+        const unsigned char domain{1};
+        unsigned char count[8];
+        WriteLE64(count, headers.size());
+        auto hasher{m_hasher};
+        hasher.Write(&domain, 1).Write(count, sizeof(count));
+        for (const auto& header : headers) {
+            const auto hash{header.GetHash()};
+            hasher.Write(hash.begin(), hash.size());
+        }
+        uint256 entry;
+        hasher.Finalize(entry.begin());
+        return entry;
+    }
+
+    bool RestoreBatch(const uint256& entry, std::span<const CBlockHeader> headers)
+    {
+        std::unique_lock lock{m_mutex};
+        if (!m_batches || !m_batches->contains(entry, false)) return false;
+        // Repopulate ordinary proof evidence for subsequent AcceptBlockHeader
+        // checks. The caller must first recheck every current target limit.
+        for (const auto& header : headers) m_valid->insert(Entry(header));
+        return true;
+    }
+
+    void InsertBatch(const uint256& entry)
+    {
+        std::unique_lock lock{m_mutex};
+        if (m_batches) m_batches->insert(entry);
+    }
+};
+
+YespowerVerificationCache& VerificationCache()
+{
+    static YespowerVerificationCache cache;
+    return cache;
+}
+
+struct HeaderPoWCheck {
+    const CBlockHeader* header;
+    const Consensus::Params* params;
+
+    // Preserve allocation/computation errors on the calling thread; do not
+    // turn a local resource failure into an invalid-header/peer penalty.
+    std::optional<std::exception_ptr> operator()() const
+    {
+        try {
+            if (CheckBlockProofOfWork(*header, *params)) return std::nullopt;
+            return std::exception_ptr{};
+        } catch (...) {
+            return std::current_exception();
+        }
+    }
+};
+} // namespace
+
+void InitYespowerVerificationCache(size_t bytes)
+{
+    if (!bytes || bytes > MAX_YESPOWER_CACHE_BYTES) {
+        throw std::invalid_argument("Yespower cache size must be positive and at most 2048 MiB");
+    }
+    VerificationCache().Reset(bytes);
+}
 
 // Official Sugarchain SugarShield: average 510 targets, using endpoint MTPs.
 // Preserve integer operation ordering (divide before multiply) for consensus.
@@ -198,9 +335,87 @@ bool CheckProofOfWorkImpl(uint256 hash, unsigned int nBits, const Consensus::Par
     return true;
 }
 
-// Validate the target before computing the expensive, uncached PoW hash.
+// Always validate the current network's target limit, including on cache hits.
 bool CheckBlockProofOfWork(const CBlockHeader& header, const Consensus::Params& params)
 {
     if (!DeriveTarget(header.nBits, params.powLimit)) return false;
-    return CheckProofOfWork(params.fYespowerSugar ? header.GetPoWHash() : header.GetHash(), header.nBits, params);
+    if (!params.fYespowerSugar || EnableFuzzDeterminism()) {
+        return CheckProofOfWork(params.fYespowerSugar ? header.GetPoWHash() : header.GetHash(), header.nBits, params);
+    }
+    auto& cache{VerificationCache()};
+    const auto entry{cache.Entry(header)};
+    if (cache.Contains(entry)) return true;
+    if (!CheckProofOfWork(header.GetPoWHash(), header.nBits, params)) return false;
+    cache.Insert(entry);
+    return true;
+}
+
+void CacheVerifiedBlockIndexProof(const CBlockIndex& index, const Consensus::Params& params)
+{
+    AssertLockHeld(cs_main);
+    if (!params.fYespowerSugar || EnableFuzzDeterminism() || !index.m_checked_yespower || !index.phashBlock) return;
+    const auto header{index.GetBlockHeader()};
+    if (header.GetHash() != index.GetBlockHash() || !DeriveTarget(header.nBits, params.powLimit)) return;
+    auto& cache{VerificationCache()};
+    cache.Insert(cache.Entry(header));
+}
+
+struct HeaderPoWVerifier::Impl {
+    const int workers;
+    std::mutex caller_mutex;
+    CCheckQueue<HeaderPoWCheck> queue;
+    explicit Impl(int count)
+        : workers{std::clamp(count, 1, MAX_HEADER_POW_WORKERS)}, queue{1, workers - 1, "powch"} {}
+};
+
+HeaderPoWVerifier::HeaderPoWVerifier(int workers)
+    : m_impl{workers > 1 ? std::make_unique<Impl>(workers) : nullptr} {}
+HeaderPoWVerifier::~HeaderPoWVerifier() = default;
+
+bool HeaderPoWVerifier::Check(std::span<const CBlockHeader> headers, const Consensus::Params& params)
+{
+    if (!params.fYespowerSugar || EnableFuzzDeterminism()) {
+        return std::ranges::all_of(headers, [&](const auto& header) { return CheckBlockProofOfWork(header, params); });
+    }
+    std::unique_lock<std::mutex> call_lock;
+    if (m_impl) call_lock = std::unique_lock{m_impl->caller_mutex};
+    if (headers.empty()) return true;
+    // An invalid first header must not cause speculative work for the message.
+    if (!CheckBlockProofOfWork(headers.front(), params)) return false;
+    if (headers.size() == 1) return true;
+    auto& cache{VerificationCache()};
+    bool all_cached{true};
+    for (const auto& header : headers) {
+        if (!DeriveTarget(header.nBits, params.powLimit)) return false;
+        all_cached = all_cached && cache.Contains(cache.Entry(header));
+    }
+    if (all_cached) return true; // Preserve the ordinary warm-cache fast path.
+    const auto entry{cache.BatchEntry(headers)};
+    if (cache.RestoreBatch(entry, headers)) return true;
+    headers = headers.subspan(1);
+    if (!m_impl) {
+        if (!std::ranges::all_of(headers, [&](const auto& header) { return CheckBlockProofOfWork(header, params); })) return false;
+        cache.InsertBatch(entry);
+        return true;
+    }
+    while (!headers.empty()) {
+        std::vector<HeaderPoWCheck> batch;
+        batch.reserve(m_impl->workers);
+        while (!headers.empty() && batch.size() < size_t(m_impl->workers)) {
+            const auto& header{headers.front()};
+            if (!cache.Contains(cache.Entry(header))) batch.push_back({&header, &params});
+            headers = headers.subspan(1);
+        }
+        if (batch.empty()) continue;
+        // At most eight cold checks may run before the next failure decision,
+        // independently of message/peer count. Never enqueue the whole message.
+        CCheckQueueControl<HeaderPoWCheck> control{m_impl->queue};
+        control.Add(std::move(batch));
+        if (const auto error{control.Complete()}) {
+            if (*error) std::rethrow_exception(*error);
+            return false;
+        }
+    }
+    cache.InsertBatch(entry);
+    return true;
 }

@@ -889,6 +889,7 @@ protected:
         EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
     NodeClock::time_point m_next_write{NodeClock::time_point::max()};
+    std::optional<MockableSteadyClock::time_point> m_last_tip_log GUARDED_BY(::cs_main);
 
     /**
      * In case of an invalid snapshot, rename the coins leveldb directory so

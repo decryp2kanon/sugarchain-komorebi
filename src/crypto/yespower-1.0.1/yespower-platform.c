@@ -65,6 +65,10 @@ static void *alloc_region(yespower_region_t *region, size_t size)
 #endif
 	if (base == MAP_FAILED)
 		base = NULL;
+#if defined(__linux__) && defined(MADV_HUGEPAGE)
+	/* Optional mapping advice only; ordinary pages remain a valid fallback. */
+	if (base != NULL) (void)madvise(base, base_size, MADV_HUGEPAGE);
+#endif
 	aligned = base;
 #elif defined(HAVE_POSIX_MEMALIGN)
 	if ((errno = posix_memalign((void **)&base, 64, size)) != 0)
