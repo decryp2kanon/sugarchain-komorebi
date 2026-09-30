@@ -31,6 +31,8 @@ std::optional<arith_uint256> DeriveTarget(unsigned int nBits, uint256 pow_limit)
 
 unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlockHeader *pblock, const Consensus::Params&);
 unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, int64_t nFirstBlockTime, const Consensus::Params&);
+/** Exact SugarShield arithmetic, shared by full-history and rolling-sum callers. */
+unsigned int CalculateSugarShieldWorkRequired(const arith_uint256& target_sum, int64_t mtp_span, const Consensus::Params&);
 
 /** Check whether a block hash satisfies the proof-of-work requirement specified by nBits */
 bool CheckBlockProofOfWork(const CBlockHeader& header, const Consensus::Params& params);

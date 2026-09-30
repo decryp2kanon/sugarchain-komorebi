@@ -10,6 +10,8 @@
 #include <util/time.h>
 #include <util/vector.h>
 
+#include <algorithm>
+
 // Our memory analysis in headerssync-params.py assumes this many bytes for a
 // CompressedHeader (we should re-calculate parameters if we compress further).
 static_assert(sizeof(CompressedHeader) == 48);
@@ -47,13 +49,14 @@ HeadersSyncState::HeadersSyncState(NodeId id,
     LogDebug(BCLog::NET, "Initial headers sync started with peer=%d: height=%i, max_commitments=%i, min_work=%s\n", m_id, m_current_height, m_max_commitments, m_minimum_required_work.ToString());
 }
 
-// Build temporary context for the existing SugarShield GetNextWorkRequired(), not a new DAA.
+// Build temporary context for the existing SugarShield target/MTP rules, not a new DAA.
 // Low-work headers are not yet in the normal block index; each PRESYNC/REDOWNLOAD
 // pass needs its own recent history to check difficulty before accepting them.
 void HeadersSyncState::ResetDifficultyHistory()
 {
     // Discard the previous pass's temporary history.
     m_difficulty_history.clear();
+    m_difficulty_target_sum = arith_uint256{0};
     if (!m_consensus_params.nPowAveragingWindow) return;
     // For a candidate at height h, average targets h-1 through h-510.
     // The older MTP endpoint is h-511: its median includes itself and 10 predecessors
@@ -68,11 +71,14 @@ void HeadersSyncState::ResetDifficultyHistory()
         m_difficulty_history.front().nHeight = index->nHeight;
         index = index->pprev;
     }
-    // Link the copies so the unchanged SugarShield calculation can follow pprev.
+    // Link the copies so the unchanged endpoint MTP calculation can follow pprev.
     CBlockIndex* previous = nullptr;
     for (auto& entry : m_difficulty_history) {
         entry.pprev = previous;
         previous = &entry;
+    }
+    for (size_t i{0}; i < std::min(size_t(m_consensus_params.nPowAveragingWindow), m_difficulty_history.size()); ++i) {
+        m_difficulty_target_sum += arith_uint256{}.SetCompact(m_difficulty_history[m_difficulty_history.size() - 1 - i].nBits);
     }
 }
 
@@ -80,15 +86,22 @@ void HeadersSyncState::ResetDifficultyHistory()
 bool HeadersSyncState::CheckDifficultyAndAppend(const CBlockHeader& header)
 {
     assert(!m_difficulty_history.empty());
-    // The newest retained entry is the candidate's predecessor. Reject a target
-    // that differs from GetNextWorkRequired() before changing the history.
+    // Reuse the same target sum and MTP endpoints as full-history GetNextWorkRequired().
+    const size_t size{m_difficulty_history.size()};
+    const size_t window{size_t(m_consensus_params.nPowAveragingWindow)};
     auto* previous = &m_difficulty_history.back();
-    if (header.nBits != GetNextWorkRequired(previous, &header, m_consensus_params)) return false;
+    const auto expected{size > window ? CalculateSugarShieldWorkRequired(m_difficulty_target_sum,
+        previous->GetMedianTimePast() - m_difficulty_history[size - window - 1].GetMedianTimePast(), m_consensus_params)
+        : UintToArith256(m_consensus_params.powLimit).GetCompact()};
+    if (header.nBits != expected) return false;
     // Append the accepted header and connect its predecessor and height.
     m_difficulty_history.emplace_back(header);
     auto& entry = m_difficulty_history.back();
     entry.pprev = previous;
     entry.nHeight = previous->nHeight + 1;
+    // Exact unsigned arithmetic: replace only the outgoing target, not the MTP history.
+    if (size >= window) m_difficulty_target_sum -= arith_uint256{}.SetCompact(m_difficulty_history[size - window].nBits);
+    m_difficulty_target_sum += arith_uint256{}.SetCompact(header.nBits);
     // Keep the same 510 targets + 11 older MTP entries needed for the next check.
     const size_t limit = m_consensus_params.nPowAveragingWindow + CBlockIndex::nMedianTimeSpan;
     if (m_difficulty_history.size() > limit) {
