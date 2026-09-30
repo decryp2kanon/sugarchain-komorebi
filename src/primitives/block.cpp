@@ -15,6 +15,21 @@
 #include <span>
 #include <sstream>
 
+namespace {
+// Each verification worker owns its scratch allocation. Unlike yespower_tls,
+// release it when the thread exits, including when a worker pool is destroyed.
+struct YespowerLocal {
+    yespower_local_t memory;
+    YespowerLocal()
+    {
+        if (yespower_init_local(&memory)) throw std::runtime_error("YespowerSugar: failed to initialize scratch memory");
+    }
+    ~YespowerLocal() { yespower_free_local(&memory); }
+    YespowerLocal(const YespowerLocal&) = delete;
+    YespowerLocal& operator=(const YespowerLocal&) = delete;
+};
+} // namespace
+
 uint256 CBlockHeader::GetHash() const
 {
     return (HashWriter{} << *this).GetHash();
@@ -30,7 +45,8 @@ uint256 CBlockHeader::GetPoWHash() const
     DataStream serialized;
     serialized << *this;
     yespower_binary_t result;
-    if (yespower_tls(reinterpret_cast<const uint8_t*>(serialized.data()), serialized.size(), &params, &result)) {
+    static thread_local YespowerLocal local;
+    if (yespower(&local.memory, reinterpret_cast<const uint8_t*>(serialized.data()), serialized.size(), &params, &result)) {
         throw std::runtime_error("YespowerSugar: failed to compute proof of work");
     }
     uint256 hash;

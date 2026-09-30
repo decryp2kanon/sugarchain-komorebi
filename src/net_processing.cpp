@@ -32,6 +32,7 @@
 #include <netmessagemaker.h>
 #include <node/blockstorage.h>
 #include <node/connection_types.h>
+#include <node/ibd_download.h>
 #include <node/protocol_version.h>
 #include <node/timeoffsets.h>
 #include <node/txdownloadman.h>
@@ -456,6 +457,7 @@ struct CNodeState {
     std::list<QueuedBlock> vBlocksInFlight;
     //! When the first entry in vBlocksInFlight started downloading. Don't care when vBlocksInFlight is empty.
     std::chrono::microseconds m_downloading_since{0us};
+    node::IBDBlockDelivery m_ibd_delivery;
     //! Whether we consider this a preferred download peer.
     bool fPreferredDownload{false};
     /** Whether this peer wants invs or cmpctblocks (when possible) for block announcements. */
@@ -793,6 +795,7 @@ private:
     TimeOffsets m_outbound_time_offsets{m_warnings};
 
     const Options m_opts;
+    HeaderPoWVerifier m_header_pow_verifier;
 
     bool RejectIncomingTxs(const CNode& peer) const;
 
@@ -1261,6 +1264,7 @@ bool PeerManagerImpl::BlockRequested(NodeId nodeid, const CBlockIndex& block, st
     if (state->vBlocksInFlight.size() == 1) {
         // We're starting a block download (batch) from this peer.
         state->m_downloading_since = GetTime<std::chrono::microseconds>();
+        state->m_ibd_delivery.Started(state->m_downloading_since.count());
         m_peers_downloading_from++;
     }
     auto itInFlight = mapBlocksInFlight.insert(std::make_pair(hash, std::make_pair(nodeid, it)));
@@ -2015,7 +2019,8 @@ PeerManagerImpl::PeerManagerImpl(CConnman& connman, AddrMan& addrman,
       m_mempool(pool),
       m_txdownloadman(node::TxDownloadOptions{pool, m_rng, opts.deterministic_rng}),
       m_warnings{warnings},
-      m_opts{opts}
+      m_opts{opts},
+      m_header_pow_verifier{m_chainparams.GetConsensus().fYespowerSugar ? opts.header_pow_workers : 1}
 {
     // While Erlay support is incomplete, it must be enabled explicitly via -txreconciliation.
     // This argument can go away after Erlay support is complete.
@@ -2618,8 +2623,18 @@ void PeerManagerImpl::SendBlockTransactions(CNode& pfrom, Peer& peer, const CBlo
 
 bool PeerManagerImpl::CheckHeadersPoW(const std::vector<CBlockHeader>& headers, Peer& peer)
 {
+    if (m_chainparams.GetConsensus().fYespowerSugar) {
+        LOCK(cs_main);
+        for (const auto& header : headers) {
+            if (const auto* index{m_chainman.m_blockman.LookupBlockIndex(header.GetHash())}) {
+                // Only live, genuinely checked proof evidence can refill the
+                // bounded cache; disk/TREE status alone cannot authorize this.
+                CacheVerifiedBlockIndexProof(*index, m_chainparams.GetConsensus());
+            }
+        }
+    }
     // Do these headers have proof-of-work matching what's claimed?
-    if (!HasValidProofOfWork(headers, m_chainparams.GetConsensus())) {
+    if (!m_header_pow_verifier.Check(headers, m_chainparams.GetConsensus())) {
         Misbehaving(peer, "header with invalid proof of work");
         return false;
     }
@@ -4886,6 +4901,14 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
             // Always process the block if we requested it, since we may
             // need it even when it's not a candidate for a new best tip.
             forceProcessing = IsBlockRequested(hash);
+            if (m_opts.ibd_block_request_limit > MAX_BLOCKS_IN_TRANSIT_PER_PEER && m_chainman.IsInitialBlockDownload()) {
+                const auto range{mapBlocksInFlight.equal_range(hash)};
+                if (std::any_of(range.first, range.second, [&](const auto& request) { return request.second.first == pfrom.GetId(); })) {
+                    auto& state{*Assert(State(pfrom.GetId()))};
+                    // Sample consumption, not socket timestamps shared by coalesced messages.
+                    state.m_ibd_delivery.Received(GetTime<std::chrono::microseconds>().count(), state.vBlocksInFlight.size() > 1);
+                }
+            }
             RemoveBlockRequest(hash, pfrom.GetId());
             // mapBlockSource is only used for punishing peers and setting
             // which peers send us compact blocks, so the race between here and
@@ -6162,11 +6185,12 @@ bool PeerManagerImpl::SendMessages(CNode& node)
         // Message: getdata (blocks)
         //
         std::vector<CInv> vGetData;
-        if (CanServeBlocks(peer) && ((sync_blocks_and_headers_from_peer && !IsLimitedPeer(peer)) || !m_chainman.IsInitialBlockDownload()) && state.vBlocksInFlight.size() < MAX_BLOCKS_IN_TRANSIT_PER_PEER) {
+        const int inflight_limit{m_chainman.IsInitialBlockDownload() ? state.m_ibd_delivery.Limit(MAX_BLOCKS_IN_TRANSIT_PER_PEER, std::clamp(m_opts.ibd_block_request_limit, MAX_BLOCKS_IN_TRANSIT_PER_PEER, MAX_IBD_BLOCK_REQUEST_LIMIT)) : MAX_BLOCKS_IN_TRANSIT_PER_PEER};
+        if (CanServeBlocks(peer) && ((sync_blocks_and_headers_from_peer && !IsLimitedPeer(peer)) || !m_chainman.IsInitialBlockDownload()) && state.vBlocksInFlight.size() < size_t(inflight_limit)) {
             std::vector<const CBlockIndex*> vToDownload;
             NodeId staller = -1;
-            auto get_inflight_budget = [&state]() {
-                return std::max(0, MAX_BLOCKS_IN_TRANSIT_PER_PEER - static_cast<int>(state.vBlocksInFlight.size()));
+            auto get_inflight_budget = [&state, inflight_limit]() {
+                return std::max(0, inflight_limit - static_cast<int>(state.vBlocksInFlight.size()));
             };
 
             // If there are multiple chainstates, download blocks for the

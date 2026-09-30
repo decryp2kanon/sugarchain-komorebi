@@ -1,0 +1,1544 @@
+# Core31 IBD optimization measurements
+
+The final performance target is a complete fresh mainnet IBD in at most five hours,
+with `-assumevalid=0`, unchanged minimum chainwork, and all PoW, difficulty,
+contextual, script and commitment checks enabled. Component benchmarks and
+extrapolations are not evidence that this target has been met.
+
+The user will perform the final network IBD and judge that target. Development
+completion uses repeatable offline/component/localhost validation, not repeated
+multi-hour mainnet downloads. No full-IBD completion time is claimed here.
+
+Benchmark source SHAs below intentionally identify the exact pre-cleanup
+artifacts used for each measurement. They remain reachable through
+`backup/core31-ibd-optimization-pre-rebase-20260930` and tag
+`core31-ibd-optimization-pre-rebase-20260930`; they are evidence identifiers,
+not stale references to the rewritten review history.
+
+## Reference implementation audit
+
+Reference: [Sugarchain PR 225](https://github.com/sugarchain-project/sugarchain/pull/225),
+base `a131e9c5e404200419608e86f361326447328fd9`,
+head `17fa7590fc83f3c200e75ef16604bb7ceb9cd40c`.
+The PR's reported 10h49m15s full sync uses a different trust model: historical
+Yespower is replaced by checkpoint authentication. It is not a directly
+comparable full-verification baseline for this work. Its historical sampling
+harness also installs default assume-valid context. Neither shortcut is eligible
+for the acceptance run here.
+
+Classification: A = directly applicable idea; B = needs Core31 implementation;
+C = already handled upstream; D = unnecessary here; E = incompatible with this
+work's security requirements; F = retain only after measurement.
+
+| Reference commit | Change | Classification / Core31 disposition |
+| --- | --- | --- |
+| ac9b033219 | Boost bind includes | D: old build compatibility; no corresponding build failure |
+| ec8dc24213 | Checkpoint headers and persisted PoW evidence | E for replacing historical PoW; B/F for reuse of actually verified identical headers |
+| bda8c9ae62 | Parallel Yespower | B/F: bounded work, lifecycle and early-invalid-input resource costs need independent tests; no checkpoint exemptions |
+| 85be82de78 | Adaptive block requests | B/F: measure Core31 scheduling first; distinguish scheduling horizon, per-peer count and memory exposure |
+| bbd002afe2 | 64-message receive batching | B/F: Core31 still invokes sending after each receive; bound fairness and shutdown latency, measure send cost first |
+| 0f39b7a9f8 | Index cache and rewind writes | C/D for removed RewindBlockIndex path; A/F for cache sizing (Core31 still caps block-tree cache at 2 MiB) |
+| f69af7ff96 | Suppress IBD tip logs | A/F: Core31 still logs every tip; preserve observability and measure benefit before changing |
+| 643011d767 | Security regression tests | B: reuse invalid-PoW, mutated-header, disk-ingress and ordered-failure scenarios; checkpoint-specific expectations do not apply |
+| a5d5c30624 | Checkpoint Qt progress | D: retain existing Core31 presync progress UI |
+| ebc27426ec | Checkpoint Qt tests | D: no checkpoint UI is being introduced |
+| 54257a1638 | Historical sampling harness | B: useful stratification/fixture isolation; old globals and default assume-valid setup cannot be copied |
+| ea4b854153 | Yespower throughput tool | A/B: useful worker-count sweep; link current implementation and distinguish raw throughput from IBD |
+| 03fdee3f65 | Full IBD estimator | B: estimates may guide experiments, never satisfy full-run acceptance |
+| 84e82234d0 | Estimator tests | B: relevant only if estimator is adapted |
+| 0e507898fe | Security/benchmark documentation | B: preserve lessons about unchecked first headers, trust provenance and bounded queues, not the checkpoint trust model |
+| 17fa7590fc | README benchmark link | D: no change to the project's intentionally minimal README |
+
+Additional differences:
+
+- Core31 already increases its two-second block-stalling timeout up to 64 seconds
+  and decays it after progress. Blindly changing it to 20 seconds ignores this.
+- Core31's PRESYNC/REDOWNLOAD commitments remain in place. PR 225's checkpoint
+  quarantine, replay snapshots and four-hour deadline are not replacements.
+- A 122880-block scheduling horizon is not permission to accept that many
+  in-flight blocks from each peer. Core31 currently caps this at 16.
+- PR 225's parallel precomputation first validates a new leading header; this
+  mitigates, but does not eliminate, speculative work on an invalid batch.
+  Any Core31 implementation needs an explicit bound and adversarial tests.
+- Persistent TREE validity must not be interpreted as proof of a Yespower check
+  made by arbitrary older software. Cache entries must come from actual successful
+  verification and bind all header bytes and the applicable PoW rules.
+
+## Initial component measurements
+
+Baseline source: merge commit `435d30e536` (before optimization).
+Ryzen 9 5950X, existing portable RelWithDebInfo build (`-O2`), existing user
+applications/nodes left running. Three runs over the committed 6000-header
+mainnet fixture, without network traffic or data-directory access:
+
+| Component | Run 1 | Run 2 | Run 3 |
+| --- | ---: | ---: | ---: |
+| Yespower validation, 6000 headers | 17.5123 s | 17.6291 s | 17.6111 s |
+| SugarShield full-history checks, 6000 headers | 0.08472 s | 0.08505 s | 0.08645 s |
+| PRESYNC + REDOWNLOAD, 12000 steps, excluding caller PoW | 0.28477 s | 0.18437 s | 0.18655 s |
+
+These isolate the cost of existing code; they do not measure network scheduling,
+late-chain scripts, permanent-index growth, disk durability or full IBD. The
+first candidate to measure is bounded parallel Yespower, not a change to the
+SugarShield formula. No five-hour result has been established.
+
+## Reproducing the raw PoW worker sweep
+
+After building the current crypto library, from the repository root:
+
+```sh
+c++ -O2 -std=c++20 -pthread -Isrc contrib/bench/yespower-throughput.cpp \
+  build-ibd-optimization/lib/libbitcoin_crypto.a -o /tmp/yespower-throughput
+/tmp/yespower-throughput src/test/data/sugarchain_headers.raw
+```
+
+An optional final argument caps the sweep at 1 through 16 workers. Each setting
+hashes all 6000 actual headers with the unchanged YespowerSugar parameters.
+It compares every 32-byte result with the single-worker result, then prints the
+SHA256 digest of their ordered concatenation for cross-build comparisons.
+Allocation, thread creation, computation and joining are timed; comparison and
+reporting are outside the timer. No cached PoW results are used.
+
+This diagnostic does not implement a production worker queue, validate the
+rest of a block, measure adversarial-input costs, or establish a safe production
+worker count. Run it without concurrent builds/benchmarks and record other load.
+Never treat its rate as the end-to-end IBD rate.
+
+Initial sweep after the separate GUI/IPC/multiprocess build completed:
+
+| Workers | Raw hashes/s | All 6000 hashes identical |
+| --- | ---: | --- |
+| 1 | 328.73 | yes |
+| 2 | 669.29 | yes |
+| 4 | 1316.09 | yes |
+| 8 | 2167.42 | yes |
+| 16 | 1364.44 | yes |
+
+The ordered result digest was
+`6b35b9c11c78d6ad6a96e4dac04c06a8f56f205881dce8be7d5a3caee4e14bce`
+in every case. More threads were not always faster. These are short initial
+measurements with the user's applications left running, not a production change
+or a full-sync result. The benchmark also rejected missing/truncated input and
+invalid worker limits. The clean baseline build included daemon, CLI, Qt, IPC,
+multiprocess, unit tests and benchmarks with GUI ON, IPC ON and RelWithDebInfo.
+
+## Bounded reuse of verified Yespower
+
+`CheckBlockProofOfWork` now caches successful YespowerSugar verification in a
+process-local cuckoo cache with a 16 MiB entry budget plus cache metadata. Entries
+are salted SHA256 digests of the full SHA256d header identifier. No input field,
+including nBits, is omitted. Invalid results are never inserted. The current
+powLimit/target validity check runs before every lookup. Bitcoin-style and fuzz
+checks retain their previous paths. The raw `GetPoWHash()` remains uncached.
+
+The cache cannot be populated by peer-supplied status, an IBD flag, a checkpoint
+or an on-disk TREE flag. Eviction/restart simply causes actual PoW computation
+again. It does not change SugarShield, contextual validation, script validation,
+PRESYNC/REDOWNLOAD, minimum chainwork, disk formats or durability.
+
+The initial 1 MiB implementation measured A/B/B/A imports of the existing first
+6000 mainnet blocks, each into a
+new empty datadir, networking and wallets disabled, `-assumevalid=0`, dbcache
+1024 MiB, including orderly shutdown and flush:
+
+| Run | Original PoW checks | Cached PoW checks |
+| --- | ---: | ---: |
+| First | 71.879 s | 18.446 s |
+| Second | 71.483 s | 18.445 s |
+
+The mean ratio is 3.886x **for this small offline workload only**. All runs
+reached height 6000, tip
+`e7a04205f70e5b6e99d83a8f720748fee559a382701b39ff9891e391e6cf81d9`.
+The candidate was restarted offline and `verifychain 4 6000` returned true,
+with zero peers and no validation errors. UTXO `hash_serialized_3` was
+`94fda3c59b6d6410687bfacd26d858d0f85b86f6913b90016b7b02f72b3f13b8`.
+
+The fixture fits the cache; a tens-of-millions-of-headers separation between
+checks does not. This measurement must not be extrapolated to full IBD.
+First-time Yespower throughput is unchanged. The baseline executable was linked
+from the same clean build with the exact original committed pow.cpp object and
+identical compiler flags; the candidate differs in this production TU only.
+
+Validation: full GUI/IPC/multiprocess rebuild; `sugarshield_tests`,
+`headers_sync_chainwork_tests`, `pow_tests`, and `checkqueue_tests` all passed.
+Added regression coverage for changes to every serialized header field, invalid
+compact targets, a stricter powLimit, SHA256d-vs-Yespower separation and concurrent
+cache readers. This is component-level validation, not full mainnet completion.
+
+A separate Debug `-O1 -g1` ASan/UBSan build of that initial cache passed all four suites
+(78.08 seconds), with `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1` and
+`UBSAN_OPTIONS=halt_on_error=1`. That sanitizer configuration disabled GUI/IPC;
+the preceding normal production build included both. Existing baseline builds
+and the user's running nodes were not modified.
+
+### Reproducing the offline import comparison
+
+Keep separate baseline and candidate executables, and supply an existing raw
+block file (not a live node's datadir). The output directory must not exist:
+
+```sh
+python3 contrib/bench/offline-ibd.py \
+  --baseline /path/to/baseline/sugarchaind \
+  --candidate /path/to/candidate/sugarchaind \
+  --blocks /path/to/mainnet-blocks.dat --height 6000 \
+  --tip e7a04205f70e5b6e99d83a8f720748fee559a382701b39ff9891e391e6cf81d9 \
+  --work-dir /path/to/new-comparison-directory
+```
+
+The tool retains four fresh datadirs, commands, binary/input hashes, logs, wall
+and child CPU times, and expected-tip checks. Its active-process record identifies
+only the child it owns. It does not connect peers or alter existing node data.
+Repeat validation of this tool gave A/B/B/A times of 71.689 / 18.645 / 19.446 /
+71.779 seconds, all at the expected tip with successful shutdown. The raw block
+file SHA256 was
+`39ba457e491589267dbc4c3d916aa863a4112fdf99b6d4b86ddaf0ede23769ed`.
+
+### Additional profiling, not production changes
+
+An isolated gprof build attributed 75.50% of sampled time to
+`blockmix_xor_1_0` and 24.10% to `blockmix_xor_save_1_0`; SHA256 Transform was
+0.06%. Temporary AVX and O3 builds did not establish a meaningful improvement
+and were not adopted. No release compiler flags were changed.
+
+A temporary Linux MADV_HUGEPAGE experiment, with no system policy changes,
+gave eight-worker A/B/B/A raw rates of 2204.87 / 2484.80 / 2384.10 / 2240.18
+hashes/s on CPUs 0-3,8-11. All 6000 output hashes matched. Single-worker throughput
+was unchanged, so this has not been added to the serial production path. These
+are diagnostic experiments, not full IBD results or a production parallel queue.
+
+## Cache capacity comparison
+
+Read-only observation of the user's original node found eight simultaneous
+PRESYNC peers at heights 1,110,000 through 1,194,000. A 1 MiB cache cannot cover
+that spread. Separate 1 MiB / 16 MiB executables verified the first 40,000 linked
+mainnet headers twice, in A/B/B/A order, with identical original compiler flags:
+
+| Run | Capacity | First proof pass | Repeated pass |
+| --- | ---: | ---: | ---: |
+| A | 1 MiB | 117.297 s | 61.906 s |
+| B | 16 MiB | 117.549 s | 0.068 s |
+| B | 16 MiB | 118.433 s | 0.043 s |
+| A | 1 MiB | 118.016 s | 61.139 s |
+
+All proofs passed. This is about 1.52x for the two-pass workload, with no
+first-proof acceleration. The default entry budget is consequently 16 MiB,
+still bounded independently of peers or chain length. It does not retain an
+entire mainnet history. The downloaded 100,000-header input file (of which this
+experiment verified the first 40,000) has SHA256
+`f64a65677abdfa525b67d9a09291868fbfd1f9fb0d4089cdfafc3b2718dd07dd`.
+
+`-maxpowcache=<MiB>` now exposes a bounded startup entry budget of 1-2048 MiB,
+with the 16 MiB default unchanged and two bits/entry of extra cache metadata.
+This supports explicit experiments on longer peer/pass separation without
+silently allocating gigabytes by default. The maximum also stays below the
+existing CuckooCache uint32 epoch-arithmetic overflow boundary; a static assertion
+guards that constraint. Cache initialization allocates a replacement before
+swapping under the existing exclusive lock. It neither reads nor writes proof
+evidence to disk, and eviction/reset requires a new real proof on the next miss.
+
+After the parallel/mapping changes, the production benchmark's optional fourth
+argument sets the cache budget. A/B/B/A with eight workers and 40,000 real headers
+measured 1 MiB cold passes of 18.7343/18.6379 seconds and repeated passes of
+9.78997/9.78405 seconds. At 16 MiB the corresponding times were
+18.5900/18.5187 and 0.04363/0.04415 seconds. This confirms reuse, not reduced
+first-proof work; it does not establish whole-mainnet retention or five-hour IBD.
+
+All 51 targeted normal and ASan/UBSan tests passed. Two new ThreadSanitizer cases
+passed (8.15 seconds), forcing eviction, reset during verification and rejection
+of invalid headers and invalid sizes. The localhost P2P regression passed with
+1 MiB, restart at 2 MiB, and startup rejection of 0, negative, oversized and
+non-numeric budgets. No shared node or external peer participates in that test.
+
+A larger offline validation subsequently passed all 1,000,000 linked mainnet
+headers at the maximum 2048 MiB cache setting, then passed the repeated proof
+checks in the same process. The fixture tip is
+`09246c3d203e709775281602bc710622ccbd4455010a745b0bdb13bb2c0858b0`, and its SHA256 is
+`76b8b06e5930b133c900d75ec838a5a9295d1ee5b7436084c8378a4103b37cce`.
+The running executable SHA256 was
+`8649236a35ca38f221514b0f5130b3d98dd1703a52af00740517398163b3de3c`.
+Linkage, all expected difficulty targets, MTP and genuine initial PoW passed;
+exit status was zero, maximum RSS 2,415,228 KiB, reported swaps zero. The timing
+is not used as an A/B result because compilation and a brief component smoke
+test overlapped this validation. No public-network IBD was performed by it.
+
+## Existing peer-test timing assumption
+
+The expanded test selection found five assertions failing in
+`denialofservice_tests/stale_tip_peer_management`. The preserved, pre-optimization
+bootstrap test binary reproduced the same five failures. With five-second
+spacing, the test advanced mock time by only 16 seconds, but Core31's stale-tip
+check is scheduled every ten minutes. The fixture now advances beyond both
+thresholds; all five tests in `denialofservice_tests` pass. Production peer
+timers, connection limits and eviction rules are unchanged.
+
+## Existing subsidy-test assumptions
+
+The wider block/chainstate/cache regression selection initially reported two
+failures in `validation_tests`: a hardcoded 50-coin initial subsidy and a
+14-million-block sum expected to exhaust Bitcoin's subsidy schedule. Both
+failures were reproduced with the preserved pre-optimization bootstrap binary.
+Official Sugarchain `64bc05ccc1dc2dcd4db9e86715c14dee12be6460`
+(`src/validation.cpp`, `src/chainparams.cpp`) specifies 4,294,967,296 base units
+and 12,500,000-block epochs. Production already implements those values.
+
+The fixtures now assert those mainnet constants, test both sides of halving
+boundaries, retain Bitcoin-style synthetic interval tests, and sum all 64 epochs
+against the independent scheduled-reward total 107,374,182,387,500,000 base units.
+No monetary production code changed. All 45 cases selected by
+`validation_tests,validation_block_tests,validation_chainstatemanager_tests,validation_chainstate_tests,validation_flush_tests,blockmanager_tests,blockencodings_tests,txdownload_tests,peerman_tests,cuckoocache_tests`
+then passed.
+
+## Bounded parallel header PoW
+
+Header verification defaults to eight workers. Explicit `-parpow=1` preserves
+serial verification; explicit values are still clamped to 1-8.
+The default change exposes the already measured parallel path to ordinary
+invocations; it is not an additional speedup over runs already using `-parpow=8`.
+The default/override unit case checks 1/2/4/8 and clamping without launching a
+worker sweep. After changing the default, 41 related release cases (431795
+assertions), three TSan pool/reset/lifetime cases (61 assertions), the localhost
+mainnet P2P/restart test without a `-parpow` override, and the shutdown functional
+test pass. GUI, daemon, CLI and IPC targets rebuild successfully.
+In parallel mode a single node-owned `HeaderPoWVerifier` reuses Core31's
+`CCheckQueue`; peers do not create their own pools. The first header is checked
+synchronously. Subsequent batches contain at most eight uncached proofs, and a
+batch finishes before another is submitted. Cache hits still check current
+target limits. Header continuity, SugarShield, chainwork, commitments and final
+contextual validation remain in their original paths.
+
+Parallel mode can compute up to seven additional proofs in the failing batch;
+it never speculates across an entire message. The existing 2000-header message
+bound is unchanged. Local computation failures propagate to the calling thread
+instead of being mistaken for peer misbehavior. Thread-local Yespower scratch
+storage now has a destructor, so destroying/recreating a pool releases it. The
+algorithm, parameters, header serialization and 32-byte results are unchanged.
+
+The test binary alone uses Linux linker wrapping to count actual Yespower calls,
+measure maximum concurrency and inject a local library failure. Production has
+no diagnostic counters or fault hooks. Regression tests cover cold first proofs,
+warm reuse, invalid first/later proofs, concurrency bounds, simultaneous callers,
+pool recreation, parameter changes and worker-error propagation. All 6000 real
+mainnet header outputs match the previous `yespower_tls` API bit for bit.
+
+Normal tests passed, including peer eviction after the separately documented
+fixture correction. A separate ASan/UBSan run passed all seven selected suites
+in 122.73 seconds, with leak detection and halt-on-error enabled. The localhost
+`p2p_sugarchain_header_pow.py` test also passed: real 6000-header PRESYNC,
+invalid-Yespower disconnection, 2001-header rejection, shutdown/restart and fresh
+PRESYNC. It uses unchanged mainnet minimum chainwork, no external peers and no
+wallet; accepted block/header heights correctly stay zero. Existing
+`feature_shutdown.py` passed as well. A separate ThreadSanitizer build
+(`Debug`, `-O1 -g1`, GUI/IPC/wallet disabled) passed all six `header_pow_tests`
+in 370.52 seconds, including the full 6000-header old/new comparison, and all
+18 cases selected by `checkqueue_tests,headers_sync_chainwork_tests,denialofservice_tests`.
+Both runs used `TSAN_OPTIONS=halt_on_error=1`; no races were reported. Sanitizer
+duration is not a performance measurement.
+
+Build with `-DBUILD_BENCH=ON` and run a fresh process for each comparison:
+
+```sh
+build-ibd-optimization/bin/bench_header_pow src/test/data/sugarchain_headers.raw 6000 1
+build-ibd-optimization/bin/bench_header_pow src/test/data/sugarchain_headers.raw 6000 8
+```
+
+For an A/B/B/A comparison of two saved binaries with the same worker count:
+
+```sh
+python3 contrib/bench/header-pow-ab.py \
+  --baseline /path/to/baseline/bench_header_pow \
+  --candidate /path/to/candidate/bench_header_pow \
+  --headers src/test/data/sugarchain_headers.raw --count 6000 --workers 8 \
+  --work-dir /path/to/new-results-directory
+```
+
+The runner records input/executable SHA256, commands, exit statuses, child CPU
+time and cold/repeated measurements separately. It refuses to overwrite an
+existing result directory or continue after failed validation, inconsistent
+measurements or changes to the input/binaries. Synthetic runner checks covered
+malformed/NaN/zero measurements, incorrect worker counts, duplicate/missing
+passes, failed child processes and preservation of existing output. Synthetic
+runner checks are not performance evidence.
+
+This tool checks continuity, difficulty and MTP outside the timer, then measures
+2000-header verification messages, with explicitly separate cold/repeated passes.
+Parsing, contextual prechecks and worker construction are excluded; lazy scratch
+allocation is included. A repeated pass may recompute proofs if its input exceeds
+cache capacity. It is not a full IBD benchmark.
+
+| A/B/B/A | Workers | Cold 6000 proofs | Repeated pass |
+| --- | ---: | ---: | ---: |
+| A | 1 | 17.6894 s | 0.00655 s |
+| B | 8 | 3.19008 s | 0.00667 s |
+| B | 8 | 3.26878 s | 0.00660 s |
+| A | 1 | 17.6865 s | 0.00656 s |
+
+The cold verification ratio is about 5.48x. This does not establish full IBD
+within five hours. No minimum-chainwork, AssumeValid or checkpoint shortcut was
+used to obtain these figures.
+
+## Optional Linux huge-page mapping advice
+
+Yespower scratch allocations now request `MADV_HUGEPAGE` where Linux exposes it.
+This is mapping-local advice, not a system setting, reservation or requirement:
+failed/unsupported advice leaves ordinary pages usable. Allocation sizes, free
+paths, algorithm and portable compiler flags are unchanged. The change adds
+four guarded lines to the existing allocator.
+
+With the existing host policy (`madvise`), a separate production-path A/B/B/A
+comparison verified 40,000 real headers with eight workers per fresh process:
+
+| Run | Mapping advice | Cold proofs | Repeated pass |
+| --- | --- | ---: | ---: |
+| A | unchanged | 20.2418 s | 0.04378 s |
+| B | huge-page advice | 18.8278 s | 0.04609 s |
+| B | huge-page advice | 18.1894 s | 0.04459 s |
+| A | unchanged | 20.3863 s | 0.04418 s |
+
+The cold-pass ratio is 1.098x; combined child CPU time per run fell from
+151.71/152.17 to 137.09/134.55 seconds. `/proc` reported 63,488 KiB of anonymous
+huge pages, 96,824 KiB RSS and zero swap for a candidate process. All 49 cases in
+the ASan/UBSan selection (`header_pow_tests,sugarshield_tests,headers_sync_chainwork_tests,pow_tests,checkqueue_tests,denialofservice_tests`)
+passed with leak detection and halt-on-error enabled. This is a local cold-proof
+measurement, not a full IBD result or a guarantee on other memory/page policies.
+
+## Header-first offline block validation diagnostic
+
+`contrib/bench/warm-block-import.py` uses the functional framework's isolated
+mainnet node and localhost peer, supplies genuine header proofs first, then
+submits the corresponding real blocks through RPC. It preserves the production
+minimum chainwork: the fixture must still be in PRESYNC with accepted height zero
+before explicit block submission. This measures proof/validation reuse, **not**
+public-network IBD or download scheduling. The fixture must begin at block 1 and
+contain a multiple of 2000 headers. The caller supplies expected tip and UTXO hash.
+
+```sh
+BITCOIND="$PWD/build-ibd-optimization/bin/sugarchaind" \
+  python3 contrib/bench/warm-block-import.py \
+  --configfile=build-ibd-optimization/test/config.ini \
+  --tmpdir=/path/to/new-benchmark-directory --nocleanup \
+  --blocks=/path/to/6000-blocks.dat --workers=8 \
+  --expected-tip=e7a04205f70e5b6e99d83a8f720748fee559a382701b39ff9891e391e6cf81d9 \
+  --expected-utxo=94fda3c59b6d6410687bfacd26d858d0f85b86f6913b90016b7b02f72b3f13b8
+```
+
+One diagnostic run of each variant gave:
+
+| Variant | First 6000 headers | RPC block submission/validation | Normal shutdown |
+| --- | ---: | ---: | ---: |
+| Original bootstrap | 17.8674 s | 39.5962 s | 0.1511 s |
+| Cache/parallel/mapping candidate | 2.9901 s | 2.4906 s | 0.1509 s |
+
+Both returned the exact expected tip and UTXO hash, passed `verifychain 4 6000`,
+shut down, restarted with no peers, and passed the same checks again. The tool's
+RPC timeout was increased after an initial baseline attempt exceeded the
+framework's 30-second RPC timeout during uncached verifychain. That interrupted
+attempt is not a successful measurement. Verification/restart/startup times are
+outside the reported phases; these single-run figures are diagnostic rather than
+a replacement for the A/B/B/A comparison or an extrapolated full IBD duration.
+
+## Isolated header-sync component benchmark
+
+`bench_headers_sync RAW_HEADERS COUNT ROUNDS` validates the input's linkage,
+difficulty, MTP and genuine PoW before timing repeated PRESYNC/REDOWNLOAD passes.
+For this isolated state-machine fixture only, its total chainwork is the transition
+threshold, as in the unit tests. No node runs and no production minimum work is
+changed. Every round checks state transitions and all returned header hashes.
+It measures header-sync computation alone; it must not be reported as network
+IBD throughput or proof-verification throughput.
+
+```sh
+cmake --build build-ibd-optimization --target bench_headers_sync
+build-ibd-optimization/bin/bench_headers_sync src/test/data/sugarchain_headers.raw 6000 100
+```
+
+### Rolling target sum, unchanged SugarShield arithmetic
+
+The header-sync state keeps one additional 256-bit sum of its newest 510 targets.
+It still retains the same 521 indices and computes both endpoint MTPs normally.
+Initialization/reset sums the available newest targets; after a valid append it
+subtracts the outgoing target and adds the new target. Invalid difficulty is
+rejected before updating the sum. Short-history behavior is unchanged. No header,
+commitment, work-threshold, contextual or PoW check is removed.
+
+The final damping/clamping/division/multiplication/compact-target calculation is
+shared with the full-history `GetNextWorkRequired()` implementation, preserving
+the existing integer operation order. Normal tests passed all 52 selected cases;
+ASan/UBSan passed the 29 SugarShield/header-sync/PoW cases. The new irregular-time
+fixture compares full-history targets against the real rolling state machine at
+starts 0, 1, 509, 510, 511, 520, 521, 522 and 2000, across resets and thousands of
+evictions. The localhost P2P/body-mutation/restart regression and production build
+also passed.
+
+An isolated A/B/B/A comparison (6000 real headers, 100 two-pass rounds per
+process; initial genuine PoW outside the timer) measured:
+
+| Run | Target summation | State-machine seconds |
+| --- | --- | ---: |
+| A | full history per header | 19.2403 |
+| B | rolling sum | 12.0062 |
+| B | rolling sum | 11.8460 |
+| A | full history per header | 19.2087 |
+
+The component ratio is 1.612x. This is not a full IBD acceleration factor.
+
+Run the localhost mainnet functional regression using the framework's existing
+binary override (the test itself selects its temporary config explicitly):
+
+```sh
+BITCOIND="$PWD/build-ibd-optimization/bin/sugarchaind" \
+  python3 test/functional/p2p_sugarchain_header_pow.py \
+  --configfile=build-ibd-optimization/test/config.ini
+```
+
+### Exact small-divisor SugarShield arithmetic
+
+SugarShield's two ordered divisions now use unsigned base-2^32 long division
+when the divisor fits in 32 bits. Eight limb steps replace the generic bitwise
+256-bit division. The remainder is strictly smaller than the divisor, so the
+next 64-bit intermediate cannot overflow. Larger/nonpositive divisors retain
+the generic operation. No division is combined or reordered, and damping,
+clamping, multiplication, powLimit and compact conversion are unchanged.
+
+The independent test oracle retains the old generic arithmetic. It compares
+86,004 final consensus targets across random 256-bit inputs, every power-of-two
+boundary, quotient boundaries, clamp endpoints, both powLimit settings, and
+32-bit/fallback divisors. All 48 selected normal tests passed (420,299
+assertions); ASan/UBSan passed 30 cases (405,735 assertions). The 6000-header
+mainnet fixture, 521-history/reset/sliding regressions, localhost P2P invalid
+PoW/body-mutation/restart test, and GUI/IPC/multiprocess production build passed.
+
+A/B/B/A against the immediately preceding rolling-sum implementation, using the
+same 6000-header/100-round component benchmark, measured 11.8674, 1.69143,
+1.69769, 12.0110 seconds respectively: 7.046x for the state-machine component.
+Initial genuine Yespower checks remain outside this timer. This is not a full
+IBD measurement or a claim of meeting the five-hour target.
+
+### Read-only live observation
+
+`contrib/bench/observe-ibd.py` records JSONL snapshots of chain progress, peer
+presync/in-flight counts and byte totals, plus Linux process CPU ticks, RSS,
+major faults and I/O counters. It calls only read-only RPCs, never changes or
+stops a node, uses CLI cookie authentication, and omits peer addresses. Missing
+progress and RPC failures remain explicit rather than becoming false zeros.
+It refuses to overwrite output and detects PID reuse. Clock ticks/page size
+are recorded so analysis can use actual elapsed time and process counter deltas.
+
+```sh
+python3 contrib/bench/test-observe-ibd.py
+python3 contrib/bench/observe-ibd.py --cli /path/to/sugarchain-cli \
+  --datadir /path/to/fresh/run/data --rpcport 38421 --pid NODE_PID \
+  --output /path/to/new-observations.jsonl --interval 10
+```
+
+Four deterministic parser/RPC-error tests passed, followed by a two-sample
+read-only smoke check against the fresh network run. The full network run uses
+an immutable copy of the binary from source `775ef0b94e`, `-parpow=8`,
+`-maxpowcache=2048`, `-dbcache=4096`, `-assumevalid=0`, unchanged minimum chainwork,
+and a new empty datadir. Startup and initial peer/PRESYNC progress are confirmed;
+completion time, block-stage throughput and full-IBD success remain unverified.
+
+The user subsequently deferred all public-network full-IBD/block-download
+measurement to their final validation. The development observation node was
+stopped normally via its cookie-authenticated RPC, with `Shutdown done`, still
+at blocks=0 and about 392,000 presynced headers. Its data/logs were preserved;
+no user node was stopped. Further development uses fixtures, offline imports,
+components and localhost tests only. No completion-time claim follows from this
+short observation. The observer now also terminates on an exited/zombie process
+without waiting for the parent to reap its PID; five tests include this real
+child-process lifecycle case and verify that no RPC is attempted after exit.
+
+### Localhost block-download latency proxy
+
+`contrib/bench/block-download.py` uses the existing functional-test P2P framework,
+real regtest block validation and disk ingestion, four outbound localhost peers,
+and deterministic coinbase-only blocks. Every getdata response receives a fixed
+async delay; the network event loop itself is never slept. The harness checks
+peer/request bounds, exact tip, UTXO fingerprint and `verifychain(4, count)`.
+Node CPU and Python harness CPU are recorded separately to expose generator
+bottlenecks. The result file cannot be overwritten.
+
+Initial unchanged-code sensitivity runs over 4096 blocks measured 5.843s at
+0ms delay and 9.518s at 100ms, both with the existing 16-request per-peer bound,
+identical tip and UTXO results. A 1024-block smoke check also passed. These are
+latency/scheduler/ingestion proxies, not mainnet PoW, presync, complex late-chain
+scripts, Internet bandwidth or full IBD measurements. Pair them with the real
+header/PoW and offline mainnet-block benchmarks rather than extrapolating a
+full-chain completion time from these small synthetic blocks.
+
+```sh
+BITCOIND="$PWD/build-ibd-optimization/bin/sugarchaind" \
+  python3 contrib/bench/block-download.py \
+  --configfile=build-ibd-optimization/test/config.ini \
+  --blocks=4096 --latency-ms=100 --result=/tmp/new-download-result.json
+```
+
+### Opt-in bounded IBD request budget
+
+`-maxibdblocksinflight=16..128` adjusts only bulk IBD requests. Default remains
+16; non-IBD/direct-fetch/compact-block limits remain 16, and the existing
+1024-block lookahead, stall detection/backoff, service eligibility, minimum work
+and validation gates are unchanged. Values outside the range clamp to its
+endpoints, including the full signed-64-bit input boundaries. Increasing this
+option explicitly allows more outstanding requests per peer; it does not
+increase wire-message size, receive-buffer or lookahead limits, nor remove any
+block validation. Do not conflate this bounded budget with PR 225's 122880-block
+scheduling horizon or install such a number as a per-peer cap.
+
+The first proxy used regtest's per-block exhaustive index diagnostics and the
+framework's trace logging. That inflated CPU cost (6.6–6.9 CPU seconds/4096
+blocks), unlike normal mainnet defaults. The performance harness now explicitly
+uses mainnet's diagnostic defaults (`-debug=0 -checkblockindex=0`) for **both**
+variants, while dedicated correctness/stalling tests keep exhaustive index
+checks enabled. Consensus, scripts and `verifychain` are not disabled.
+
+A/B/B/A with 4096 deterministic blocks, four peers and 100ms response delay:
+
+| Run | Per-peer IBD cap | Seconds | Node CPU seconds | Python CPU seconds |
+| --- | ---: | ---: | ---: | ---: |
+| A | 16 | 6.612860 | 0.90 | 0.811 |
+| B | 128 | 0.982984 | 0.76 | 0.583 |
+| B | 128 | 0.967126 | 0.66 | 0.561 |
+| A | 16 | 6.612844 | 0.83 | 0.845 |
+
+This latency-limited proxy improved 6.782x with identical tip/UTXO/verifychain
+results. It does not predict full mainnet speed or late-chain script/disk cost.
+
+Validation: seven peer/DoS unit cases passed normally and under ASan/UBSan;
+upstream's 1024-window stall/eviction/backoff/recovery scenarios passed with 128
+under both v1 and v2, and again with 16. A near-tip transition confirmed that
+subsequent request batches return to <=16 while previously issued requests
+drain. An eight-peer stress run with configured value 1000000 remained <=128
+per peer. A 128-block, 900000-byte-padding-per-block stress test transferred
+115220865 bytes with exhaustive index checks enabled and passed verifychain.
+These stress runs are correctness checks, not performance comparisons. The
+GUI/IPC/multiprocess production build passed.
+
+### Bounded receive batching before send-side processing
+
+The message handler processes at most 64 available messages, stopping at a
+one-millisecond steady-clock deadline between messages, before servicing sends.
+This adapts PR 225's batching idea with a time/fairness bound. Slow individual
+messages are not preempted, exactly as before, but a single slow message is
+followed immediately by send-side work. Interrupt, disconnect and send-buffer
+backpressure terminate the batch immediately. Peer order remains randomized;
+all message parsing, proof and contextual checks are unchanged.
+
+A/B/B/A at 10000 deterministic regtest blocks, four localhost peers, zero added
+latency and the same explicit 128-request budget for both binaries measured:
+
+| Run | Receive handling | Seconds | Node CPU seconds | Harness CPU seconds |
+| --- | --- | ---: | ---: | ---: |
+| A | one message | 1.384944 | 1.76 | 1.342 |
+| B | bounded batch | 0.931611 | 1.08 | 0.880 |
+| B | bounded batch | 0.936430 | 1.14 | 0.864 |
+| A | one message | 1.349077 | 1.68 | 1.309 |
+
+The localhost proxy ratio is 1.464x with matching tip/UTXO/verifychain. Python
+peer overhead is visible and also decreases with fewer request messages, so
+this is not an end-to-end mainnet prediction. Reduced node CPU independently
+supports the send-side overhead explanation.
+
+Tests cover work/time bounds, two busy peers, a slow callback, send backpressure,
+disconnect, empty queues and immediate shutdown. Normal network/peer/DoS tests
+passed all 25 cases (152236 assertions), and TSan passed all 25. The localhost
+v2 stall/backoff/recovery and real Sugarchain invalid-PoW/body/restart regressions
+passed, as did the complete production GUI/IPC/multiprocess build.
+
+**Existing sanitizer issue:** the full ASan/UBSan network suite reports
+`streams.cpp:99` passing a null pointer to zero-length `fwrite` from
+`CaptureMessageToFile`, in `net_tests/initial_advertise_from_version_message`.
+That test directly calls `ProcessMessagesOnce`, not the changed message loop.
+It reproduces identically in the preserved pre-optimization sanitizer binary
+SHA256 `34d780347b1937360d0fa5fc3729789d07b322ef688725559d60cb87d59af52d`.
+No source workaround or test expectation change was made. All other 24 selected
+network/peer/DoS cases passed ASan/UBSan (150395 assertions). Thus the full
+sanitizer suite is not claimed clean; this unrelated capture-path issue remains.
+
+## Earlier integration checkpoint and measurement limits
+
+A separate clean `build-ibd-optimization-final` build completed with GUI, IPC,
+multiprocess, daemon, CLI and benchmarks enabled, using Cap'n Proto from
+`/usr/local`. Actual yespower compilation remains portable `-O2` with SSE2;
+no `-march=native`, forced AVX instruction set, or system policy change was made.
+
+The final clean binaries passed 78 selected C++ cases (571488 assertions):
+SugarShield, header PoW, low-work header sync, PoW, checkqueue, networking,
+peer management, DoS and validation. Existing functional ping, malformed/flooded
+messages, v1/v2 network deadlock, initial headers, minimum-chainwork, compact
+blocks/blocksonly and shutdown tests passed all eight scenarios. The three
+IBD request-limit/stall scenarios also passed. The new real-header/body test
+exposed a test-only fixture lookup error when invoked through CMake's build
+symlink; resolving the source path fixes that invocation without changing
+production or validation expectations. Its build-directory rerun passed,
+including mutated-body rejection, genuine block acceptance and worker restart.
+
+Final offline integration imported all 6000 real mainnet blocks, obtained the
+documented exact tip and UTXO digest, passed `verifychain(4, 6000)`, shut down,
+restarted without network peers, and passed those checks again. This run
+overlapped regression tests and is correctness evidence, not a new performance
+comparison. Final daemon SHA256:
+`33a94a1d58ceb56eddd16b95ef5478ab90460bacf4df4d6d9cbb417c8265c476`.
+
+Two further experiments were not adopted:
+
+- An ordered asynchronous proof-window prototype improved a short 40000-header
+  A/B/B/A proxy by only 1.031x while adding queue/lifetime complexity. This was
+  insufficient evidence of a repeatable benefit to retain production changes.
+- Eight physical-core affinity measurements varied substantially: unrestricted
+  22.3435/21.9948 seconds versus pinned 23.0636/19.8457 seconds. No reliable
+  affinity benefit was established and no CPU affinity policy was installed.
+
+At that checkpoint, no speculative larger scheduling window, adaptive peer scheduler, stall-timeout
+override, block-index cache increase or tip-log suppression was retained. The
+available short fixtures do not establish those as current bottlenecks.
+
+For the user's final run on Nana, an explicit candidate configuration is
+`-parpow=8 -maxpowcache=2048 -maxibdblocksinflight=128 -dbcache=4096 -assumevalid=0`
+with a new datadir. These are opt-in resource budgets, not claims of optimal
+settings for every host. Defaults remain conservative; full-chain memory growth
+and long-run cache retention need measurement. Existing datadirs are not reused.
+
+The proxies deliberately complement one another: real headers exercise genuine
+Yespower and contextual difficulty; header-sync benchmarks cover both commitment
+phases; real block import checks state/durability/restart; localhost experiments
+isolate latency, request bounds and message processing. They do not reproduce
+Internet peer heterogeneity, the entire historical transaction/script mix,
+44-million-entry index growth, long-run disk pressure or full-chain shutdown.
+Their speedup ratios cannot be multiplied into a full-IBD prediction. PR 225's
+10h49m15s result also uses a different validation/trust policy. Final full IBD
+time, improvement ratio against a full-run baseline, and the five-hour target
+remain unmeasured and belong to the user's final validation.
+
+## Follow-up: user-reported block-stage bottleneck (2026-09-29)
+
+The additional development window started at 2026-09-29 15:23:24 +09:00.
+The user superseded all earlier 48-hour/12-hour budgets and deadlines with an
+absolute final deadline of 2026-09-30 00:00:00 +09:00 (KST).
+The final hour, starting 2026-09-29 23:00:00 +09:00, is reserved for landing:
+no new large experiments or long benchmarks, and no weakened validation gates.
+Validated logical checkpoints
+are pushed immediately; a checkpoint is not completion of this investigation.
+Startup, block-index loading, startup memory, shutdown and flush latency
+optimization are outside this follow-up's scope.
+
+The user reports 11h18 elapsed, all 44,647,416 headers downloaded, and
+2,009,394 blocks connected. Block throughput was approximately 204.8/s current,
+170.5/s average, usually 150--250/s and occasionally 294/s. The graph projected
+57h49 remaining, or approximately **69h07 total**. This is an incomplete-run
+projection, NOT a measured completed full IBD. PRESYNC was 1400--1600 headers/s,
+REDOWNLOAD/replay 9000--10700/s. Block-stage profiling now has priority.
+
+At investigation start, local and origin both pointed to `916273c2de`; the
+currently running user Qt reported blocks=0 and headers=0. It therefore does
+not provide a live sample of the reported slow block stage. No user node was
+stopped or restarted. The previous run's datadir/log and actual resource
+arguments are needed to attribute its bottleneck, rather than assuming it used
+the example resource arguments above.
+
+### Proof-cost and cache-retention diagnostics
+
+`bench_header_pow HEADERS 6000 8 16 --block-stage` adds two explicitly isolated
+serial block-proof passes after the original cold/repeated header passes. On
+Linux, a linker wrapper counts actual yespower calls without production
+instrumentation. The warm pass keeps genuinely verified entries; the cold pass
+resets the cache to model all misses. Neither is complete block validation or
+network throughput. Existing benchmark invocation/output remains unchanged
+without the additional option.
+
+First measured run: warm block-proof pass 0.00647043 seconds, **0** yespower
+calls; cold pass 17.2746 seconds (347.331 proofs/s), **6000** calls. This proves
+the potentially large cost of misses, but does not establish the real run's
+miss rate. Measurements overlapped a single-thread cache-policy diagnostic;
+use isolated repeated runs before making performance claims.
+
+`contrib/bench/pow-cache-retention.cpp` independently exercises the exact
+production CuckooCache type with deterministic SHA256 keys. These synthetic
+entries never enter a node or bypass proof verification. For example:
+
+```
+c++ -std=c++20 -O2 -Isrc -Ibuild-ibd-optimization-final/src \
+  contrib/bench/pow-cache-retention.cpp \
+  build-ibd-optimization-final/lib/libbitcoin_crypto.a -o /tmp/pow-cache-retention
+/tmp/pow-cache-retention 2048 44647416 100
+```
+
+After 44,647,416 distinct insertions, sampling every 100th key in each decile:
+
+| Cache | Entries capacity | First nine deciles | Last decile |
+|---|---:|---:|---:|
+| 16 MiB | 524,288 | 0/401,832 retained | 5,248/44,648 retained |
+| 2048 MiB | 67,108,864 | 401,832/401,832 retained | 44,648/44,648 retained |
+
+Thus full-chain eviction is a demonstrated risk at the default budget, but
+**not demonstrated at 2048 MiB** for this unique-chain workload. Salt, ordering,
+competing chains and reinsertion can differ in a real process. This diagnostic
+does not measure actual live cache hits and does not justify trusting disk
+flags, old software's block-index validity, or unverified header evidence.
+
+The user subsequently confirmed that the slow run's datadir/debug.log were
+accidentally deleted. A preserved graph records 11h18m09s elapsed and 57h49m20s
+projected remaining (69h07m29s total), 2,009,394 blocks, 44,647,416 headers,
+204.8/s current, 170.5/s average and 294.0/s maximum block speed. Block download
+overlaps the final part of header sync in the graph. This supports prioritizing
+the block stage but cannot identify its cache budget, miss rate or CPU stacks.
+Do not wait for lost telemetry or disturb the user's replacement node.
+
+Existing local historical block files yielded fixtures without networking or
+modifying their source. The recovered 6000-block fixture matches the prior
+SHA256 `39ba457e491589267dbc4c3d916aa863a4112fdf99b6d4b86ddaf0ede23769ed`.
+A 100000-block fixture has SHA256
+`8b541d086a7496a5681f60521c9e0ad81b59916a070efca09a670d86abc0e058`
+and tip `b62290c6914adee9b29326b8a4567114fff1f9013acb9c3b6ff68612a2947f99`.
+Fixture extraction checks framing/hash continuity; production validation still
+has to verify their PoW, difficulty, transactions and chainstate.
+
+`contrib/bench/yespower-call-profile.cpp` can be linked into a separate
+diagnostic executable using `-Wl,--wrap=yespower`. It invokes the unchanged
+primitive, counts calls/errors and accumulates thread CPU time (not overlapping
+wall time). It is not linked into production targets. A first 6000-block cold
+offline import, with networking/assumevalid disabled, reached the exact tip
+and stopped normally: 21.361s elapsed, 21.528s process CPU, 6003 actual yespower
+calls, 20.140s yespower CPU (93.55%), zero primitive errors. Initialization and
+shutdown are included in process totals; neither is an optimization target.
+This is evidence that cold-proof import is CPU dominated, not evidence that the
+lost public-mainnet run had the same profile. Header-first/cold-cache and warm
+block-processing comparisons are the next required controls.
+
+### Reproducible indexed-block component control
+
+The Linux `bench_indexed_block_import` target accepts a raw block fixture and
+`warm` or `cold`. It genuinely verifies all header proofs and contextual rules,
+then processes the blocks through `ProcessNewBlock`, computes the exact UTXO
+digest and runs level-4 verification over the fixture. `cold` resets only the
+bounded proof cache between the header and block phases; `warm` retains it.
+Timing excludes startup, final flush, UTXO hashing and verifychain.
+
+This models **the post-admission validation component**, using the internal
+caller's `min_pow_checked` precondition. A 6000-header fixture does not satisfy
+mainnet's minimum chainwork, so this is not a P2P admission, PRESYNC/REDOWNLOAD
+or network-IBD measurement. No production minimum-chainwork value is changed.
+The separate real-mainnet localhost P2P regression still requires those same
+6000 headers to remain in PRESYNC. Component timing must not be presented as
+complete IBD timing or proof of passing mainnet's admission threshold.
+
+The ordinary unit fixture hard-codes a full index-consistency audit after every
+header/block, ignoring its `-checkblockindex` argument. The benchmark therefore
+constructs its isolated chain manager with production-mainnet's diagnostic
+policy (`check_block_index=0`) in **both** arms. All consensus/body/script checks
+remain active, and regression tests keep the exhaustive index audits enabled.
+
+`contrib/bench/indexed-block-ab.py` automates A/B/B/A, checks binary/input hashes,
+requires genuine initial proof calls, and rejects a wrong tip, UTXO hash or
+missing verifychain success. Example for the 6000-block fixture:
+
+```
+python3 contrib/bench/indexed-block-ab.py \
+  --baseline /path/to/baseline/bench_indexed_block_import \
+  --candidate /path/to/candidate/bench_indexed_block_import \
+  --blocks /path/to/blocks-6000.dat --count 6000 \
+  --tip e7a04205f70e5b6e99d83a8f720748fee559a382701b39ff9891e391e6cf81d9 \
+  --utxo 94fda3c59b6d6410687bfacd26d858d0f85b86f6913b90016b7b02f72b3f13b8 \
+  --mode cold --work-dir /path/to/new-results-directory
+```
+
+An exact pre-evidence production checkout (`8ea9f131d9`) with the same benchmark
+tooling measured cold-cache block phases of 19.1155/18.9455 seconds versus
+warm-cache phases of 0.277371/0.281326 seconds. Cold phases each made 6000
+additional yespower calls; warm phases made none. Both modes verified the same
+tip and UTXO digest. The user's node continued running throughout: these are
+controlled component comparisons on a shared machine, not isolated-hardware
+peak throughput or an attribution of the deleted public run.
+
+### Live index evidence after bounded-cache eviction
+
+An accepted block index now keeps a private, nonserialized proof-evidence bit.
+Only successful proof checking during header acceptance or the existing disk
+index loader can establish it. Genesis' special acceptance path and fuzz's
+simplified proofs cannot. Disk copies explicitly clear the bit; persisted TREE
+or SCRIPTS validity never supplies this evidence. Restart still performs the
+existing real proof checks: an offline 6000-block restart made 6003 yespower
+calls, with zero primitive errors.
+
+Before checking a block whose header is already indexed, or reading its disk
+block, the node may restore that checked header to the ordinary bounded cache.
+It requires `cs_main`, reconstructs the complete header, checks its hash against
+the immutable block-map key, and validates the current target range. The normal
+proof check remains in place, as do body, contextual, script and UTXO checks.
+Changed disk headers therefore cannot borrow the original header's proof.
+This is current-process evidence, not a persistent verification shortcut.
+On the measured x86-64 build the bit fits existing padding: `sizeof(CBlockIndex)`
+remains 152 bytes, with no per-header auxiliary allocation.
+
+The 6000-block A/B/B/A cold-cache component measured baseline block phases of
+19.1155/18.9455s versus candidate 0.280487/0.290110s (66.70x median component
+speedup). Extra block-phase yespower calls fell from 6000 to zero; both versions
+performed all 6000 first header proofs and produced the identical tip, UTXO
+digest and successful level-4 verification. Warm-cache controls were
+0.277371/0.281326s baseline versus 0.280610/0.271923s candidate: no meaningful
+regression was observed. This does not establish a full-IBD speedup, nor prove
+cache eviction caused the user's deleted run to be slow.
+
+Regression coverage includes all 6000 indexed headers with a two-entry cache,
+disk copies and serialization, forged validity flags, a stricter target limit,
+mutated index fields, mutated block bodies and disk headers, and concurrent
+cache resets/restoration. The localhost mainnet test still leaves 6000 headers
+in PRESYNC under the unchanged minimum chainwork, rejects invalid proofs and
+body mutations, and exercises restart. Existing minimum-chainwork and initial
+header-sync functional tests also pass.
+
+The candidate also validated 100000 historical blocks offline: 100000 genuine
+first header proofs, zero repeated block-phase proofs, exact expected tip, UTXO
+digest `d252a11a14d2802c6157b58860441cefe51aa735e4ebe2ef2839346a6ced183c`,
+and level-4 verification success. Release regression ran 83 cases / 597125
+assertions; ASan/UBSan ran 63 cases / 433160 assertions without errors. GUI,
+daemon, CLI and IPC targets build; localhost in-flight/stall tests pass over
+both v1 and v2 transports, as does the existing shutdown test.
+ThreadSanitizer also passes four targeted cache-reset, live-index restoration,
+shared-worker-pool and worker-lifetime cases (64 assertions).
+
+### Separating peer supply from local validation
+
+`block-download.py --peer-service-ms VALUE` (repeat once per peer) adds a
+serial service cost per block, independently of response latency. The existing
+zero-service default remains available. External counters record request gaps,
+batch counts and timer delivery lateness so harness saturation is visible.
+This is a deliberately controlled regtest supply model, not a measurement of
+any public peer's CPU or throughput.
+
+With 50ms latency and 4ms/block service, one peer supplied 1024 blocks at
+244.97/s; four peers supplied 4096 at 909.22/s with the default 16 outstanding
+requests, or 951.37/s at the opt-in 128. Those results are close to the imposed
+250/s per-peer ceiling; simply raising the limit cannot eliminate that ceiling.
+
+A mixed fixture (one 20ms/block peer, three 1ms/block peers, all 50ms latency)
+exposes a different bottleneck. With 128 outstanding requests it took 10.586s
+(386.94 blocks/s), with roughly 6.7s of request gaps on each fast peer. At 16
+outstanding it took 4.677s (875.78/s), with no measured request gaps. Both runs
+produced the same tip/UTXO and passed verifychain. The node consumed only
+1.70s/1.27s CPU respectively. This reproduces head-of-line/window effects in
+the proxy and motivates a bounded delivery-aware budget experiment; it does
+not identify the lost public-mainnet run's peers as having these properties.
+
+A separate localhost two-peer diagnostic kept one peer at PRESYNC height 4000
+after the other had admitted 6000 headers. Initially only the latter was a
+block supplier. An INV for the already indexed tip immediately made the former
+a supplier too, even while its PRESYNC state remained active. Therefore stale
+PRESYNC alone does not prove a peer is unable to supply blocks. No production
+presync bypass or peer-state reset is added on that hypothesis.
+
+### Delivery-aware opt-in request budget
+
+For `-maxibdblocksinflight` above 16, preserve the configured initial budget,
+then estimate delivery intervals from requested, non-mutated full blocks.
+An integer EWMA covers measured first-response latency plus 250ms of service
+work, bounded by 16 and the user's existing ceiling (never more than 128).
+Use message consumption timestamps: socket timestamps can be identical for
+coalesced messages. Idle/cancelled queues reset the interval baseline;
+same/backwards timestamps cannot create an infinite rate. Unsolicited blocks
+cannot update the estimate. State is per-peer under the existing `cs_main` lock.
+
+This only changes the allocation hint. It does not cancel existing requests,
+change consensus/validation, increase the 1024-block window, modify compact-block
+limits, or change stall/disconnect/backoff behavior. Default 16 and non-IBD 16
+remain unchanged. A malicious peer can at most earn the same opt-in ceiling that
+the old implementation gave immediately, not additional resource exposure.
+
+`block-download-ab.py` runs pinned binaries in A/B/B/A order and verifies binary
+hashes, identical tip/UTXO, level-4 verification and the in-flight ceiling:
+
+| Localhost case | Baseline median | Candidate median | Interpretation |
+| --- | ---: | ---: | --- |
+| 4096 blocks, one 20ms + three 1ms peers, 50ms latency | 10.5814s | 3.9657s | 2.67x proxy speedup |
+| 4096 blocks, four 4ms peers, 50ms latency | 4.2279s | 4.2417s | 0.3% difference |
+| 1024 blocks, four 4ms peers, 1000ms latency | 2.5747s | 2.5744s | High-RTT control preserved |
+| 20000 blocks, latency only, 50ms latency, serialized measurement | 2.9782s | 3.0003s | 0.7% difference; individual runs overlap |
+
+These are controlled supply models, not public-mainnet performance claims.
+Short latency-only trials initially showed 3--6% slower results; the longer
+serialized control above avoids overlapping our build/regression jobs and
+shows overlapping run times (baseline 2.9553/3.0011s, candidate 2.9956/3.0049s).
+The discarded first design started at 16 and ignored RTT: despite a larger
+mixed-peer gain it regressed the 1000ms control from 2.57s to 5.59s. Adding RTT
+alone still cost an extra initial round trip. Neither version was committed.
+
+Tests cover cold start, changing rates, duplicate timestamps,
+backwards/negative/extreme clocks, idle/cancelled queues, reconnect state and
+configured limits. Unit and ASan/UBSan tests pass (3 cases / 440 assertions).
+TSan passes network/peer-manager suites (21 cases / 157206 assertions).
+Both transports pass the existing stall/backoff/recovery test; all GUI, daemon,
+CLI and IPC targets build. A near-tip 256-block/20KB-padding run passes
+UTXO/level-4 verification with the configured initial IBD ceiling of 128.
+An initial test invocation incorrectly demanded 16 for that pre-transition
+batch; it failed as expected under the preserved initial budget. This short
+fixture does not independently exercise subsequent non-IBD request refills.
+
+The longer 100000-block real-fixture control also completed: baseline cold
+block processing made 100000 extra yespower calls in 338.830s, versus zero extra
+calls in the live-evidence candidate's 8.668s. Both produced the expected tip,
+the same `d252a11a...ed183c` UTXO hash and successful level-4 verification.
+These longer runs were not interleaved A/B/B/A and ran under different background
+load; use the earlier repeated 6000-block control for the measured effect size.
+
+### Already indexed header messages after cache eviction
+
+A real P2P message-handler fixture first genuinely verifies and contextually
+indexes 2000 historical headers, then clears the bounded cache and receives
+the same HEADERS message. Before the change this performs 2000 extra yespower
+calls and occupies the message handler for 6.5722s. Refilling the cache from the
+existing live-index evidence reduces this to zero extra calls and 0.1902s;
+the warm control takes 0.1864s. These unit-fixture timings include index audits
+and are not full-mainnet throughput measurements.
+
+The header path uses the same evidence gate as block reception and disk reads:
+an index must carry current-process proof evidence, reconstruct the exact hash
+bound to its index key, and satisfy the current target limit. Unknown or changed
+headers still run real Yespower. The ordinary verifier, continuity check,
+PRESYNC/REDOWNLOAD, commitments and minimum-chainwork admission remain in place.
+The lock is held only for the bounded index lookup/cache refill, not for worker
+execution. No persistent proof flag or TREE-validity shortcut is introduced.
+
+The new regression case exercises cold and warm known messages, a mixed
+known/unknown batch (one genuine new proof, still below mainnet admission work),
+and a nonce-mutated previously known header (one genuine failed proof and the
+normal rejection log). It does not establish how often the deleted public run
+encountered this condition.
+
+Validation: 62 release regression cases / 432867 assertions pass, including
+SugarShield, header sync, PoW, queues, peer-manager and block-manager suites.
+ASan/UBSan passes the three targeted evidence/message cases (12038 assertions),
+and TSan passes four message/cache/pool concurrency cases (28 assertions).
+The localhost mainnet functional test passes with unchanged minimum chainwork,
+invalid-proof rejection, block-body checks and restart.
+
+### Rejected scratch-layout and compiler experiments
+
+Additional worker-count exploration is closed: the production cap remains 8,
+and no test/benchmark may run more than 16 actual PoW workers. The earlier
+16-worker measurement is only an upper-bound observation, not a candidate.
+
+An external-only 2MiB scratch-alignment experiment at eight workers measured
+5.8811s baseline versus 5.7532s candidate medians. Existing scratch mappings
+already had roughly 93--96% transparent-huge-page coverage; individual runs
+varied much more than the 2.2% difference. A separate external-only `-O3`
+compilation of the unchanged yespower implementation measured 5.8571s versus
+5.7484s (1.9%), again smaller than observed variation. Neither change is adopted.
+Production allocator, instruction-set/compiler policy and system THP settings
+remain unchanged. These experiments are not claimed as speedups or full-IBD
+results; no new worker sweep was used for either A/B comparison.
+
+### Block CPU profile and representative script resources
+
+The 100000-block fixture contains 110846 transactions and 188638 non-coinbase
+inputs (62197382 serialized bytes). It therefore exercises genuine script
+validation, not only coinbase processing. A userspace CPU profile of the block
+phase, after all 100000 first header proofs, collected 2556 samples: 39.1% include
+script verification, 15.5% include `FlatFileSeq::Open`, and about 3.4% include
+directory creation/checking. These cumulative categories overlap and must not
+be added together. Block-phase Yespower calls were zero; tip/UTXO and level-4
+verification match the known fixture. This is an early-history fixture, not a
+profile of the deleted public run or of a 44-million-entry chainstate.
+
+Profiling used only a private build of [gperftools 2.16](https://github.com/gperftools/gperftools/tree/e1014dead2029b341d06027b4f2b5562d799d5b1),
+`libprofiler` (not tcmalloc), preloaded into the isolated benchmark. Its documented
+signal toggle started after the header row and stopped after the block row.
+Thus small phase-boundary scheduling delays are possible. No kernel profiling
+permission, system package, production binary or user node was changed.
+
+The benchmark previously fixed script workers at two. Optional positional
+arguments now select script workers (0--15) and DB cache MiB (4--16384), while
+preserving the old defaults and fixing Yespower at eight workers. Fixture and
+resource metadata go to stderr; the A/B runner verifies requested budgets and
+records complete commands. This is **not** further Yespower worker exploration.
+With the same binary and an actual 1GiB DB cache on both arms, 100000-block
+A/B/B/A measured (512MiB was requested but not applied; see the correction below):
+
+| Additional script workers | Block-phase runs | Median |
+| --- | --- | --- |
+| 2 | 8.16022s / 7.94551s | 8.05287s |
+| 15 (existing Core31 cap) | 6.42140s / 6.30930s | 6.36535s |
+
+Both arms perform 100000 first proofs and no repeated block proofs, and match
+the exact tip/UTXO/verifychain result. The existing production auto-selection is
+retained: this comparison corrects proxy representativeness, not production
+code. Six malformed/out-of-range argument cases, a default-argument genuine
+block import, and a 0-versus-15 script-worker A/B smoke all pass. That smoke
+requested 4MiB but did not apply it, so it did not validate the lower DB-cache
+boundary. The one-block smoke is a tooling/correctness check, not speed evidence.
+
+### Avoid repeated directory checks when opening existing block files
+
+The block CPU profile identified repeated directory checking inside
+`FlatFileSeq::Open`. Try the existing file first; only if opening fails, run the
+original directory-creation and writable-file-creation fallback. There is no
+cached directory state or file handle. Seeking, file closure, truncation,
+`FileCommit`, `DirectoryCommit`, flush ordering and validation are unchanged.
+
+With 15 script workers, eight PoW workers and an actual 1GiB DB cache on both arms,
+the 100000-real-block A/B/B/A block-phase results were:
+
+| Variant | Runs | Median |
+| --- | --- | --- |
+| Before | 6.56246s / 6.58724s | 6.57485s |
+| Existing-file fast path | 6.38067s / 6.09289s | 6.23678s |
+
+This is a 1.054x component speedup, not a full-IBD measurement. Every run performs
+100000 genuine first proofs, zero redundant block-phase proofs, and matches the
+known tip, UTXO digest and level-4 verifychain result. Header timing is variable
+and is not attributed to this file-opening change.
+
+A separate `strace -f -c` comparison of the entire 6000-block harness, including
+verification, reduces `newfstatat` from 72093 to 36089 calls. Both variants still
+make 36109 `openat`, 36098 `close`, 14 `fdatasync` and two `fsync` calls. Traced
+wall time is not used as performance evidence. No user node was traced.
+
+New unit cases cover null positions, missing read-only files, parent creation,
+non-truncating existing-file opens, parent removal/recreation and non-directory
+parents. The flatfile/block-manager suites pass 13 cases / 119 assertions.
+Functional blocksdir and read-only reindex pass; the latter checks filesystem
+read-only permissions, while its optional immutable-file flag is unavailable
+without elevated privileges on this host.
+Fastprune also passes. The combined release flatfile, block-manager, PoW,
+header-PoW, header-chainwork and SugarShield suites pass 55 cases / 430041
+assertions. The full GUI/daemon/CLI/IPC production build passes.
+ASan/UBSan with leak checking and halt-on-error also passes the 13 flatfile and
+block-manager cases / 119 assertions.
+
+### Cache-budget measurement correction
+
+Reporting the active cache sizes exposed a benchmark plumbing error:
+`ChainTestingSetup` computes its initial cache budget from its local `m_args`,
+but parses `extra_args` into `node.args` (the global argument manager). The old
+harness supplied `-dbcache` through `extra_args` without recalculating that
+budget. Thus the earlier 512MiB requests, and the initial 4MiB diagnostic, used
+the same 1GiB host default. Matched A/B comparisons still used equal budgets;
+the requested-size labels and the claim of exercising a 4MiB boundary were
+incorrect. The preserved raw evidence is not rewritten.
+
+The benchmark now calculates the budget from the arguments actually parsed,
+before constructing/loading its replacement chainstate. It reports active UTXO,
+coins-DB, block-index and borrowable mempool budgets; the runner checks the
+actual split. This changes only tooling, not production cache policy.
+
+Small `dbcache` alone does not imply pressure: Core31 can borrow the empty
+mempool budget. An optional decimal-MB mempool argument controls that budget
+in the isolated harness. Optional `--log-coindb` counts existing chainstate-write
+log events within each timed phase. These are attempted write events, not a
+new durability guarantee; final tip/UTXO and full verifychain still gate success.
+Enabling a logger adds message-formatting overhead, so logged diagnostic timings
+must not be compared with unlogged benchmark timings. A zero counter with logging
+disabled is not evidence that no flush occurred.
+
+The corrected 100000-block diagnostic uses 1835008 bytes each for UTXO cache and
+coins DB, 524288 bytes for the block-index DB, and 5000000 borrowable mempool
+bytes. It observes seven chainstate write events during block import (7.04153s
+with diagnostic logging). All 100000 first proofs are performed; redundant
+block proofs remain zero, and the known tip/UTXO/full verifychain match. This
+demonstrates real cache-pressure writes in a small historical fixture, not
+late-mainnet database scale or a comparison with the unlogged timings above.
+
+Full level-4 verification receives at least 128MiB UTXO cache **after** the timed
+import and UTXO digest calculation. This separate verification budget is printed
+to stderr; `SKIPPED_L3_CHECKS` is never accepted as success. Import budgets are
+not enlarged during measurement. Default-argument and real 4MiB/5MB diagnostic
+smokes pass, six invalid argument cases are rejected before fixture execution,
+and the runner rejects the preserved pre-fix binary's wrong actual cache split.
+Legacy binaries lacking active-budget telemetry are explicitly marked as not
+having verified actual cache budgets in the A/B result.
+
+### Periodic IBD tip logging without suppressing validation or notifications
+
+After the block-stage fixes, `UpdateTip` logging still represented 3.1% of the
+earlier CPU profile even without writing a log file. The indexed-import harness
+now offers `--log-info-file` to exercise ordinary unbuffered file logging in its
+own disposable directory. It reports tip-line counts and file-byte deltas, with
+normal production timestamp/source/thread-prefix defaults. Both A/B arms use
+the same logging mode and validated active resource budgets.
+
+During IBD, historical tips are logged at most once per second using the
+mockable steady clock. Reaching the best known header, leaving IBD, or enabling
+validation debug logging preserves the unthrottled tip output. Background
+chainstate logging is unchanged. The guard is after mempool notifications and
+warning handling, and changes only the final tip-log call. No consensus, block,
+script, state, flush or peer work is omitted.
+
+The 100000-real-block A/B/B/A comparison uses 15 script workers, eight PoW
+workers, an actual 512MiB DB budget and 300MB borrowable mempool on both arms:
+
+| Variant | Block-phase runs | Median | Tip lines | Log bytes per run |
+| --- | --- | --- | --- | --- |
+| Every historical tip | 6.72331s / 6.90980s | 6.81656s | 100000 | 23705468 |
+| Periodic IBD progress | 5.65889s / 5.58983s | 5.62436s | 7 | 1812 |
+
+This is 1.212x component throughput (17.5% less elapsed block-phase time), not a
+full-mainnet result. All four runs execute 100000 genuine first proofs and zero
+redundant block proofs, and match tip, UTXO digest and full level-4 verification.
+
+New deterministic tests cover the 999ms/1s boundary, repeated calls, elapsed and
+reset clocks, unchanged chainstate/mempool update notifications, non-IBD and
+debug behavior, and final catch-up visibility. A combined run initially exposed
+test-global logging categories inherited from another suite; the fixture now
+explicitly saves, clears and restores them. Production logic was not changed to
+hide that fixture problem. The corrected combined release run passes 67 cases /
+433165 assertions. Functional logging, shutdown and real-header localhost
+P2P/restart tests pass, as does the full GUI/daemon/CLI/IPC build.
+
+ASan/UBSan passes the 25 selected logging/validation cases (3424 assertions)
+with leak detection and halt-on-error enabled. TSan is **not recorded as a
+pass**: it reports a scheduler mutex double-lock during fixture construction,
+before the new test assertions. The same report is reproduced with the
+pre-change `validation.cpp` linked into a diagnostic binary (the unused new
+field remains for ABI consistency), as well as in existing validation tests.
+No suppression, sanitizer option weakening, scheduler modification or production
+workaround was added. This leaves the local TSan fixture limitation unresolved;
+it does not establish a new tip-logging race. The new timestamp is accessed only
+under the existing `cs_main` lock and introduces no thread or asynchronous work.
+
+### Bounded evidence for repeated, successfully verified header batches
+
+Delayed peers can replay an identical historical PRESYNC chain after its
+individual PoW entries have been evicted. A process-local successful-batch cache
+now retains evidence for the ordered header sequence. Its salted key binds the
+count and every serialized header through its block hash. Only a wholly
+successful verification inserts evidence; exceptions and rejected batches do
+not. Nothing is persisted or inferred from disk/TREE validity.
+
+The cache reserves one eighth of the configured entry budget, capped at 2MiB,
+within that budget. Tiny test caches retain their previous allocation behavior.
+Every call still validates the first header before speculative work and checks
+every compact target against the applicable limit. YespowerSugar parameters are
+fixed by the existing consensus implementation. Hits refill individual proof
+entries so subsequent contextual acceptance does not merely inherit deferred
+PoW cost. Fully warm individual entries retain their fast path. Changed order,
+count, header fields, or batch boundaries cannot reuse unrelated batch evidence.
+Difficulty, commitments, chainwork and contextual validation are unchanged.
+
+A/B/B/A uses 40000 real mainnet headers, eight workers and identical portable
+compiler flags. Medians below compare the previous implementation with the final
+batch implementation, including the warm-cache fast path:
+
+| Entry budget | Phase | Previous | Batch evidence |
+| --- | --- | --- | --- |
+| 1MiB | Cold unique headers | 17.12740s | 16.94865s |
+| 1MiB | Repeated headers | 8.97568s | 0.12378s |
+| 16MiB | Cold unique headers | 16.52580s | 16.83405s |
+| 16MiB | Fully warm repeat | 0.04302s | 0.04453s |
+
+Every cold run performs all 40000 genuine proofs. The two 1MiB candidate repeats
+perform 19 and 18 proofs; fully warm 16MiB repeats perform zero in both arms.
+There is no demonstrated unique-cold speedup. The approximately 1.9% cold cost
+in the 16MiB comparison and shared-machine variation remain visible rather than
+being presented as a gain. An initial implementation added about 29ms of warm
+batch-key/refill overhead per 40000 headers; the final individual-cache fast
+path reduces the measured difference to about 1.5ms.
+
+`contrib/bench/presync-peer-overlap.py` reproduces delayed overlap through two
+inbound localhost peers with real mainnet parameters and unchanged minimum
+chainwork. It disables external discovery/connections, keeps blocks/indexed
+headers at zero, and checks PRESYNC progress after every 2000-header message.
+This exercises PRESYNC rather than outbound scheduling or Internet throughput.
+The baseline two-run median delayed pass takes 9.81515s / 65.865 CPU seconds.
+The final candidate takes 1.29013s / 0.16 CPU seconds, after a 17.73430s unique
+first pass. Its process total is 40022 genuine proofs including startup checks;
+the two baseline totals were 61005 and 61001. Message/ping pacing imposes a wall
+time floor. Batch boundaries must match to obtain this benefit; cold unique
+work is not eliminated. These are component/localhost results, not full IBD.
+
+Regression coverage binds order/count, all mutable header fields, stricter
+later target limits, failure/exception behavior, cache reset, scalar reuse,
+concurrent callers and 6000 real headers under eviction pressure. The final
+release run passes 70 cases / 433332 assertions; ASan/UBSan passes all 15
+header-PoW cases / 24254 assertions, and TSan passes five selected batch,
+exception and concurrency cases / 67 assertions. A broader earlier ASan/UBSan
+run also covered SugarShield, PoW and headers sync. Full daemon/CLI/Qt/IPC build
+passes. The final 100000-block offline import performs all 100000 first proofs,
+zero repeated block proofs, matches the recorded tip and UTXO digest, and passes
+full level-4 verifychain. Its block phase takes 5.07966s, recorded as a regression
+check rather than a separate performance claim.
+The final real-header localhost P2P/restart and functional shutdown tests also
+pass. No public-mainnet run or user-node profiling was performed.
+
+### Million-block scale check and remaining file-I/O cost
+
+The indexed component harness now accepts up to one million blocks and verifies
+and accepts headers in 2000-header batches. Verifying an entire million-header
+vector before accepting any of it would evict early individual proofs and
+artificially introduce serial recomputation unlike the production message path.
+This is a benchmark correction, not a change to mainnet admission or validation.
+The harness continues to supply its explicit minimum-work precondition solely
+to isolate the indexed block component; it is not a network-IBD experiment.
+
+A read-only scan of preserved legacy block files found an unambiguous connected
+prefix from Sugarchain genesis. The million-block fixture contains 1119452
+transactions and 2132991 non-coinbase inputs in 669364143 bytes. Its block-file
+SHA256 is `ade30e041bcae02445b63614b0252ff2d55b76d3b80986dc663344ac22b754c0`.
+This local chain selection is not an independently authenticated canonical tip;
+all PoW, difficulty, transaction, script and chainstate checks still run.
+
+With eight PoW workers, 15 script workers, actual 512MiB DB / 300MB mempool
+budgets, ordinary progress file logging and a profiler enabled only for the
+block phase, the run reports:
+
+- Header phase: 434.597s, exactly 1000000 genuine Yespower calls.
+- Block phase: 56.0169s, zero additional Yespower calls.
+- Tip: `09246c3d203e709775281602bc710622ccbd4455010a745b0bdb13bb2c0858b0`.
+- UTXO: `81c16f59dc75a4d81bc624556ae9a942e845f63a369208ea24f0033df9360bab`.
+- Full level-4 verifychain: PASS. These larger-fixture hashes are newly recorded
+  regression references, not previously published mainnet checkpoint constants.
+
+The 17063-sample block-stage CPU profile attributes 22.8% cumulatively to script
+verification (including 19.2% ECDSA), 18.1% to FlatFileSeq::Open, 7.4% to fseek
+and 4.6% to CCoinsViewCache::Flush. Nested percentages overlap and must not be
+added. This identifies file-opening/positioning as a remaining measured cost;
+it does not establish a full-chain disk bottleneck. Input blocks are preloaded,
+Internet scheduling is absent, and this early million-block transaction mix and
+index size cannot represent all 44.65 million blocks. Profiled elapsed times are
+not a new unprofiled A/B speedup or a full-IBD forecast.
+
+### Rejected: descriptor positioning before stdio construction
+
+The million-block profile motivated a POSIX prototype that seeks a descriptor
+before `fdopen`, avoiding libc `fseek` prefix reads on newly opened streams.
+This uses the specified [fdopen offset semantics](https://www.man7.org/linux/man-pages/man3/fdopen.3p.html),
+not unsynchronized descriptor operations on an existing buffered stream. An
+initial 100000-block A/B/B/A prototype measured 5.25249s versus 4.89537s medians
+(6.8% less block-phase time). The smaller 21-line production candidate, retaining
+all Windows, zero-offset and file-creation paths, did not establish a similarly
+reliable gain: baseline 4.92361/5.19364s versus candidate 4.87841/5.09181s, medians
+5.05863s versus 4.98511s (1.45%), with overlapping ranges. It was **removed**;
+there is no retained descriptor-positioning production change.
+
+A separately traced 6000-block full import/verification explains the tradeoff:
+read calls fall from 84345 to 48355, but lseek rises from 36005 to 72004 and
+fcntl from 24 to 36023. Open/close counts match, as do 14 fdatasync and two fsync
+calls. Buffer alignment also changes write-call counts (12665 to 12161), while
+both tip/UTXO and full verifychain match. Strace timings are not benchmark
+results, and fewer reads alone do not establish a worthwhile throughput gain.
+Further variants were not pursued because expected benefit no longer justified
+expanding platform-specific file-I/O code in this iteration.
+
+Useful independent regression tests remain: offset/tell/read/write behavior at
+unaligned positions and page boundaries, sparse gaps, byte-for-byte preservation,
+update-stream direction changes and Linux failed-seek descriptor lifetime.
+The candidate had passed 80 release cases / 450585 assertions, then the added
+failed-seek case passed with all eight flatfile cases / 267 assertions. ASan/UBSan
+passed 15 flatfile/block-manager cases / 342 assertions. Functional blocksdir,
+readonly reindex, fastprune, XOR block/undo files and shutdown passed; the optional
+immutable-file `chattr` subcase was unavailable, while ordinary readonly checks
+ran. The retained tests are also checked against the restored production code.
+After removing the production candidate, the retained 15 flatfile/block-manager
+cases pass again in both release and ASan/UBSan (342 assertions each); the failed
+seek case also passes alone, without depending on other test initialization.
+
+### Offline proof-evidence lifecycle and concurrent reset gate
+
+`contrib/bench/build-proof-trace.py` links a separate diagnostic daemon from a
+completed CMake Makefiles build. Its `yespower-proof-trace.cpp` wrapper always
+calls the real implementation and records exact 80-byte inputs and call counts
+in an exclusive output file. It does not replace proof results, change normal
+build targets or provide timing measurements. Recorded calls also check the
+fixed YespowerSugar version, N, r and personalization.
+
+`contrib/bench/offline-proof-restart.py` imports the supplied real 6000-block
+fixture with networking entirely disabled, unchanged minimum chainwork and
+`assumevalid=0`. It checks the known tip/UTXO and full level-4 verifychain, stops
+and restarts its own disposable node, and then corrupts one disk header nonce
+in its own datadir. The supplied fixture is never changed; the modified test
+datadir bytes are restored in a finally block. Both normal runs record exactly
+one genuine Yespower call for every fixture header: 6003 total calls, including
+three genesis startup checks. Thus process-local evidence is recreated after
+restart, rather than treating persisted index status as proof. The corrupt
+startup records 6004 calls, including a genuine call for the altered header,
+and rejects it with `ReadBlock failed at 1` / `Corrupted block database detected`.
+All three runs use the expected consensus parameters. This is a lifecycle safety
+test, not startup/shutdown optimization or a performance benchmark.
+
+The new unit case concurrently replaces 1KiB/2KiB caches while two callers use
+one eight-worker verifier. Both budgets enable batch evidence but evict
+individual proofs. It first confirms a successful batch restore, then mixes
+valid input, an invalid final proof and stricter limits that accept the first
+header but reject later headers. All callers finish with correct results and
+no active worker remains. Release passes all 16 header-PoW cases / 24264
+assertions; the new concurrency case independently passes ASan/UBSan and TSan
+(10 assertions each). No production code changes are part of this gate.
+
+### Matched-harness integration comparison
+
+The current indexed-import harness and genuine-call wrapper were compiled and
+linked separately against baseline `8ea9f131d9` and candidate `74f5902f41`.
+Both arms use eight PoW tasks, 15 script workers, an actually applied 512MiB DB
+cache / 300MB mempool budget, 2000-header batches and ordinary file logging.
+Two serialized A/B/B/A comparisons use the same 100000-block fixture: one
+deliberately resets the proof cache before blocks, the other retains it. This
+controls for earlier harness/resource corrections instead of combining numbers
+from different tools. No profiler, competing agent build or network run was
+started during these comparisons; unrelated host load remains uncontrolled.
+
+| Component / cache condition | Baseline runs (seconds) | Candidate runs (seconds) | Median ratio |
+| --- | --- | --- | --- |
+| Block phase, deliberately cold proof cache | 294.973 / 293.553 | 4.96177 / 5.05271 | 58.77x |
+| Block phase, retained proof cache | 6.36754 / 6.61234 | 5.06188 / 5.05790 | 1.283x |
+| Header + block phases, cold-cache mode | 336.68110 / 335.04670 | 47.17657 / 47.37201 | 7.105x |
+| Header + block phases, retained-cache mode | 48.39154 / 49.02244 | 47.52818 / 47.41700 | 1.026x |
+
+Every run performs exactly 100000 genuine first header proofs and matches the
+previously recorded tip/UTXO/full level-4 verifychain result. Cold baseline
+blocks perform another 100000 proofs (286.80 / 285.43 CPU seconds inside
+Yespower); candidate blocks perform none. Both warm arms perform no extra block
+proofs. Baseline block progress produces 100000 tip lines / 23705468 log bytes;
+candidate progress produces six or seven tip lines / 1574 or 1813 bytes, while
+RPC/state updates and validation still run for every block.
+
+These are combined component results, not a full-IBD forecast. The deliberately
+cold mode demonstrates the large redundant-proof cost removed; it does not
+identify the lost public run's miss rate or imply that a 2GiB cache was missing.
+The much smaller warm combined improvement is equally important: unique first
+Yespower work remains dominant, and no unique-cold-proof speedup is established
+by this comparison. Input is preloaded, Internet peer supply is absent, and the
+early 100000-block index/UTXO/script mix is not the entire chain. The five-hour
+target remains unverified; these ratios must not be multiplied into other proxy
+ratios or applied to the user's 69-hour projection.
+
+The current integration checkpoint also passes 116 selected C++ cases / 649700
+assertions, nine localhost P2P/shutdown scenarios, and a complete incremental
+daemon/CLI/Qt/IPC/multiprocess build. The separate fresh final build is tracked
+below when completed. No production changes were made for this comparison.
+
+### Broader peer-connection test compatibility
+
+The fresh-build gate exposed an existing test mismatch: `LogIPsTestingSetup`
+uses mainnet and `AddPeer` uses `Params().GetDefaultPort()`, but two exact log
+expectations hard-coded Bitcoin's port 8333. The same isolated case fails in the
+preserved earlier `916273`-era binary; its source had not changed in this
+follow-up. The initial assertion abort also prevented normal fixture cleanup,
+causing subsequent cases in that process to abort. Those cascading aborts are
+not counted as independent production failures.
+
+Only the two expected log strings now use the active chain's default port.
+All connection, duplicate-detection, peer-address and remaining log assertions
+are retained, and no production code changes are involved. The isolated peer
+connection case passes all 41 assertions before rerunning the broader gate.
+
+### Fresh production build and final-artifact checkpoint
+
+An empty, separate build directory was configured with `BUILD_GUI=ON`,
+`BUILD_BENCH=ON`, `ENABLE_IPC=ON`, `CMAKE_PREFIX_PATH=/usr/local` and
+`CMAKE_BUILD_TYPE=RelWithDebInfo`. The complete daemon, CLI, Qt, IPC/multiprocess
+and test build passed. The existing user build was not overwritten. Yespower
+still compiles with portable `-O2 -g -DNDEBUG` flags and the SSE2/x86-64 path;
+no `-march=native`, forced AVX path or compiler-policy change was introduced.
+
+After the two test-only port expectations above were corrected, the fresh
+binary passed 130 selected C++ cases / 660400 assertions. These include PoW,
+SugarShield, headers chainwork, peer management/connection/eviction, DoS,
+validation/chainstate, flatfile/block manager, queues, tip logging and IPC.
+Nine fresh-artifact functional scenarios also passed: Sugarchain header PoW,
+three download-limit configurations, both transport variants of IBD stalling,
+minimum-chainwork headers sync, initial headers sync and shutdown.
+
+A separate proof-trace daemon linked from this fresh build repeated the entire
+6000-block offline lifecycle gate. Initial import and restart each made 6003
+genuine calls, including every fixture header exactly once and three genesis
+checks; both matched the recorded tip/UTXO and full level-4 verifychain. The
+corrupted-header startup made 6004 calls, actually computed the altered proof
+and rejected the disk block. Networking stayed disabled and the supplied
+fixture checksum was unchanged. This tests evidence reconstruction and disk
+corruption rejection, not startup performance. The previously documented
+sanitizer limitations remain; this checkpoint does not claim every repository
+test or full sanitizer suite passes.
+
+The matched A/B/B/A measurements, input/output hashes, actual resource settings,
+genuine-proof counts and harness/binary hashes are preserved in
+[`indexed-block-ab-20260929.json`](../contrib/bench/results/indexed-block-ab-20260929.json).
+All eight runs passed the recorded correctness gates. These are repeatable
+offline component observations, not a full-mainnet result or a five-hour claim.
+
+### Remaining bottlenecks and evidence required
+
+The post-checkpoint source audit follows successful proof evidence through
+`CheckBlockProofOfWork`, `AcceptBlockHeader`, live-index restoration and disk
+loading. Individual and ordered-batch hits still check current target limits;
+index restoration checks the reconstructed header against its index key. Disk
+copies do not carry the live evidence flag. Body/Merkle, contextual, script and
+chainstate validation remain independent of proof reuse. The real-header,
+mutated-body, current-rules, concurrent-reset and offline corruption tests above
+exercise those boundaries. This audit is not a claim of exhaustive security
+proof or a substitute for the documented sanitizer findings.
+
+| Remaining question | Evidence now | Next useful measurement / constraint |
+| --- | --- | --- |
+| Unique cold Yespower cost | Every matched header phase performs all 100000 proofs. The idle-host PMU run took 39.465 seconds (2533.89 headers/s); the million-header phase takes 434.597 seconds. | Still a major cost. These short/early fixtures do not justify a full-run estimate. Do not repeat worker-count, affinity or compiler sweeps already lacking benefit. |
+| Actual redundant block proofs in the deleted run | Controlled cold baseline repeats every proof; live-index evidence removes those repetitions. The deleted run has no raw call counts. | The user's eventual new run must distinguish genuine first proofs from repeats; the graph alone cannot recover cache misses. No persistent disk status may replace proof. |
+| Internet peer supply and scheduling | Bounded mixed-speed localhost peers benefit; uniform/high-RTT cases do not show the same gain. | Observe peer delivery, in-flight occupancy and validation starvation together in the user's final run. Do not infer Internet improvement or enlarge the 1024 lookahead from a localhost ratio. |
+| Full-chain script/UTXO/DB costs | Early million-block profile shows script verification, file opening and cache flush costs; correctness checks pass. | Later-chain transaction mix, 44M-entry index scale and actual cache/flush pressure are not represented. Preserve script verification and durability; no broad DB/cache rewrite is supported by this evidence. |
+| File opening/positioning | Measured CPU cost exists, but the final descriptor-seek candidate improves only 1.45% with overlapping runs and more syscalls. | Rejected rather than shipped. A future candidate needs stable end-to-end benefit, portable semantics and unchanged write durability. |
+
+Already rejected experiments include the asynchronous proof window, physical
+core affinity, scratch alignment, `-O3`/AVX compiler variants and descriptor
+positioning. Their results above remain recorded; they are not pending changes.
+Large fixed download windows, checkpoint/AssumeValid shortcuts and persisted
+TREE-based proof trust are not fallback routes to the five-hour target.
+
+The user's final public-mainnet run remains necessary to measure elapsed full
+IBD time, peer supply and CPU/RAM/disk/network behavior at full scale. Startup,
+block-index loading, startup RAM and shutdown/flush-latency optimization remain
+outside this PR. The fixed development deadline is 2026-09-30 00:00 KST; from
+23:00 KST only landing, necessary verification and documentation are scheduled.
+
+### Fixed-eight-worker cold-proof profile
+
+The fresh `eeadb41ca6` build's `bench_header_pow` was sampled over 100000 real
+headers at exactly eight workers and a 16MiB cache, with the separate local
+gperftools profiler. No worker sweep or production flag change was made.
+The cold pass performed 100000 genuine proofs; the repeated pass performed
+zero. Of 13255 CPU samples, the flat profile attributes 66.6% to
+`blockmix_xor_1_0` and 24.9% to `blockmix_xor_save_1_0` (91.4% together).
+Inline XOR accounts for another 4.4%, reported separately rather than added to
+overlapping cumulative percentages. This corroborates the earlier raw profile:
+the unchanged Yespower mixing core, not the queue or header serialization,
+dominates this cold component. It does not establish memory-stall attribution.
+
+This run includes profiler overhead and contextual fixture preparation; its
+41.1808-second cold / 0.110252-second repeated timings are diagnostic only,
+not a new A/B improvement or a full-IBD estimate. The input SHA256 is
+`f64a65677abdfa525b67d9a09291868fbfd1f9fb0d4089cdfafc3b2718dd07dd`;
+benchmark binary SHA256 is
+`60e5ab0e4e0049cfcc19eee4b9b07c3c6d989203e6a8366a6fb8faeb9c7685e1`.
+No further queue/worker tuning or speculative rewrite of the consensus-critical
+mixing core is justified by this profile alone.
+
+An idle-host `perf stat` run of the same binary and fixture completed its cold
+pass in 39.465 seconds (2533.89 headers/s) and its repeated pass in 0.107848
+seconds (927230 headers/s). The cold pass performed all 100000 genuine
+Yespower checks; the repeated pass performed none. The process-wide counters
+were 1,345,192,603,605 user cycles, 2,449,177,712,825 user instructions (1.82
+instructions/cycle), 760,578,078,944 cache references and 23,268,327,529 cache
+misses (3.059%). It used 303789.43 ms task-clock (7.507 CPUs), with 112079
+context switches, 68 CPU migrations and 15473 page faults; elapsed time was
+40.468371986 seconds, comprising 302.882552 seconds user CPU and 0.711076
+seconds system CPU.
+
+These counters cover the complete benchmark process rather than only the timed
+cold loop. IPC and the generic cache-miss ratio do not by themselves establish
+whether the mixing core is memory-bound or compute-bound. A concurrent-load run
+that took 94.4911 seconds was resource-contention-sensitive and is not used as
+the final PMU reference. This remains a cold Yespower component measurement,
+not a full IBD result or forecast; extrapolating its isolated throughput across
+the mainnet header count does not include networking, SugarShield or block
+validation costs.
+
+### Proof-regression mutation check
+
+Three deliberately incorrect `pow.cpp` copies were compiled outside the source
+and normal build directories and linked into disposable test executables.
+Each selected test passed in the unchanged binary and failed with explicit
+Boost assertions (exit 201, not a crash) in its corresponding mutant:
+
+- Unconditionally accepting PoW: `invalid_first_and_later_proofs_have_bounded_speculation`.
+- Removing the live-index proof-evidence guard: `indexed_proofs_survive_eviction_but_not_disk_copies`.
+- Omitting current per-header target limits before batch restoration:
+  `batch_evidence_never_authorizes_mutations_or_stricter_later_targets`.
+
+Normal binary and production-source hashes remained unchanged. These checks
+confirm that the selected regressions detect three concrete trust failures;
+they are not proof that every possible validation bypass is covered. No mutant
+source/object is installed, committed or linked into production binaries.

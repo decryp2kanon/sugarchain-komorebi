@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <iterator>
 #include <optional>
+#include <string>
 #include <vector>
 
 /**
@@ -141,14 +142,18 @@ public:
     Mutex m_control_mutex;
 
     //! Create a new check queue
-    explicit CCheckQueue(unsigned int batch_size, int worker_threads_num)
+    explicit CCheckQueue(unsigned int batch_size, int worker_threads_num, std::string worker_name = "scriptch")
         : nBatchSize(batch_size)
     {
-        LogInfo("Script verification uses %d additional threads", worker_threads_num);
+        if (worker_name == "scriptch") {
+            LogInfo("Script verification uses %d additional threads", worker_threads_num);
+        } else {
+            LogInfo("%s verification uses %d additional threads", worker_name, worker_threads_num);
+        }
         m_worker_threads.reserve(worker_threads_num);
         for (int n = 0; n < worker_threads_num; ++n) {
-            m_worker_threads.emplace_back([this, n]() {
-                util::ThreadRename(strprintf("scriptch.%i", n));
+            m_worker_threads.emplace_back([this, n, worker_name]() {
+                util::ThreadRename(strprintf("%s.%i", worker_name, n));
                 Loop(false /* worker thread */);
             });
         }

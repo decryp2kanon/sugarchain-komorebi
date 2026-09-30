@@ -1,0 +1,438 @@
+{
+  "kind": "Offline indexed block validation component, not public-network or full IBD",
+  "date": "2026-09-29",
+  "baseline_commit": "8ea9f131d9df39711776a37d33760b3c85eb8724",
+  "candidate_commit": "74f5902f41ad33b774f361ef94587977cc359626",
+  "fixture": {
+    "blocks": 100000,
+    "sha256": "8b541d086a7496a5681f60521c9e0ad81b59916a070efca09a670d86abc0e058",
+    "tip": "b62290c6914adee9b29326b8a4567114fff1f9013acb9c3b6ff68612a2947f99",
+    "utxo": "d252a11a14d2802c6157b58860441cefe51aa735e4ebe2ef2839346a6ced183c"
+  },
+  "scope": {
+    "pow_workers": 8,
+    "initial_pow": "genuine, counted",
+    "inputs": "preloaded early-chain fixture",
+    "minimum_work": "harness supplies already-admitted-chain precondition; not a mainnet threshold test",
+    "network": false,
+    "candidate_block_reuse_required": true,
+    "host_load": "no other agent timing run or build overlapped; unrelated host load uncontrolled"
+  },
+  "harness_sha256": {
+    "contrib/bench/indexed-block-import.cpp": "3ab28f69dc7745fdb0de75dff423a76b8f42d3a2b5bc4692ce27e37dd9d684b6",
+    "contrib/bench/yespower-call-profile.cpp": "0caceef364b2eb90b9fad8d2fbb1f62c962fa8bc42b542f56ab3b4191c8ae68a",
+    "contrib/bench/indexed-block-ab.py": "86d1ff3c64d85e22919e9e89dafef65cf32fa0faf1322a76e277ce9e6bc7eaad"
+  },
+  "binary_sha256": {
+    "baseline": "3bb6a1c9b30a7b1e6bb588372c4cd6da82a5490f28a6e460857652d75fe4370f",
+    "candidate": "cf29339ba4578bec9d54b21f1cb7b4f209c36c3d947e0cb51afb90b2647be58b"
+  },
+  "comparisons": {
+    "cold": {
+      "sequence": [
+        {
+          "variant": "baseline",
+          "arguments": [
+            "<fixture>",
+            "cold",
+            "15",
+            "512",
+            "300",
+            "--log-info-file"
+          ],
+          "resources": {
+            "script_workers": 15,
+            "dbcache_mib": 512,
+            "transactions": 110846,
+            "non_coinbase_inputs": 188638,
+            "fixture_bytes": 62197382,
+            "header_batch_size": 2000,
+            "coins_cache_bytes": 526385152,
+            "coins_db_cache_bytes": 8388608,
+            "block_tree_cache_bytes": 2097152,
+            "mempool_max_bytes": 300000000,
+            "coindb_logging": false,
+            "info_file_logging": true
+          },
+          "measurements": {
+            "headers": {
+              "seconds": 41.7081,
+              "yespower_calls": 100000,
+              "yespower_cpu_ns": 306277162997,
+              "chainstate_write_events": 0,
+              "tip_log_events": 0,
+              "log_bytes": 66
+            },
+            "cold": {
+              "seconds": 294.973,
+              "yespower_calls": 100000,
+              "yespower_cpu_ns": 286801024859,
+              "chainstate_write_events": 0,
+              "tip_log_events": 100000,
+              "log_bytes": 23705468
+            }
+          },
+          "tip_utxo_verified": true,
+          "full_level4_verifychain": "PASS"
+        },
+        {
+          "variant": "candidate",
+          "arguments": [
+            "<fixture>",
+            "cold",
+            "15",
+            "512",
+            "300",
+            "--log-info-file"
+          ],
+          "resources": {
+            "script_workers": 15,
+            "dbcache_mib": 512,
+            "transactions": 110846,
+            "non_coinbase_inputs": 188638,
+            "fixture_bytes": 62197382,
+            "header_batch_size": 2000,
+            "coins_cache_bytes": 526385152,
+            "coins_db_cache_bytes": 8388608,
+            "block_tree_cache_bytes": 2097152,
+            "mempool_max_bytes": 300000000,
+            "coindb_logging": false,
+            "info_file_logging": true
+          },
+          "measurements": {
+            "headers": {
+              "seconds": 42.2148,
+              "yespower_calls": 100000,
+              "yespower_cpu_ns": 307238994406,
+              "chainstate_write_events": 0,
+              "tip_log_events": 0,
+              "log_bytes": 66
+            },
+            "cold": {
+              "seconds": 4.96177,
+              "yespower_calls": 0,
+              "yespower_cpu_ns": 0,
+              "chainstate_write_events": 0,
+              "tip_log_events": 6,
+              "log_bytes": 1574
+            }
+          },
+          "tip_utxo_verified": true,
+          "full_level4_verifychain": "PASS"
+        },
+        {
+          "variant": "candidate",
+          "arguments": [
+            "<fixture>",
+            "cold",
+            "15",
+            "512",
+            "300",
+            "--log-info-file"
+          ],
+          "resources": {
+            "script_workers": 15,
+            "dbcache_mib": 512,
+            "transactions": 110846,
+            "non_coinbase_inputs": 188638,
+            "fixture_bytes": 62197382,
+            "header_batch_size": 2000,
+            "coins_cache_bytes": 526385152,
+            "coins_db_cache_bytes": 8388608,
+            "block_tree_cache_bytes": 2097152,
+            "mempool_max_bytes": 300000000,
+            "coindb_logging": false,
+            "info_file_logging": true
+          },
+          "measurements": {
+            "headers": {
+              "seconds": 42.3193,
+              "yespower_calls": 100000,
+              "yespower_cpu_ns": 308621385460,
+              "chainstate_write_events": 0,
+              "tip_log_events": 0,
+              "log_bytes": 66
+            },
+            "cold": {
+              "seconds": 5.05271,
+              "yespower_calls": 0,
+              "yespower_cpu_ns": 0,
+              "chainstate_write_events": 0,
+              "tip_log_events": 7,
+              "log_bytes": 1813
+            }
+          },
+          "tip_utxo_verified": true,
+          "full_level4_verifychain": "PASS"
+        },
+        {
+          "variant": "baseline",
+          "arguments": [
+            "<fixture>",
+            "cold",
+            "15",
+            "512",
+            "300",
+            "--log-info-file"
+          ],
+          "resources": {
+            "script_workers": 15,
+            "dbcache_mib": 512,
+            "transactions": 110846,
+            "non_coinbase_inputs": 188638,
+            "fixture_bytes": 62197382,
+            "header_batch_size": 2000,
+            "coins_cache_bytes": 526385152,
+            "coins_db_cache_bytes": 8388608,
+            "block_tree_cache_bytes": 2097152,
+            "mempool_max_bytes": 300000000,
+            "coindb_logging": false,
+            "info_file_logging": true
+          },
+          "measurements": {
+            "headers": {
+              "seconds": 41.4937,
+              "yespower_calls": 100000,
+              "yespower_cpu_ns": 306558413254,
+              "chainstate_write_events": 0,
+              "tip_log_events": 0,
+              "log_bytes": 66
+            },
+            "cold": {
+              "seconds": 293.553,
+              "yespower_calls": 100000,
+              "yespower_cpu_ns": 285429620855,
+              "chainstate_write_events": 0,
+              "tip_log_events": 100000,
+              "log_bytes": 23705468
+            }
+          },
+          "tip_utxo_verified": true,
+          "full_level4_verifychain": "PASS"
+        }
+      ],
+      "actual_cache_budgets_verified": true,
+      "median_block_seconds": {
+        "baseline": 294.26300000000003,
+        "candidate": 5.0072399999999995
+      },
+      "component_speedup": 58.76750465326209
+    },
+    "warm": {
+      "sequence": [
+        {
+          "variant": "baseline",
+          "arguments": [
+            "<fixture>",
+            "warm",
+            "15",
+            "512",
+            "300",
+            "--log-info-file"
+          ],
+          "resources": {
+            "script_workers": 15,
+            "dbcache_mib": 512,
+            "transactions": 110846,
+            "non_coinbase_inputs": 188638,
+            "fixture_bytes": 62197382,
+            "header_batch_size": 2000,
+            "coins_cache_bytes": 526385152,
+            "coins_db_cache_bytes": 8388608,
+            "block_tree_cache_bytes": 2097152,
+            "mempool_max_bytes": 300000000,
+            "coindb_logging": false,
+            "info_file_logging": true
+          },
+          "measurements": {
+            "headers": {
+              "seconds": 42.024,
+              "yespower_calls": 100000,
+              "yespower_cpu_ns": 307833257905,
+              "chainstate_write_events": 0,
+              "tip_log_events": 0,
+              "log_bytes": 66
+            },
+            "warm": {
+              "seconds": 6.36754,
+              "yespower_calls": 0,
+              "yespower_cpu_ns": 0,
+              "chainstate_write_events": 0,
+              "tip_log_events": 100000,
+              "log_bytes": 23705468
+            }
+          },
+          "tip_utxo_verified": true,
+          "full_level4_verifychain": "PASS"
+        },
+        {
+          "variant": "candidate",
+          "arguments": [
+            "<fixture>",
+            "warm",
+            "15",
+            "512",
+            "300",
+            "--log-info-file"
+          ],
+          "resources": {
+            "script_workers": 15,
+            "dbcache_mib": 512,
+            "transactions": 110846,
+            "non_coinbase_inputs": 188638,
+            "fixture_bytes": 62197382,
+            "header_batch_size": 2000,
+            "coins_cache_bytes": 526385152,
+            "coins_db_cache_bytes": 8388608,
+            "block_tree_cache_bytes": 2097152,
+            "mempool_max_bytes": 300000000,
+            "coindb_logging": false,
+            "info_file_logging": true
+          },
+          "measurements": {
+            "headers": {
+              "seconds": 42.4663,
+              "yespower_calls": 100000,
+              "yespower_cpu_ns": 310206181222,
+              "chainstate_write_events": 0,
+              "tip_log_events": 0,
+              "log_bytes": 66
+            },
+            "warm": {
+              "seconds": 5.06188,
+              "yespower_calls": 0,
+              "yespower_cpu_ns": 0,
+              "chainstate_write_events": 0,
+              "tip_log_events": 7,
+              "log_bytes": 1813
+            }
+          },
+          "tip_utxo_verified": true,
+          "full_level4_verifychain": "PASS"
+        },
+        {
+          "variant": "candidate",
+          "arguments": [
+            "<fixture>",
+            "warm",
+            "15",
+            "512",
+            "300",
+            "--log-info-file"
+          ],
+          "resources": {
+            "script_workers": 15,
+            "dbcache_mib": 512,
+            "transactions": 110846,
+            "non_coinbase_inputs": 188638,
+            "fixture_bytes": 62197382,
+            "header_batch_size": 2000,
+            "coins_cache_bytes": 526385152,
+            "coins_db_cache_bytes": 8388608,
+            "block_tree_cache_bytes": 2097152,
+            "mempool_max_bytes": 300000000,
+            "coindb_logging": false,
+            "info_file_logging": true
+          },
+          "measurements": {
+            "headers": {
+              "seconds": 42.3591,
+              "yespower_calls": 100000,
+              "yespower_cpu_ns": 308467413842,
+              "chainstate_write_events": 0,
+              "tip_log_events": 0,
+              "log_bytes": 66
+            },
+            "warm": {
+              "seconds": 5.0579,
+              "yespower_calls": 0,
+              "yespower_cpu_ns": 0,
+              "chainstate_write_events": 0,
+              "tip_log_events": 7,
+              "log_bytes": 1813
+            }
+          },
+          "tip_utxo_verified": true,
+          "full_level4_verifychain": "PASS"
+        },
+        {
+          "variant": "baseline",
+          "arguments": [
+            "<fixture>",
+            "warm",
+            "15",
+            "512",
+            "300",
+            "--log-info-file"
+          ],
+          "resources": {
+            "script_workers": 15,
+            "dbcache_mib": 512,
+            "transactions": 110846,
+            "non_coinbase_inputs": 188638,
+            "fixture_bytes": 62197382,
+            "header_batch_size": 2000,
+            "coins_cache_bytes": 526385152,
+            "coins_db_cache_bytes": 8388608,
+            "block_tree_cache_bytes": 2097152,
+            "mempool_max_bytes": 300000000,
+            "coindb_logging": false,
+            "info_file_logging": true
+          },
+          "measurements": {
+            "headers": {
+              "seconds": 42.4101,
+              "yespower_calls": 100000,
+              "yespower_cpu_ns": 310100504707,
+              "chainstate_write_events": 0,
+              "tip_log_events": 0,
+              "log_bytes": 66
+            },
+            "warm": {
+              "seconds": 6.61234,
+              "yespower_calls": 0,
+              "yespower_cpu_ns": 0,
+              "chainstate_write_events": 0,
+              "tip_log_events": 100000,
+              "log_bytes": 23705468
+            }
+          },
+          "tip_utxo_verified": true,
+          "full_level4_verifychain": "PASS"
+        }
+      ],
+      "actual_cache_budgets_verified": true,
+      "median_block_seconds": {
+        "baseline": 6.48994,
+        "candidate": 5.05989
+      },
+      "component_speedup": 1.2826247210907746
+    }
+  },
+  "combined_component_summary": {
+    "cold": {
+      "block": {
+        "baseline": 294.26300000000003,
+        "candidate": 5.0072399999999995
+      },
+      "block_speedup": 58.76750465326209,
+      "combined_header_block_median_seconds": {
+        "baseline": 335.8639,
+        "candidate": 47.27428999999999
+      },
+      "combined_component_speedup": 7.104578408263774
+    },
+    "warm": {
+      "block": {
+        "baseline": 6.48994,
+        "candidate": 5.05989
+      },
+      "block_speedup": 1.2826247210907746,
+      "combined_header_block_median_seconds": {
+        "baseline": 48.706990000000005,
+        "candidate": 47.47259
+      },
+      "combined_component_speedup": 1.0260023731589114
+    }
+  }
+}

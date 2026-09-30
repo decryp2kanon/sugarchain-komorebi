@@ -22,12 +22,14 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <memory>
 #include <span>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -165,6 +167,51 @@ struct SugarShieldSetup : BasicTestingSetup {
 } // namespace
 
 BOOST_FIXTURE_TEST_SUITE(sugarshield_tests, SugarShieldSetup)
+
+BOOST_AUTO_TEST_CASE(target_division_matches_generic_arithmetic)
+{
+    FastRandomContext rng{true};
+    // Keep the pre-optimization arithmetic as an independent oracle. Include
+    // both 32-bit limb division and the generic large-divisor fallback.
+    for (const int64_t window : {1LL, 2LL, 510LL, 65535LL, 4294967295LL, 4294967296LL}) {
+        auto rules{params};
+        rules.nPowAveragingWindow = window;
+        rules.nPowTargetSpacing = 5;
+        for (const uint256 limit : {params.powLimit, ArithToUint256(~arith_uint256{0})}) {
+            rules.powLimit = limit;
+            const int64_t expected_span{rules.AveragingWindowTimespan()};
+            const auto check = [&](const arith_uint256& total, int64_t span) {
+                int64_t adjusted{expected_span + (span - expected_span) / 4};
+                adjusted = std::clamp(adjusted, rules.MinActualTimespan(), rules.MaxActualTimespan());
+                arith_uint256 reference{total / arith_uint256{uint64_t(window)}};
+                reference /= arith_uint256{uint64_t(expected_span)};
+                reference *= adjusted;
+                if (reference > UintToArith256(limit)) reference = UintToArith256(limit);
+                BOOST_CHECK_EQUAL(CalculateSugarShieldWorkRequired(total, span, rules), reference.GetCompact());
+            };
+            for (int64_t span : {-expected_span, int64_t{0}, expected_span, 5 * expected_span}) {
+                check(arith_uint256{0}, span);
+                check(~arith_uint256{0}, span);
+                for (unsigned bit{0}; bit < 256; ++bit) {
+                    const arith_uint256 power{arith_uint256{1} << bit};
+                    check(power - 1, span);
+                    check(power, span);
+                    check(power + 1, span);
+                }
+                for (int i{0}; i < 1000; ++i) check(UintToArith256(rng.rand256()), span);
+            }
+            // Quotient boundaries, including low limbs carrying into high limbs.
+            for (unsigned bit{0}; bit < 200; bit += 7) {
+                arith_uint256 multiple{arith_uint256{1} << bit};
+                multiple *= arith_uint256{uint64_t(window)};
+                multiple *= arith_uint256{uint64_t(expected_span)};
+                check(multiple - 1, expected_span);
+                check(multiple, expected_span);
+                check(multiple + 1, expected_span);
+            }
+        }
+    }
+}
 
 BOOST_AUTO_TEST_CASE(calculation_vectors)
 {
@@ -306,6 +353,32 @@ BOOST_AUTO_TEST_CASE(non_genesis_start_and_reset)
     }
 }
 
+BOOST_AUTO_TEST_CASE(rolling_targets_match_full_history_with_irregular_times)
+{
+    const auto synthetic{SyntheticParams()};
+    HeaderChain chain{SyntheticGenesis()};
+    for (size_t height{1}; height <= 4000; ++height) {
+        CBlockHeader header;
+        header.nVersion = 1;
+        header.hashPrevBlock = chain.hashes.back();
+        // A deterministic nine-block pattern, deliberately not aligned with
+        // either the 510-target window or the 11-timestamp median window.
+        header.nTime = chain.headers.back().nTime + 1 + (height * 7919 % 9);
+        header.nBits = GetNextWorkRequired(&chain.index.back(), &header, synthetic);
+        MineHeader(header, synthetic);
+        chain.Append(header);
+    }
+    BOOST_REQUIRE(std::adjacent_find(chain.headers.begin(), chain.headers.end(),
+        [](const auto& a, const auto& b) { return a.nBits != b.nBits; }) != chain.headers.end());
+    for (const size_t start : {0U, 1U, 509U, 510U, 511U, 520U, 521U, 522U, 2000U}) {
+        BOOST_TEST_CONTEXT("start=" << start) {
+            // The actual rolling checker must accept every full-history target,
+            // including initial context, reset and thousands of pop_front calls.
+            CheckRoundTrip(chain, start, synthetic, {1, 521}, 17);
+        }
+    }
+}
+
 BOOST_AUTO_TEST_CASE(invalid_difficulty_with_valid_pow_in_both_passes)
 {
     const auto synthetic{SyntheticParams()};
@@ -404,6 +477,59 @@ BOOST_AUTO_TEST_CASE(zero_window_uses_bitcoin_transition_rules)
     HeadersSyncState sync{0, bitcoin_style, {1, 7}, chain.index.front(), chain.index.back().nChainWork};
     BOOST_CHECK(!sync.ProcessNextHeaders(std::span{&bad, 1}, true).success);
     BOOST_CHECK(sync.GetState() == State::FINAL);
+}
+
+BOOST_AUTO_TEST_CASE(yespower_cache_binds_all_header_fields_and_current_rules)
+{
+    const CBlockHeader original{main->GenesisBlock()};
+    BOOST_REQUIRE(CheckProofOfWork(original.GetPoWHash(), original.nBits, params));
+    BOOST_REQUIRE(CheckBlockProofOfWork(original, params));
+    BOOST_REQUIRE(CheckBlockProofOfWork(original, params));
+
+    // Mutate each serialized field after caching a valid header. The uncached
+    // primitive is the oracle; a changed header may legitimately have valid PoW.
+    std::array<CBlockHeader, 6> changed;
+    changed.fill(original);
+    changed[0].nVersion ^= 1;
+    changed[1].hashPrevBlock.begin()[0] ^= 1;
+    changed[2].hashMerkleRoot.begin()[0] ^= 1;
+    ++changed[3].nTime;
+    changed[4].nBits = 0x1f1fffff;
+    ++changed[5].nNonce;
+    for (const auto& header : changed) {
+        const bool expected{CheckProofOfWork(header.GetPoWHash(), header.nBits, params)};
+        BOOST_CHECK_EQUAL(CheckBlockProofOfWork(header, params), expected);
+        BOOST_CHECK_EQUAL(CheckBlockProofOfWork(header, params), expected);
+    }
+
+    auto stricter{params};
+    stricter.powLimit = ArithToUint256(arith_uint256{}.SetCompact(original.nBits) / 2);
+    BOOST_CHECK(!CheckBlockProofOfWork(original, stricter));
+    auto bitcoin{params};
+    bitcoin.fYespowerSugar = false;
+    BOOST_REQUIRE(!CheckProofOfWork(original.GetHash(), original.nBits, bitcoin));
+    BOOST_CHECK(!CheckBlockProofOfWork(original, bitcoin));
+    auto invalid_target{original};
+    for (uint32_t bits : {0U, 0x1f800001U, 0x23000001U, 0x207fffffU}) {
+        invalid_target.nBits = bits;
+        BOOST_CHECK(!CheckBlockProofOfWork(invalid_target, params));
+    }
+
+    // Concurrent readers must neither corrupt the cache nor mix chain rules.
+    std::atomic<bool> correct{true};
+    {
+        std::vector<std::jthread> threads;
+        for (int i{0}; i < 8; ++i) {
+            threads.emplace_back([&] {
+                for (int j{0}; j < 100; ++j) {
+                    if (!CheckBlockProofOfWork(original, params) ||
+                        CheckBlockProofOfWork(original, stricter) ||
+                        CheckBlockProofOfWork(original, bitcoin)) correct = false;
+                }
+            });
+        }
+    }
+    BOOST_CHECK(correct.load());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
