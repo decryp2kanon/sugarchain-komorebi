@@ -10,6 +10,7 @@
 #include <streams.h>
 #include <test/data/sugarchain_headers.raw.h>
 #include <test/util/setup_common.h>
+#include <test/util/yespower_observer.h>
 #include <test/util/net.h>
 #include <test/util/logging.h>
 #include <node/protocol_version.h>
@@ -97,6 +98,18 @@ extern "C" int __wrap_yespower(yespower_local_t* local, const uint8_t* input, si
     return result;
 }
 #endif
+
+test::YespowerCallCounter::YespowerCallCounter()
+{
+    BOOST_REQUIRE_EQUAL(active.load(), 0U);
+    calls = peak = 0;
+    fail_call = 0;
+    observing = true;
+}
+
+test::YespowerCallCounter::~YespowerCallCounter() { observing = false; }
+
+unsigned test::YespowerCallCounter::Calls() const { return calls.load(); }
 
 BOOST_FIXTURE_TEST_SUITE(header_pow_tests, HeaderPoWSetup)
 

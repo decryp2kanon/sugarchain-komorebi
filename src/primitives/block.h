@@ -16,6 +16,12 @@
 #include <utility>
 #include <vector>
 
+inline constexpr uint32_t YESPOWER_SUGAR_VERSION{10};
+inline constexpr uint32_t YESPOWER_SUGAR_N{2048};
+inline constexpr uint32_t YESPOWER_SUGAR_R{32};
+inline constexpr unsigned char YESPOWER_SUGAR_PERSONALIZATION[] =
+    "Satoshi Nakamoto 31/Oct/2008 Proof-of-work is essentially one-CPU-one-vote";
+
 /** Nodes collect new transactions into a block, hash them into a hash tree,
  * and scan through nonce values to make the block's hash satisfy proof-of-work
  * requirements.  When they solve the proof-of-work, they broadcast the block

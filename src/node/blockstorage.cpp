@@ -60,6 +60,9 @@ static constexpr uint8_t DB_BLOCK_INDEX{'b'};
 static constexpr uint8_t DB_FLAG{'F'};
 static constexpr uint8_t DB_REINDEX_FLAG{'R'};
 static constexpr uint8_t DB_LAST_BLOCK{'l'};
+static constexpr uint8_t DB_YESPOWER_EVIDENCE{'y'};
+static constexpr uint8_t YESPOWER_EVIDENCE_VERSION{1};
+static constexpr size_t YESPOWER_EVIDENCE_BATCH_SIZE{4096};
 // Keys used in previous version that might still be found in the DB:
 // BlockTreeDB::DB_TXINDEX_BLOCK{'T'};
 // BlockTreeDB::DB_TXINDEX{'t'}
@@ -89,15 +92,25 @@ bool BlockTreeDB::ReadLastBlockFile(int& nFile)
     return Read(DB_LAST_BLOCK, nFile);
 }
 
-void BlockTreeDB::WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, const std::vector<const CBlockIndex*>& blockinfo)
+void BlockTreeDB::WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, const std::vector<const CBlockIndex*>& blockinfo, const Consensus::Params& consensus_params)
 {
     CDBBatch batch(*this);
+    const auto rules_hash{GetYespowerEvidenceRulesHash(consensus_params)};
     for (const auto& [file, info] : fileInfo) {
         batch.Write(std::make_pair(DB_BLOCK_FILES, file), *info);
     }
     batch.Write(DB_LAST_BLOCK, nLastFile);
     for (const CBlockIndex* bi : blockinfo) {
         batch.Write(std::make_pair(DB_BLOCK_INDEX, bi->GetBlockHash()), CDiskBlockIndex{bi});
+        // Only current-process proof evidence can cross the persistence boundary.
+        // Write it atomically with the corresponding block-index update.
+        if (consensus_params.fYespowerSugar && !EnableFuzzDeterminism() && bi->m_checked_yespower) {
+            const auto header{bi->GetBlockHeader()};
+            if (header.GetHash() == bi->GetBlockHash() && DeriveTarget(header.nBits, consensus_params.powLimit)) {
+                batch.Write(std::make_pair(DB_YESPOWER_EVIDENCE, header.GetHash()),
+                            std::make_pair(YESPOWER_EVIDENCE_VERSION, rules_hash));
+            }
+        }
     }
     WriteBatch(batch, true);
 }
@@ -117,9 +130,21 @@ bool BlockTreeDB::ReadFlag(const std::string& name, bool& fValue)
     return true;
 }
 
-bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, std::function<CBlockIndex*(const uint256&)> insertBlockIndex, const util::SignalInterrupt& interrupt)
+bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, std::function<CBlockIndex*(const uint256&)> insertBlockIndex, const util::SignalInterrupt& interrupt, YespowerEvidenceStats* evidence_stats)
 {
     AssertLockHeld(::cs_main);
+    YespowerEvidenceStats local_stats;
+    auto& stats{evidence_stats ? *evidence_stats : local_stats};
+    const bool persistent_evidence{consensusParams.fYespowerSugar && !EnableFuzzDeterminism()};
+    const auto rules_hash{GetYespowerEvidenceRulesHash(consensusParams)};
+    CDBBatch evidence_batch{*this};
+    size_t pending_evidence{0};
+    const auto flush_evidence = [&](bool sync) {
+        if (pending_evidence == 0) return;
+        WriteBatch(evidence_batch, sync);
+        evidence_batch.Clear();
+        pending_evidence = 0;
+    };
     std::unique_ptr<CDBIterator> pcursor(NewIterator());
     pcursor->Seek(std::make_pair(DB_BLOCK_INDEX, uint256()));
 
@@ -145,12 +170,30 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
                 pindexNew->nStatus        = diskindex.nStatus;
                 pindexNew->nTx            = diskindex.nTx;
 
-                if (!CheckBlockProofOfWork(pindexNew->GetBlockHeader(), consensusParams)) {
-                    LogError("%s: CheckProofOfWork failed: %s\n", __func__, pindexNew->ToString());
-                    return false;
+                const auto header{pindexNew->GetBlockHeader()};
+                bool verified{false};
+                if (persistent_evidence && DeriveTarget(header.nBits, consensusParams.powLimit)) {
+                    std::pair<uint8_t, uint256> evidence;
+                    verified = Read(std::make_pair(DB_YESPOWER_EVIDENCE, header.GetHash()), evidence) &&
+                               evidence.first == YESPOWER_EVIDENCE_VERSION && evidence.second == rules_hash;
                 }
-                // Recomputed in this process, never restored from disk flags.
-                pindexNew->m_checked_yespower = consensusParams.fYespowerSugar && !EnableFuzzDeterminism();
+                if (verified) {
+                    ++stats.hits;
+                } else {
+                    if (persistent_evidence) ++stats.misses;
+                    if (!CheckBlockProofOfWork(header, consensusParams)) {
+                        LogError("%s: CheckProofOfWork failed: %s\n", __func__, pindexNew->ToString());
+                        return false;
+                    }
+                    if (persistent_evidence) {
+                        evidence_batch.Write(std::make_pair(DB_YESPOWER_EVIDENCE, header.GetHash()),
+                                             std::make_pair(YESPOWER_EVIDENCE_VERSION, rules_hash));
+                        ++pending_evidence;
+                        ++stats.writes;
+                        if (pending_evidence == YESPOWER_EVIDENCE_BATCH_SIZE) flush_evidence(false);
+                    }
+                }
+                pindexNew->m_checked_yespower = persistent_evidence;
 
                 pcursor->Next();
             } else {
@@ -161,6 +204,9 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
             break;
         }
     }
+
+    // A lost final batch only causes safe recomputation on the next startup.
+    flush_evidence(true);
 
     return true;
 }
@@ -424,9 +470,14 @@ CBlockIndex* BlockManager::InsertBlockIndex(const uint256& hash)
 
 bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockhash)
 {
+    BlockTreeDB::YespowerEvidenceStats evidence_stats;
     if (!m_block_tree_db->LoadBlockIndexGuts(
-            GetConsensus(), [this](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) { return this->InsertBlockIndex(hash); }, m_interrupt)) {
+            GetConsensus(), [this](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) { return this->InsertBlockIndex(hash); }, m_interrupt, &evidence_stats)) {
         return false;
+    }
+    if (GetConsensus().fYespowerSugar) {
+        LogInfo("Persistent Yespower evidence: %u hit, %u miss, %u written",
+                evidence_stats.hits, evidence_stats.misses, evidence_stats.writes);
     }
 
     if (snapshot_blockhash) {
@@ -525,7 +576,7 @@ void BlockManager::WriteBlockIndexDB()
         m_dirty_blockindex.erase(it++);
     }
     int max_blockfile = WITH_LOCK(cs_LastBlockFile, return this->MaxBlockfileNum());
-    m_block_tree_db->WriteBatchSync(vFiles, max_blockfile, vBlocks);
+    m_block_tree_db->WriteBatchSync(vFiles, max_blockfile, vBlocks, GetConsensus());
 }
 
 bool BlockManager::LoadBlockIndexDB(const std::optional<uint256>& snapshot_blockhash)

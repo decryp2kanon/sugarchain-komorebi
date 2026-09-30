@@ -14,6 +14,7 @@
 #include <crypto/common.h>
 #include <crypto/sha256.h>
 #include <cuckoocache.h>
+#include <hash.h>
 #include <primitives/block.h>
 #include <random.h>
 #include <uint256.h>
@@ -354,6 +355,19 @@ bool CheckProofOfWorkImpl(uint256 hash, unsigned int nBits, const Consensus::Par
         return false;
 
     return true;
+}
+
+uint256 GetYespowerEvidenceRulesHash(const Consensus::Params& params)
+{
+    // The domain version covers the 80-byte CBlockHeader serialization. The
+    // algorithm inputs are included explicitly so changing any of them makes
+    // all old evidence miss safely.
+    return (HashWriter{} << std::string{"sugarchain-yespower-evidence-v1"}
+                         << params.hashGenesisBlock << params.powLimit
+                         << params.fYespowerSugar << YESPOWER_SUGAR_VERSION
+                         << YESPOWER_SUGAR_N << YESPOWER_SUGAR_R
+                         << std::string{reinterpret_cast<const char*>(YESPOWER_SUGAR_PERSONALIZATION),
+                                        sizeof(YESPOWER_SUGAR_PERSONALIZATION) - 1}).GetHash();
 }
 
 // Always validate the current network's target limit, including on cache hits.

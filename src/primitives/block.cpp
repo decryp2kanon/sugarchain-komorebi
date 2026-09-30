@@ -38,10 +38,10 @@ uint256 CBlockHeader::GetHash() const
 // Official Sugarchain YespowerSugar parameters. The block identifier remains SHA256d.
 uint256 CBlockHeader::GetPoWHash() const
 {
-    static constexpr uint8_t personalization[] =
-        "Satoshi Nakamoto 31/Oct/2008 Proof-of-work is essentially one-CPU-one-vote";
-    static constexpr yespower_params_t params{YESPOWER_1_0, 2048, 32,
-                                               personalization, sizeof(personalization) - 1};
+    static_assert(YESPOWER_SUGAR_VERSION == YESPOWER_1_0);
+    static constexpr yespower_params_t params{YESPOWER_1_0, YESPOWER_SUGAR_N, YESPOWER_SUGAR_R,
+                                               YESPOWER_SUGAR_PERSONALIZATION,
+                                               sizeof(YESPOWER_SUGAR_PERSONALIZATION) - 1};
     DataStream serialized;
     serialized << *this;
     yespower_binary_t result;

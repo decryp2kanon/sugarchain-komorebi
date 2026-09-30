@@ -39,6 +39,9 @@ bool CheckBlockProofOfWork(const CBlockHeader& header, const Consensus::Params& 
 bool CheckProofOfWork(uint256 hash, unsigned int nBits, const Consensus::Params&);
 bool CheckProofOfWorkImpl(uint256 hash, unsigned int nBits, const Consensus::Params&);
 
+/** Identity of the consensus rules covered by persistent Yespower evidence. */
+uint256 GetYespowerEvidenceRulesHash(const Consensus::Params& params);
+
 inline constexpr size_t DEFAULT_YESPOWER_CACHE_BYTES{16 << 20};
 // Also keeps CuckooCache's uint32_t epoch-size arithmetic below overflow.
 inline constexpr size_t MAX_YESPOWER_CACHE_BYTES{size_t{2048} << 20};

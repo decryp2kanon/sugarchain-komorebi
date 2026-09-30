@@ -98,15 +98,21 @@ public:
 class BlockTreeDB : public CDBWrapper
 {
 public:
+    struct YespowerEvidenceStats {
+        uint64_t hits{0};
+        uint64_t misses{0};
+        uint64_t writes{0};
+    };
+
     using CDBWrapper::CDBWrapper;
-    void WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, const std::vector<const CBlockIndex*>& blockinfo);
+    void WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, const std::vector<const CBlockIndex*>& blockinfo, const Consensus::Params& consensus_params);
     bool ReadBlockFileInfo(int nFile, CBlockFileInfo& info);
     bool ReadLastBlockFile(int& nFile);
     void WriteReindexing(bool fReindexing);
     void ReadReindexing(bool& fReindexing);
     void WriteFlag(const std::string& name, bool fValue);
     bool ReadFlag(const std::string& name, bool& fValue);
-    bool LoadBlockIndexGuts(const Consensus::Params& consensusParams, std::function<CBlockIndex*(const uint256&)> insertBlockIndex, const util::SignalInterrupt& interrupt)
+    bool LoadBlockIndexGuts(const Consensus::Params& consensusParams, std::function<CBlockIndex*(const uint256&)> insertBlockIndex, const util::SignalInterrupt& interrupt, YespowerEvidenceStats* evidence_stats = nullptr)
         EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 };
 } // namespace kernel
