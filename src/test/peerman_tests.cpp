@@ -3,15 +3,108 @@
 // file COPYING or https://www.opensource.org/licenses/mit-license.php.
 
 #include <chainparams.h>
+#include <common/args.h>
 #include <node/miner.h>
+#include <node/ibd_download.h>
+#include <node/peerman_args.h>
 #include <net_processing.h>
 #include <pow.h>
 #include <test/util/setup_common.h>
 #include <validation.h>
 
 #include <boost/test/unit_test.hpp>
+#include <limits>
 
 BOOST_FIXTURE_TEST_SUITE(peerman_tests, RegTestingSetup)
+
+BOOST_AUTO_TEST_CASE(header_pow_default_and_explicit_override)
+{
+    ArgsManager args;
+    PeerManager::Options options;
+    node::ApplyArgsManOptions(args, options);
+    BOOST_CHECK_EQUAL(options.header_pow_workers, 8);
+    BOOST_CHECK_EQUAL(MAX_HEADER_POW_WORKERS, 8);
+    // Configuration bounds only: this test does not launch worker threads.
+    for (const auto& [value, expected] : std::vector<std::pair<const char*, int>>{
+             {"1", 1}, {"2", 2}, {"4", 4}, {"8", 8}, {"0", 1}, {"16", 8}}) {
+        args.ForceSetArg("-parpow", value);
+        node::ApplyArgsManOptions(args, options);
+        BOOST_CHECK_EQUAL(options.header_pow_workers, expected);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(ibd_delivery_budget_is_bounded_and_ignores_idle_time)
+{
+    node::IBDBlockDelivery delivery;
+    BOOST_CHECK_EQUAL(delivery.Limit(16, 128), 128);
+    BOOST_CHECK_EQUAL(delivery.Limit(16, 16), 16);
+    delivery.Received(1'000'000, true);
+    BOOST_CHECK_EQUAL(delivery.Limit(16, 128), 128);
+    delivery.Received(1'000'000, true); // Same timestamp is not an infinite rate.
+    BOOST_CHECK_EQUAL(delivery.Limit(16, 128), 128);
+    delivery.Received(1'020'000, true); // Slow 20ms service stays at upstream floor.
+    BOOST_CHECK_EQUAL(delivery.Limit(16, 128), 16);
+    int64_t now{1'020'000};
+    for (int i{0}; i < 100; ++i) {
+        delivery.Received(now += 1'000, true);
+        BOOST_CHECK_GE(delivery.Limit(16, 128), 16);
+        BOOST_CHECK_LE(delivery.Limit(16, 128), 128);
+        BOOST_CHECK_EQUAL(delivery.Limit(16, 16), 16);
+        BOOST_CHECK_LE(delivery.Limit(16, 64), 64);
+    }
+    BOOST_CHECK_EQUAL(delivery.Limit(16, 128), 128);
+    delivery.Received(now += 1'000, false); // Drain the queue.
+    delivery.Received(now += 60'000'000, true); // New request after idle gap.
+    BOOST_CHECK_EQUAL(delivery.Limit(16, 128), 128);
+    for (int i{0}; i < 100; ++i) delivery.Received(now += 20'000, true);
+    BOOST_CHECK_EQUAL(delivery.Limit(16, 128), 16);
+    delivery.Received(-1, true);
+    delivery.Received(0, true);
+    delivery.Received(1, true);
+    delivery.Received(std::numeric_limits<int64_t>::max(), true);
+    BOOST_CHECK_EQUAL(delivery.Limit(16, 128), 16);
+    node::IBDBlockDelivery new_peer;
+    BOOST_CHECK_EQUAL(new_peer.Limit(16, 128), 128);
+    // A high RTT must not be mistaken for low service throughput: retain
+    // enough outstanding requests to cover the first-response latency too.
+    node::IBDBlockDelivery distant;
+    distant.Started(1'000'000);
+    distant.Received(2'000'000, true);
+    distant.Received(2'004'000, true);
+    BOOST_CHECK_EQUAL(distant.Limit(16, 128), 128);
+    BOOST_CHECK_EQUAL(distant.Limit(16, 64), 64);
+    distant.Received(2'008'000, false);
+    distant.Started(5'000'000);
+    distant.Received(5'050'000, true);
+    distant.Received(5'054'000, true);
+    BOOST_CHECK_EQUAL(distant.Limit(16, 128), 75);
+    distant.Started(65'000'000); // Previous requests were cancelled while pending.
+    distant.Received(65'050'000, true);
+    distant.Received(65'054'000, true);
+    BOOST_CHECK_EQUAL(distant.Limit(16, 128), 75);
+    distant.Started(-1);
+    distant.Received(1, true);
+    distant.Started(10);
+    distant.Received(std::numeric_limits<int64_t>::max(), true);
+    BOOST_CHECK_GE(distant.Limit(16, 128), 16);
+    BOOST_CHECK_LE(distant.Limit(16, 128), 128);
+}
+
+BOOST_AUTO_TEST_CASE(ibd_request_budget_is_opt_in_and_bounded)
+{
+    ArgsManager args;
+    PeerManager::Options options;
+    node::ApplyArgsManOptions(args, options);
+    BOOST_CHECK_EQUAL(options.ibd_block_request_limit, 16);
+    for (const auto& [text, expected] : std::vector<std::pair<const char*, int>>{
+             {"-9223372036854775808", 16}, {"0", 16}, {"15", 16}, {"16", 16},
+             {"64", 64}, {"128", 128}, {"129", 128}, {"9223372036854775807", 128}}) {
+        args.ForceSetArg("-maxibdblocksinflight", text);
+        node::ApplyArgsManOptions(args, options);
+        BOOST_CHECK_EQUAL(options.ibd_block_request_limit, expected);
+        BOOST_CHECK_EQUAL(options.header_pow_workers, DEFAULT_HEADER_POW_WORKERS);
+    }
+}
 
 /** Window, in blocks, for connecting to NODE_NETWORK_LIMITED peers */
 static constexpr int64_t NODE_NETWORK_LIMITED_ALLOW_CONN_BLOCKS = 144;

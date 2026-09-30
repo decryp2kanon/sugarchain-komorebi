@@ -49,8 +49,10 @@ add_executable(test_bitcoin
   getarg_tests.cpp
   hash_tests.cpp
   headers_sync_chainwork_tests.cpp
+  header_pow_tests.cpp
   httpserver_tests.cpp
   i2p_tests.cpp
+  ibd_tip_logging_tests.cpp
   interfaces_tests.cpp
   key_io_tests.cpp
   key_tests.cpp
@@ -171,6 +173,13 @@ target_link_libraries(test_bitcoin
   libevent::extra
   $<TARGET_NAME_IF_EXISTS:USDT::headers>
 )
+
+# Observe real Yespower calls and inject local failures only in the test binary.
+# Production libraries/binaries contain no counters or fault-injection hooks.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_compile_definitions(test_bitcoin PRIVATE ENABLE_YESPOWER_TEST_WRAP=1)
+  target_link_options(test_bitcoin PRIVATE "LINKER:--wrap=yespower")
+endif()
 
 if(ENABLE_WALLET)
   add_subdirectory(${PROJECT_SOURCE_DIR}/src/wallet/test wallet)

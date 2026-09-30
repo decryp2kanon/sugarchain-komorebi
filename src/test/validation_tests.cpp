@@ -24,7 +24,7 @@ BOOST_FIXTURE_TEST_SUITE(validation_tests, TestingSetup)
 static void TestBlockSubsidyHalvings(const Consensus::Params& consensusParams)
 {
     int maxHalvings = 64;
-    CAmount nInitialSubsidy = 50 * COIN;
+    CAmount nInitialSubsidy = consensusParams.nInitialSubsidy;
 
     CAmount nPreviousSubsidy = nInitialSubsidy * 2; // for height == 0
     BOOST_CHECK_EQUAL(nPreviousSubsidy, nInitialSubsidy * 2);
@@ -33,6 +33,9 @@ static void TestBlockSubsidyHalvings(const Consensus::Params& consensusParams)
         CAmount nSubsidy = GetBlockSubsidy(nHeight, consensusParams);
         BOOST_CHECK(nSubsidy <= nInitialSubsidy);
         BOOST_CHECK_EQUAL(nSubsidy, nPreviousSubsidy / 2);
+        if (nHeight > 0) {
+            BOOST_CHECK_EQUAL(GetBlockSubsidy(nHeight - 1, consensusParams) / 2, nSubsidy);
+        }
         nPreviousSubsidy = nSubsidy;
     }
     BOOST_CHECK_EQUAL(GetBlockSubsidy(maxHalvings * consensusParams.nSubsidyHalvingInterval, consensusParams), 0);
@@ -48,6 +51,10 @@ static void TestBlockSubsidyHalvings(int nSubsidyHalvingInterval)
 BOOST_AUTO_TEST_CASE(block_subsidy_test)
 {
     const auto chainParams = CreateChainParams(*m_node.args, ChainType::MAIN);
+    // Official Sugarchain reward and interval; not derived from the function
+    // being tested. The other fixtures retain Bitcoin-style initial subsidies.
+    BOOST_CHECK_EQUAL(chainParams->GetConsensus().nInitialSubsidy, CAmount{4294967296});
+    BOOST_CHECK_EQUAL(chainParams->GetConsensus().nSubsidyHalvingInterval, 12500000);
     TestBlockSubsidyHalvings(chainParams->GetConsensus()); // As in main
     TestBlockSubsidyHalvings(150); // As in regtest
     TestBlockSubsidyHalvings(1000); // Just another interval
@@ -56,14 +63,18 @@ BOOST_AUTO_TEST_CASE(block_subsidy_test)
 BOOST_AUTO_TEST_CASE(subsidy_limit_test)
 {
     const auto chainParams = CreateChainParams(*m_node.args, ChainType::MAIN);
+    const auto& consensus{chainParams->GetConsensus()};
     CAmount nSum = 0;
-    for (int nHeight = 0; nHeight < 14000000; nHeight += 1000) {
-        CAmount nSubsidy = GetBlockSubsidy(nHeight, chainParams->GetConsensus());
-        BOOST_CHECK(nSubsidy <= 50 * COIN);
-        nSum += nSubsidy * 1000;
+    // Sum complete halving epochs: 14 million blocks cover the Bitcoin schedule
+    // but only the beginning of Sugarchain's 12.5-million-block epochs.
+    for (int epoch = 0; epoch < 64; ++epoch) {
+        CAmount nSubsidy = GetBlockSubsidy(epoch * consensus.nSubsidyHalvingInterval, consensus);
+        BOOST_CHECK(nSubsidy <= CAmount{4294967296});
+        nSum += nSubsidy * consensus.nSubsidyHalvingInterval;
         BOOST_CHECK(MoneyRange(nSum));
     }
-    BOOST_CHECK_EQUAL(nSum, CAmount{2099999997690000});
+    // 12,500,000 * (2^32 + 2^31 + ... + 1), in base units.
+    BOOST_CHECK_EQUAL(nSum, CAmount{107374182387500000});
 }
 
 BOOST_AUTO_TEST_CASE(signet_parse_tests)

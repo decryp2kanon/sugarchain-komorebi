@@ -20,6 +20,7 @@
 #include <util/time.h>
 #include <validation.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 
@@ -153,7 +154,9 @@ BOOST_FIXTURE_TEST_CASE(stale_tip_peer_management, OutboundTest)
 
     const auto time_init{GetTime<std::chrono::seconds>()};
     SetMockTime(time_init);
-    const auto time_later{time_init + 3 * std::chrono::seconds{m_node.chainman->GetConsensus().nPowTargetSpacing} + 1s};
+    // A three-block stale threshold can be shorter than the ten-minute check
+    // cadence on fast chains. Advance beyond both, not just the block spacing.
+    const auto time_later{time_init + std::max(3 * std::chrono::seconds{m_node.chainman->GetConsensus().nPowTargetSpacing}, std::chrono::seconds{10min}) + 1s};
     connman->Init(options);
     std::vector<CNode *> vNodes;
 

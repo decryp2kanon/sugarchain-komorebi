@@ -40,6 +40,13 @@ struct ConnmanTestMsg : public CConnman {
         m_msgproc = msgproc;
     }
 
+    void RunMessageHandler()
+    {
+        flagInterruptMsgProc = false;
+        ThreadMessageHandler();
+        flagInterruptMsgProc = false;
+    }
+
     void SetAddrman(AddrMan& in) { addrman = in; }
 
     void SetPeerConnectTimeout(std::chrono::seconds timeout)
