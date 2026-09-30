@@ -3173,7 +3173,17 @@ void CConnman::ThreadMessageHandler()
                     continue;
 
                 // Receive messages
-                bool fMoreNodeWork{m_msgproc->ProcessMessages(*pnode, flagInterruptMsgProc)};
+                // Amortize send-side work without letting one busy peer retain
+                // the message thread indefinitely. A slow individual message
+                // is still followed immediately by send-side processing.
+                const auto deadline{std::chrono::steady_clock::now() + 1ms};
+                bool fMoreNodeWork;
+                for (unsigned count{0};; ++count) {
+                    fMoreNodeWork = m_msgproc->ProcessMessages(*pnode, flagInterruptMsgProc);
+                    if (flagInterruptMsgProc) return;
+                    if (!fMoreNodeWork || pnode->fPauseSend || pnode->fDisconnect ||
+                        count == 63 || std::chrono::steady_clock::now() >= deadline) break;
+                }
                 fMoreWork |= (fMoreNodeWork && !pnode->fPauseSend);
                 if (flagInterruptMsgProc)
                     return;
