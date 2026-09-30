@@ -85,3 +85,22 @@ if(ENABLE_WALLET)
 endif()
 
 install_binary_component(bench_bitcoin INTERNAL)
+
+# Explicit cold/repeated passes; not installed as a production application.
+add_executable(bench_header_pow header_pow.cpp)
+target_link_libraries(bench_header_pow core_interface bitcoin_common)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_compile_definitions(bench_header_pow PRIVATE ENABLE_YESPOWER_BENCH_WRAP)
+  target_link_options(bench_header_pow PRIVATE "LINKER:--wrap=yespower")
+  add_executable(bench_indexed_block_import
+    ../../contrib/bench/indexed-block-import.cpp
+    ../../contrib/bench/yespower-call-profile.cpp
+  )
+  target_link_libraries(bench_indexed_block_import core_interface test_util bitcoin_node Boost::headers
+    $<TARGET_NAME_IF_EXISTS:bitcoin_wallet>)
+  target_link_options(bench_indexed_block_import PRIVATE "LINKER:--wrap=yespower")
+endif()
+
+# Isolated state-machine cost with genuine input validation before timing.
+add_executable(bench_headers_sync headers_sync.cpp ../headerssync.cpp)
+target_link_libraries(bench_headers_sync core_interface bitcoin_common)
