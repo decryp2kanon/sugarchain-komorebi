@@ -123,6 +123,17 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
     std::unique_ptr<CDBIterator> pcursor(NewIterator());
     pcursor->Seek(std::make_pair(DB_BLOCK_INDEX, uint256()));
 
+    const auto start{SteadyClock::now()};
+    auto last_log{start};
+    uint64_t processed{0};
+    uint64_t yespower_checks{0};
+    const bool check_yespower{consensusParams.fYespowerSugar && !EnableFuzzDeterminism()};
+    const auto log_progress = [&](SteadyClock::time_point now) {
+        const double elapsed{Ticks<SecondsDouble>(now - start)};
+        LogInfo("Loading block index: %u headers, Yespower checks=%u, %.1f headers/s, elapsed=%.1fs",
+                processed, yespower_checks, elapsed > 0 ? processed / elapsed : 0.0, elapsed);
+    };
+
     // Load m_block_index
     while (pcursor->Valid()) {
         if (interrupt) return false;
@@ -145,6 +156,7 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
                 pindexNew->nStatus        = diskindex.nStatus;
                 pindexNew->nTx            = diskindex.nTx;
 
+                if (check_yespower) ++yespower_checks;
                 if (!CheckBlockProofOfWork(pindexNew->GetBlockHeader(), consensusParams)) {
                     LogError("%s: CheckProofOfWork failed: %s\n", __func__, pindexNew->ToString());
                     return false;
@@ -152,6 +164,15 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
                 // Recomputed in this process, never restored from disk flags.
                 pindexNew->m_checked_yespower = consensusParams.fYespowerSugar && !EnableFuzzDeterminism();
 
+                ++processed;
+                // Read the clock only once per batch; log at most every three seconds.
+                if ((processed & 127) == 0) {
+                    const auto now{SteadyClock::now()};
+                    if (now - last_log >= std::chrono::seconds{3}) {
+                        log_progress(now);
+                        last_log = now;
+                    }
+                }
                 pcursor->Next();
             } else {
                 LogError("%s: failed to read value\n", __func__);
@@ -162,6 +183,7 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
         }
     }
 
+    log_progress(SteadyClock::now());
     return true;
 }
 
