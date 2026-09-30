@@ -16,6 +16,7 @@
 #include <kernel/messagestartchars.h>
 #include <kernel/notifications_interface.h>
 #include <kernel/types.h>
+#include <node/interface_ui.h>
 #include <pow.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
@@ -42,6 +43,7 @@
 #include <validation.h>
 
 #include <cerrno>
+#include <chrono>
 #include <compare>
 #include <cstddef>
 #include <cstdio>
@@ -51,10 +53,32 @@
 #include <ostream>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <system_error>
 #include <unordered_map>
 
 namespace kernel {
+namespace {
+std::string FormatCompactDuration(std::chrono::seconds duration)
+{
+    uint64_t remaining{duration.count() > 0 ? static_cast<uint64_t>(duration.count()) : 0};
+    std::string result;
+    const auto append = [&](uint64_t unit, char suffix) {
+        const uint64_t value{remaining / unit};
+        if (value) {
+            result += std::to_string(value);
+            result += suffix;
+        }
+        remaining %= unit;
+    };
+    append(7 * 24 * 60 * 60, 'w');
+    append(24 * 60 * 60, 'd');
+    append(60 * 60, 'h');
+    append(60, 'm');
+    return result + std::to_string(remaining) + 's';
+}
+} // namespace
+
 static constexpr uint8_t DB_BLOCK_FILES{'f'};
 static constexpr uint8_t DB_BLOCK_INDEX{'b'};
 static constexpr uint8_t DB_FLAG{'F'};
@@ -124,14 +148,28 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
     pcursor->Seek(std::make_pair(DB_BLOCK_INDEX, uint256()));
 
     const auto start{SteadyClock::now()};
-    auto last_log{start};
+    auto previous_time{start};
     uint64_t processed{0};
+    uint64_t previous_processed{0};
     uint64_t yespower_checks{0};
     const bool check_yespower{consensusParams.fYespowerSugar && !EnableFuzzDeterminism()};
-    const auto log_progress = [&](SteadyClock::time_point now) {
-        const double elapsed{Ticks<SecondsDouble>(now - start)};
-        LogInfo("Loading block index: %u headers, Yespower checks=%u, %.1f headers/s, elapsed=%.1fs",
-                processed, yespower_checks, elapsed > 0 ? processed / elapsed : 0.0, elapsed);
+    const auto log_progress = [&] {
+        const auto now{SteadyClock::now()};
+        const auto elapsed_duration{now - start};
+        const double interval{Ticks<SecondsDouble>(now - previous_time)};
+        const auto grouped = [](uint64_t count) {
+            std::string result{std::to_string(count)};
+            for (size_t pos = result.size(); pos > 3; pos -= 3) result.insert(pos - 3, ",");
+            return result;
+        };
+        const auto message{strprintf("Loading block index: %s | PoW %s | %.0f/s | %s",
+                                     grouped(processed), grouped(yespower_checks),
+                                     interval > 0 ? (processed - previous_processed) / interval : 0.0,
+                                     FormatCompactDuration(std::chrono::duration_cast<std::chrono::seconds>(elapsed_duration)))};
+        previous_processed = processed;
+        previous_time = now;
+        // InitMessage logs in both GUI and daemon, and queues the splash update in Qt.
+        uiInterface.InitMessage(message);
     };
 
     // Load m_block_index
@@ -156,6 +194,7 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
                 pindexNew->nStatus        = diskindex.nStatus;
                 pindexNew->nTx            = diskindex.nTx;
 
+                // Count validation calls, including cache hits, rather than raw Yespower hashes.
                 if (check_yespower) ++yespower_checks;
                 if (!CheckBlockProofOfWork(pindexNew->GetBlockHeader(), consensusParams)) {
                     LogError("%s: CheckProofOfWork failed: %s\n", __func__, pindexNew->ToString());
@@ -165,14 +204,7 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
                 pindexNew->m_checked_yespower = consensusParams.fYespowerSugar && !EnableFuzzDeterminism();
 
                 ++processed;
-                // Read the clock only once per batch; log at most every three seconds.
-                if ((processed & 127) == 0) {
-                    const auto now{SteadyClock::now()};
-                    if (now - last_log >= std::chrono::seconds{3}) {
-                        log_progress(now);
-                        last_log = now;
-                    }
-                }
+                if (processed % 2000 == 0) log_progress();
                 pcursor->Next();
             } else {
                 LogError("%s: failed to read value\n", __func__);
@@ -183,7 +215,7 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
         }
     }
 
-    log_progress(SteadyClock::now());
+    if (processed % 2000 != 0) log_progress();
     return true;
 }
 
