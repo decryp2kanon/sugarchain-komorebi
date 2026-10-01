@@ -54,7 +54,8 @@ bool noui_ThreadSafeQuestion(const bilingual_str& /* ignored interactive message
 static void LogInitMessage(const std::string& message)
 {
     static const std::string progress_prefix{"Loading block index: "};
-    if (message.compare(0, progress_prefix.size(), progress_prefix) == 0) {
+    if (message.compare(0, progress_prefix.size(), progress_prefix) == 0 ||
+        message == "Counting block index entries...") {
         LogInfo("%s", message);
     } else {
         LogInfo("init message: %s", message);

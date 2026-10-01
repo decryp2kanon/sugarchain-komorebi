@@ -44,6 +44,7 @@
 
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <compare>
 #include <cstddef>
 #include <cstdio>
@@ -79,6 +80,13 @@ std::string FormatCompactDuration(std::chrono::seconds duration)
     append(60, "m");
     append(1, "s");
     return result.empty() ? "0s" : result;
+}
+
+std::string FormatGroupedCount(uint64_t count)
+{
+    std::string result{std::to_string(count)};
+    for (size_t pos = result.size(); pos > 3; pos -= 3) result.insert(pos - 3, ",");
+    return result;
 }
 } // namespace
 
@@ -147,6 +155,22 @@ bool BlockTreeDB::ReadFlag(const std::string& name, bool& fValue)
 bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, std::function<CBlockIndex*(const uint256&)> insertBlockIndex, const util::SignalInterrupt& interrupt, int pow_workers, bool fast_startup)
 {
     AssertLockHeld(::cs_main);
+    uiInterface.InitMessage("Counting block index entries...");
+    const auto count_start{SteadyClock::now()};
+    uint64_t total_entries{0};
+    {
+        std::unique_ptr<CDBIterator> count_cursor(NewIterator());
+        count_cursor->Seek(std::make_pair(DB_BLOCK_INDEX, uint256()));
+        // The same open DB is used for both passes, before networking starts.
+        // Inspect only serialized keys; do not read values or construct indexes.
+        while (count_cursor->Valid() && count_cursor->KeyHasPrefix(DB_BLOCK_INDEX, 1 + uint256::size())) {
+            if (interrupt) return false;
+            ++total_entries;
+            count_cursor->Next();
+        }
+    }
+    LogInfo("Counted %s block index entries in %s", FormatGroupedCount(total_entries),
+            FormatCompactDuration(std::chrono::duration_cast<std::chrono::seconds>(SteadyClock::now() - count_start)));
     std::unique_ptr<CDBIterator> pcursor(NewIterator());
     pcursor->Seek(std::make_pair(DB_BLOCK_INDEX, uint256()));
 
@@ -154,6 +178,12 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
     auto previous_time{start};
     uint64_t processed{0};
     uint64_t previous_processed{0};
+    unsigned next_percent{1};
+    const auto progress_threshold = [&](unsigned percent) {
+        // Ceil(percent * total / 100) without overflowing uint64_t.
+        return (total_entries / 100) * percent + ((total_entries % 100) * percent + 99) / 100;
+    };
+    uint64_t next_threshold{progress_threshold(next_percent)};
     const bool check_yespower{consensusParams.fYespowerSugar && !EnableFuzzDeterminism()};
     const bool parallel_pow{check_yespower && pow_workers > 1};
     // Keep database iteration and block-index construction in order; only
@@ -166,23 +196,30 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
         pending_headers.reserve(pow_workers);
         pending_indexes.reserve(pow_workers);
     }
-    const auto log_progress = [&] {
+    const auto log_progress = [&](unsigned percent) {
         const auto now{SteadyClock::now()};
         const auto elapsed_duration{now - start};
         const double interval{Ticks<SecondsDouble>(now - previous_time)};
-        const auto grouped = [](uint64_t count) {
-            std::string result{std::to_string(count)};
-            for (size_t pos = result.size(); pos > 3; pos -= 3) result.insert(pos - 3, ",");
-            return result;
-        };
-        const auto message{strprintf("Loading block index: %s | %.0f/s | %s",
-                                     grouped(processed),
-                                     interval > 0 ? (processed - previous_processed) / interval : 0.0,
-                                     FormatCompactDuration(std::chrono::duration_cast<std::chrono::seconds>(elapsed_duration)))};
+        const double rate{interval > 0 ? (processed - previous_processed) / interval : 0.0};
+        const std::string eta{processed == total_entries ? "0s" : rate > 0 ?
+            FormatCompactDuration(std::chrono::seconds{static_cast<int64_t>(std::ceil((total_entries - processed) / rate))}) : "--"};
+        const auto message{strprintf("Loading block index: %s / %s (%u%%) | %.0f/s | elapsed %s | ETA %s",
+                                     FormatGroupedCount(processed), FormatGroupedCount(total_entries), percent, rate,
+                                     FormatCompactDuration(std::chrono::duration_cast<std::chrono::seconds>(elapsed_duration)), eta)};
         previous_processed = processed;
         previous_time = now;
         // InitMessage logs in both GUI and daemon, and queues the splash update in Qt.
         uiInterface.InitMessage(message);
+    };
+    const auto report_progress = [&] {
+        // Publish 100% only after the iterator has reached the end.
+        if (processed >= total_entries || next_percent >= 100 || processed < next_threshold) return;
+        // Tiny databases can cross several 1% buckets with a single entry.
+        unsigned percent{next_percent};
+        while (percent < 99 && processed >= progress_threshold(percent + 1)) ++percent;
+        next_percent = percent + 1;
+        next_threshold = progress_threshold(next_percent);
+        log_progress(percent);
     };
     // Validate the pending batch before publishing any process-local proof status.
     const auto flush_pow = [&] {
@@ -203,7 +240,7 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
         processed += pending_headers.size();
         pending_headers.clear();
         pending_indexes.clear();
-        if (processed % 2000 == 0) log_progress();
+        report_progress();
         return true;
     };
 
@@ -240,14 +277,14 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
                     // Commit earlier unchecked entries before advancing past this one.
                     if (parallel_pow && !flush_pow()) return false;
                     ++processed;
-                    if (processed % 2000 == 0) log_progress();
+                    report_progress();
                 } else if (parallel_pow) {
                     pending_headers.push_back(pindexNew->GetBlockHeader());
                     pending_indexes.push_back(pindexNew);
-                    // Bound speculative work by -parpow and retain the exact
-                    // 2,000-entry progress cadence, even for non-divisor counts.
+                    // Bound speculative work by -parpow and finish each progress
+                    // bucket before processing entries in the next one.
                     if ((pending_headers.size() == static_cast<size_t>(pow_workers) ||
-                         (processed + pending_headers.size()) % 2000 == 0) && !flush_pow()) return false;
+                         processed + pending_headers.size() >= next_threshold) && !flush_pow()) return false;
                 } else {
                     if (!CheckBlockProofOfWork(pindexNew->GetBlockHeader(), consensusParams)) {
                         LogError("%s: CheckProofOfWork failed: %s\n", __func__, pindexNew->ToString());
@@ -256,7 +293,7 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
                     // Recomputed in this process, never restored from disk flags.
                     pindexNew->m_checked_yespower = consensusParams.fYespowerSugar && !EnableFuzzDeterminism();
                     ++processed;
-                    if (processed % 2000 == 0) log_progress();
+                    report_progress();
                 }
                 pcursor->Next();
             } else {
@@ -269,7 +306,8 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
     }
 
     if (parallel_pow && !flush_pow()) return false;
-    if (processed % 2000 != 0) log_progress();
+    if (processed != total_entries) return false;
+    log_progress(100);
     return true;
 }
 

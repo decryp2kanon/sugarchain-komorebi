@@ -4,6 +4,7 @@
 #include <crypto/yespower-1.0.1/yespower.h>
 #include <consensus/validation.h>
 #include <node/blockstorage.h>
+#include <node/interface_ui.h>
 #include <kernel/chainparams.h>
 #include <pow.h>
 #include <primitives/block.h>
@@ -12,12 +13,14 @@
 #include <test/util/setup_common.h>
 #include <test/util/net.h>
 #include <test/util/logging.h>
+#include <tinyformat.h>
 #include <node/protocol_version.h>
 #include <util/chaintype.h>
 #include <util/strencodings.h>
 #include <validation.h>
 
 #include <boost/test/unit_test.hpp>
+#include <boost/signals2/connection.hpp>
 
 #include <algorithm>
 #include <array>
@@ -26,6 +29,7 @@
 #include <memory>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -597,6 +601,62 @@ BOOST_AUTO_TEST_CASE(fast_startup_still_checks_genesis)
     BOOST_CHECK(LoadStartupHeaders({main->GenesisBlock()}, 8, false, true, BLOCK_VALID_TREE));
 #ifdef ENABLE_YESPOWER_TEST_WRAP
     BOOST_CHECK_EQUAL(calls.load(), 1U);
+#endif
+}
+
+BOOST_AUTO_TEST_CASE(startup_progress_counts_entries_and_reports_one_percent_buckets)
+{
+    const auto headers{Headers(309, 101)};
+    for (const bool fast_startup : {false, true}) {
+        std::vector<std::string> messages;
+        boost::signals2::scoped_connection capture{uiInterface.InitMessage_connect(
+            [&](const std::string& message) { messages.push_back(message); })};
+        CacheBudget budget{1 << 20};
+        Observation observation;
+        BOOST_CHECK(LoadStartupHeaders(headers, 8, false, fast_startup, BLOCK_VALID_TREE));
+        BOOST_REQUIRE_EQUAL(messages.size(), 101U);
+        BOOST_CHECK_EQUAL(messages.front(), "Counting block index entries...");
+        for (unsigned percent{1}; percent <= 100; ++percent) {
+            const auto& message{messages[percent]};
+            BOOST_CHECK(message.find("Loading block index: ") == 0);
+            BOOST_CHECK(message.find(" / 101 (") != std::string::npos);
+            BOOST_CHECK(message.find(strprintf("(%u%%)", percent)) != std::string::npos);
+            BOOST_CHECK(message.find("/s | elapsed ") != std::string::npos);
+            BOOST_CHECK(message.find(" | ETA ") != std::string::npos);
+        }
+        BOOST_CHECK(messages.back().find("101 / 101 (100%)") != std::string::npos);
+        BOOST_CHECK(messages.back().find(" | ETA 0s") != std::string::npos);
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), fast_startup ? 0U : headers.size());
+#endif
+    }
+}
+
+BOOST_AUTO_TEST_CASE(startup_progress_handles_empty_small_and_interrupted_indexes)
+{
+    std::vector<std::string> messages;
+    boost::signals2::scoped_connection capture{uiInterface.InitMessage_connect(
+        [&](const std::string& message) { messages.push_back(message); })};
+    BOOST_CHECK(LoadStartupHeaders({}, 1));
+    BOOST_REQUIRE_EQUAL(messages.size(), 2U);
+    BOOST_CHECK(messages.back().find("0 / 0 (100%)") != std::string::npos);
+    BOOST_CHECK(messages.back().find(" | ETA 0s") != std::string::npos);
+
+    messages.clear();
+    BOOST_CHECK(LoadStartupHeaders(Headers(310, 3), 8));
+    BOOST_REQUIRE_EQUAL(messages.size(), 4U);
+    BOOST_CHECK(messages[1].find("(33%)") != std::string::npos);
+    BOOST_CHECK(messages[2].find("(66%)") != std::string::npos);
+    BOOST_CHECK(messages[3].find("3 / 3 (100%)") != std::string::npos);
+
+    messages.clear();
+    const auto interrupted_headers{Headers(311, 3)};
+    Observation observation;
+    BOOST_CHECK(!LoadStartupHeaders(interrupted_headers, 8, true));
+    BOOST_REQUIRE_EQUAL(messages.size(), 1U);
+    BOOST_CHECK_EQUAL(messages.front(), "Counting block index entries...");
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+    BOOST_CHECK_EQUAL(calls.load(), 0U);
 #endif
 }
 

@@ -11,10 +11,12 @@
 #include <qt/bitcoingui.h>
 #include <qt/networkstyle.h>
 #include <qt/rpcconsole.h>
+#include <qt/splashscreen.h>
 #include <test/util/setup_common.h>
 #include <validation.h>
 
 #include <QAction>
+#include <QFontMetrics>
 #include <QLineEdit>
 #include <QRegularExpression>
 #include <QScopedPointer>
@@ -50,6 +52,29 @@ void TestRpcCommand(RPCConsole* console)
     QCOMPARE(FindInConsole(output, pattern), QString("regtest"));
 }
 } // namespace
+
+void AppTests::splashProgressFormat()
+{
+    const QString counting{QString::fromStdString(FormatBlockIndexSplashMessage("Counting block index entries..."))};
+    const QString progress{QString::fromStdString(FormatBlockIndexSplashMessage(
+        "Loading block index: 17,228,000 / 44,782,474 (38%) | 687,943/s | elapsed 25s | ETA 40s"))};
+    QCOMPARE(counting, QString("Loading block index...\nCounting entries...\n"));
+    QCOMPARE(progress, QString("Loading block index...\n17,228,000 / 44,782,474 (38%)\n687,943/s | 25s elapsed | ETA 40s"));
+    const QFontMetrics metrics{QApplication::font()};
+    const QRect area{0, 0, 480, 320};
+    const int flags{Qt::AlignBottom | Qt::AlignHCenter};
+    QCOMPARE(metrics.boundingRect(area, flags, counting).height(), metrics.boundingRect(area, flags, progress).height());
+    QScopedPointer<const NetworkStyle> style{NetworkStyle::instantiate(ChainType::REGTEST)};
+    QVERIFY(style);
+    SplashScreen splash{style.data()};
+    splash.showMessage(counting, flags, QColor(55, 55, 55));
+    const QPixmap counting_render{splash.grab()};
+    QVERIFY(!counting_render.isNull());
+    splash.showMessage(progress, flags, QColor(55, 55, 55));
+    const QPixmap progress_render{splash.grab()};
+    QVERIFY(!progress_render.isNull());
+    QCOMPARE(counting_render.size(), progress_render.size());
+}
 
 //! Entry point for BitcoinApplication tests.
 void AppTests::appTests()

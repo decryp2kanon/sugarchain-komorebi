@@ -387,6 +387,11 @@ std::span<const std::byte> CDBIterator::GetValueImpl() const
 
 CDBIterator::~CDBIterator() = default;
 bool CDBIterator::Valid() const { return m_impl_iter->iter->Valid(); }
+bool CDBIterator::KeyHasPrefix(uint8_t prefix, size_t min_size) const
+{
+    const auto key{GetKeyImpl()};
+    return key.size() >= min_size && std::to_integer<uint8_t>(key.front()) == prefix;
+}
 void CDBIterator::SeekToFirst() { m_impl_iter->iter->SeekToFirst(); }
 void CDBIterator::Next() { m_impl_iter->iter->Next(); }
 
