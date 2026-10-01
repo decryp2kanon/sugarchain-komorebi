@@ -160,6 +160,7 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
     // Keep database iteration and block-index construction in order; only
     // the expensive PoW checks use the bounded -parpow worker queue.
     HeaderPoWVerifier verifier{parallel_pow ? pow_workers : 1};
+    // Preserve the index corresponding to each copied header for ordered diagnostics.
     std::vector<CBlockHeader> pending_headers;
     std::vector<CBlockIndex*> pending_indexes;
     if (parallel_pow) {
@@ -184,11 +185,12 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
         // InitMessage logs in both GUI and daemon, and queues the splash update in Qt.
         uiInterface.InitMessage(message);
     };
+    // Validate the pending batch before publishing any process-local proof status.
     const auto flush_pow = [&] {
         if (pending_headers.empty()) return true;
         if (!verifier.CheckEach(pending_headers, consensusParams)) {
-            // Recheck the bounded failed batch in database order to identify
-            // the invalid index in the original diagnostic.
+            // CheckEach reports only batch failure. Recheck this bounded batch
+            // in database order to preserve the first-invalid-index diagnostic.
             for (CBlockIndex* index : pending_indexes) {
                 if (!CheckBlockProofOfWork(index->GetBlockHeader(), consensusParams)) {
                     LogError("LoadBlockIndexGuts: CheckProofOfWork failed: %s\n", index->ToString());
@@ -197,7 +199,7 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
             }
             return false;
         }
-        // Publish process-local proof status only after every check succeeds.
+        // Never publish partial-batch success if another header failed.
         for (CBlockIndex* index : pending_indexes) index->m_checked_yespower = true;
         yespower_checks += pending_headers.size();
         processed += pending_headers.size();
@@ -232,7 +234,8 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
                 if (parallel_pow) {
                     pending_headers.push_back(pindexNew->GetBlockHeader());
                     pending_indexes.push_back(pindexNew);
-                    // Flush at the worker bound or the exact 2,000-entry progress boundary.
+                    // Bound speculative work by -parpow and retain the exact
+                    // 2,000-entry progress cadence, even for non-divisor counts.
                     if ((pending_headers.size() == static_cast<size_t>(pow_workers) ||
                          (processed + pending_headers.size()) % 2000 == 0) && !flush_pow()) return false;
                 } else {
