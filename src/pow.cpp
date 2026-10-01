@@ -387,11 +387,46 @@ struct HeaderPoWVerifier::Impl {
     CCheckQueue<HeaderPoWCheck> queue;
     explicit Impl(int count)
         : workers{std::clamp(count, 1, MAX_HEADER_POW_WORKERS)}, queue{1, workers - 1, "powch"} {}
+
+    // Share queue execution without merging Check() and CheckEach() header/cache
+    // policies. Worker exceptions reach the caller; validation failure returns false.
+    bool RunBatch(std::vector<HeaderPoWCheck>&& batch)
+    {
+        CCheckQueueControl<HeaderPoWCheck> control{queue};
+        control.Add(std::move(batch));
+        if (const auto error{control.Complete()}) {
+            if (*error) std::rethrow_exception(*error);
+            return false;
+        }
+        return true;
+    }
 };
 
 HeaderPoWVerifier::HeaderPoWVerifier(int workers)
     : m_impl{workers > 1 ? std::make_unique<Impl>(workers) : nullptr} {}
 HeaderPoWVerifier::~HeaderPoWVerifier() = default;
+
+bool HeaderPoWVerifier::CheckEach(std::span<const CBlockHeader> headers, const Consensus::Params& params)
+{
+    // Startup sends every stored header through CheckBlockProofOfWork, which
+    // may hit the process-local cache. Unlike Check(), it never uses message
+    // batch evidence to skip individual calls; Check() also admits its first
+    // header separately and has a warm-cache fast path.
+    if (!m_impl || !params.fYespowerSugar || EnableFuzzDeterminism()) {
+        return std::ranges::all_of(headers, [&](const auto& header) { return CheckBlockProofOfWork(header, params); });
+    }
+    std::unique_lock call_lock{m_impl->caller_mutex};
+    while (!headers.empty()) {
+        std::vector<HeaderPoWCheck> batch;
+        batch.reserve(m_impl->workers);
+        while (!headers.empty() && batch.size() < size_t(m_impl->workers)) {
+            batch.push_back({&headers.front(), &params});
+            headers = headers.subspan(1);
+        }
+        if (!m_impl->RunBatch(std::move(batch))) return false;
+    }
+    return true;
+}
 
 bool HeaderPoWVerifier::Check(std::span<const CBlockHeader> headers, const Consensus::Params& params)
 {
@@ -430,12 +465,7 @@ bool HeaderPoWVerifier::Check(std::span<const CBlockHeader> headers, const Conse
         if (batch.empty()) continue;
         // At most eight cold checks may run before the next failure decision,
         // independently of message/peer count. Never enqueue the whole message.
-        CCheckQueueControl<HeaderPoWCheck> control{m_impl->queue};
-        control.Add(std::move(batch));
-        if (const auto error{control.Complete()}) {
-            if (*error) std::rethrow_exception(*error);
-            return false;
-        }
+        if (!m_impl->RunBatch(std::move(batch))) return false;
     }
     cache.InsertBatch(entry);
     return true;

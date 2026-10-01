@@ -62,6 +62,8 @@ public:
     HeaderPoWVerifier(const HeaderPoWVerifier&) = delete;
     HeaderPoWVerifier& operator=(const HeaderPoWVerifier&) = delete;
     bool Check(std::span<const CBlockHeader> headers, const Consensus::Params& params);
+    /** Check every header once, including on warm-cache hits; used for startup block-index validation. */
+    bool CheckEach(std::span<const CBlockHeader> headers, const Consensus::Params& params);
 };
 
 /**

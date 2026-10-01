@@ -23,6 +23,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <thread>
@@ -77,6 +78,38 @@ struct HeaderPoWSetup : BasicTestingSetup {
     void Invalidate(CBlockHeader& header) const
     {
         do { ++header.nNonce; } while (CheckProofOfWorkImpl(header.GetPoWHash(), header.nBits, params));
+    }
+
+    bool LoadStartupHeaders(std::vector<CBlockHeader> headers, int workers, bool cancel_before = false)
+    {
+        kernel::BlockTreeDB db{DBParams{.path = "", .cache_bytes = 1 << 20, .memory_only = true}};
+        std::vector<uint256> hashes;
+        std::vector<std::unique_ptr<CBlockIndex>> indexes;
+        std::vector<const CBlockIndex*> entries;
+        hashes.reserve(headers.size());
+        indexes.reserve(headers.size());
+        entries.reserve(headers.size());
+        for (size_t i{0}; i < headers.size(); ++i) {
+            hashes.push_back(headers[i].GetHash());
+            indexes.push_back(std::make_unique<CBlockIndex>(headers[i]));
+            indexes.back()->phashBlock = &hashes.back();
+            indexes.back()->nHeight = i;
+            entries.push_back(indexes.back().get());
+        }
+        db.WriteBatchSync({}, 0, entries);
+        node::BlockMap loaded;
+        const auto insert = [&](const uint256& hash) -> CBlockIndex* {
+            if (hash.IsNull()) return nullptr;
+            auto [it, inserted] = loaded.try_emplace(hash);
+            if (inserted) it->second.phashBlock = &it->first;
+            return &it->second;
+        };
+        util::SignalInterrupt cancelled;
+        if (cancel_before) (void)cancelled();
+        const auto& interrupt{cancel_before ? cancelled : m_interrupt};
+        const bool valid{WITH_LOCK(cs_main, return db.LoadBlockIndexGuts(params, insert, interrupt, workers))};
+        if (valid) BOOST_CHECK_EQUAL(loaded.size(), headers.size());
+        return valid;
     }
 };
 } // namespace
@@ -405,6 +438,47 @@ BOOST_AUTO_TEST_CASE(cold_proofs_cache_reuse_and_worker_lifetime)
         // Repeated construction/destruction also exercises scratch cleanup
         // under ASan/LSan rather than keeping all workers alive until exit.
     }
+}
+
+BOOST_AUTO_TEST_CASE(startup_checks_each_header_with_configured_workers)
+{
+    const auto headers{Headers(301, 25)};
+    for (const int workers : {1, 2, 4, 8}) {
+        CacheBudget budget{1 << 20};
+        HeaderPoWVerifier verifier{workers};
+        {
+            Observation observation;
+            BOOST_REQUIRE(verifier.CheckEach(headers, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+            BOOST_CHECK_EQUAL(calls.load(), headers.size());
+            BOOST_CHECK_LE(peak.load(), static_cast<unsigned>(workers));
+#endif
+        }
+        {
+            Observation observation;
+            BOOST_CHECK(verifier.CheckEach(headers, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+            BOOST_CHECK_EQUAL(calls.load(), 0U); // Every check still consults verified process-local evidence.
+#endif
+        }
+        auto invalid{headers};
+        Invalidate(invalid[12]);
+        BOOST_CHECK(!verifier.CheckEach(invalid, params));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(startup_block_index_load_checks_every_header)
+{
+    const auto valid{Headers(302, 2001)};
+    BOOST_CHECK(LoadStartupHeaders(valid, 1));
+    BOOST_CHECK(LoadStartupHeaders(valid, 3));
+    BOOST_CHECK(LoadStartupHeaders(valid, 8));
+    BOOST_CHECK(!LoadStartupHeaders(valid, 8, true));
+
+    auto invalid{Headers(303, 17)};
+    Invalidate(invalid[8]);
+    BOOST_CHECK(!LoadStartupHeaders(invalid, 1));
+    BOOST_CHECK(!LoadStartupHeaders(invalid, 8));
 }
 
 BOOST_AUTO_TEST_CASE(invalid_first_and_later_proofs_have_bounded_speculation)

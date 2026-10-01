@@ -7,11 +7,13 @@
 #include <common/args.h>
 #include <node/blockstorage.h>
 #include <node/database_args.h>
+#include <pow.h>
 #include <tinyformat.h>
 #include <util/result.h>
 #include <util/translation.h>
 #include <validation.h>
 
+#include <algorithm>
 #include <cstdint>
 
 namespace node {
@@ -34,6 +36,8 @@ util::Result<void> ApplyArgsManOptions(const ArgsManager& args, BlockManager::Op
     opts.prune_target = nPruneTarget;
 
     if (auto value{args.GetBoolArg("-fastprune")}) opts.fast_prune = *value;
+
+    opts.startup_pow_workers = std::clamp<int64_t>(args.GetIntArg("-parpow", DEFAULT_HEADER_POW_WORKERS), 1, MAX_HEADER_POW_WORKERS);
 
     ReadDatabaseArgs(args, opts.block_tree_db_params.options);
 

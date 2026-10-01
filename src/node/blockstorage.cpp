@@ -144,7 +144,7 @@ bool BlockTreeDB::ReadFlag(const std::string& name, bool& fValue)
     return true;
 }
 
-bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, std::function<CBlockIndex*(const uint256&)> insertBlockIndex, const util::SignalInterrupt& interrupt)
+bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, std::function<CBlockIndex*(const uint256&)> insertBlockIndex, const util::SignalInterrupt& interrupt, int pow_workers)
 {
     AssertLockHeld(::cs_main);
     std::unique_ptr<CDBIterator> pcursor(NewIterator());
@@ -156,6 +156,17 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
     uint64_t previous_processed{0};
     uint64_t yespower_checks{0};
     const bool check_yespower{consensusParams.fYespowerSugar && !EnableFuzzDeterminism()};
+    const bool parallel_pow{check_yespower && pow_workers > 1};
+    // Keep database iteration and block-index construction in order; only
+    // the expensive PoW checks use the bounded -parpow worker queue.
+    HeaderPoWVerifier verifier{parallel_pow ? pow_workers : 1};
+    // Preserve the index corresponding to each copied header for ordered diagnostics.
+    std::vector<CBlockHeader> pending_headers;
+    std::vector<CBlockIndex*> pending_indexes;
+    if (parallel_pow) {
+        pending_headers.reserve(pow_workers);
+        pending_indexes.reserve(pow_workers);
+    }
     const auto log_progress = [&] {
         const auto now{SteadyClock::now()};
         const auto elapsed_duration{now - start};
@@ -173,6 +184,29 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
         previous_time = now;
         // InitMessage logs in both GUI and daemon, and queues the splash update in Qt.
         uiInterface.InitMessage(message);
+    };
+    // Validate the pending batch before publishing any process-local proof status.
+    const auto flush_pow = [&] {
+        if (pending_headers.empty()) return true;
+        if (!verifier.CheckEach(pending_headers, consensusParams)) {
+            // CheckEach reports only batch failure. Recheck this bounded batch
+            // in database order to preserve the first-invalid-index diagnostic.
+            for (CBlockIndex* index : pending_indexes) {
+                if (!CheckBlockProofOfWork(index->GetBlockHeader(), consensusParams)) {
+                    LogError("LoadBlockIndexGuts: CheckProofOfWork failed: %s\n", index->ToString());
+                    return false;
+                }
+            }
+            return false;
+        }
+        // Never publish partial-batch success if another header failed.
+        for (CBlockIndex* index : pending_indexes) index->m_checked_yespower = true;
+        yespower_checks += pending_headers.size();
+        processed += pending_headers.size();
+        pending_headers.clear();
+        pending_indexes.clear();
+        if (processed % 2000 == 0) log_progress();
+        return true;
     };
 
     // Load m_block_index
@@ -197,17 +231,25 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
                 pindexNew->nStatus        = diskindex.nStatus;
                 pindexNew->nTx            = diskindex.nTx;
 
-                // Count validation calls, including cache hits, rather than raw Yespower hashes.
-                if (check_yespower) ++yespower_checks;
-                if (!CheckBlockProofOfWork(pindexNew->GetBlockHeader(), consensusParams)) {
-                    LogError("%s: CheckProofOfWork failed: %s\n", __func__, pindexNew->ToString());
-                    return false;
+                if (parallel_pow) {
+                    pending_headers.push_back(pindexNew->GetBlockHeader());
+                    pending_indexes.push_back(pindexNew);
+                    // Bound speculative work by -parpow and retain the exact
+                    // 2,000-entry progress cadence, even for non-divisor counts.
+                    if ((pending_headers.size() == static_cast<size_t>(pow_workers) ||
+                         (processed + pending_headers.size()) % 2000 == 0) && !flush_pow()) return false;
+                } else {
+                    // Count validation calls, including cache hits, rather than raw Yespower hashes.
+                    if (check_yespower) ++yespower_checks;
+                    if (!CheckBlockProofOfWork(pindexNew->GetBlockHeader(), consensusParams)) {
+                        LogError("%s: CheckProofOfWork failed: %s\n", __func__, pindexNew->ToString());
+                        return false;
+                    }
+                    // Recomputed in this process, never restored from disk flags.
+                    pindexNew->m_checked_yespower = consensusParams.fYespowerSugar && !EnableFuzzDeterminism();
+                    ++processed;
+                    if (processed % 2000 == 0) log_progress();
                 }
-                // Recomputed in this process, never restored from disk flags.
-                pindexNew->m_checked_yespower = consensusParams.fYespowerSugar && !EnableFuzzDeterminism();
-
-                ++processed;
-                if (processed % 2000 == 0) log_progress();
                 pcursor->Next();
             } else {
                 LogError("%s: failed to read value\n", __func__);
@@ -218,6 +260,7 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
         }
     }
 
+    if (parallel_pow && !flush_pow()) return false;
     if (processed % 2000 != 0) log_progress();
     return true;
 }
@@ -482,7 +525,7 @@ CBlockIndex* BlockManager::InsertBlockIndex(const uint256& hash)
 bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockhash)
 {
     if (!m_block_tree_db->LoadBlockIndexGuts(
-            GetConsensus(), [this](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) { return this->InsertBlockIndex(hash); }, m_interrupt)) {
+            GetConsensus(), [this](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) { return this->InsertBlockIndex(hash); }, m_interrupt, m_opts.startup_pow_workers)) {
         return false;
     }
 
