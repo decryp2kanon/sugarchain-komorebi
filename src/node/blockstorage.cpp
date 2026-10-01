@@ -154,7 +154,6 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
     auto previous_time{start};
     uint64_t processed{0};
     uint64_t previous_processed{0};
-    uint64_t yespower_checks{0};
     const bool check_yespower{consensusParams.fYespowerSugar && !EnableFuzzDeterminism()};
     const bool parallel_pow{check_yespower && pow_workers > 1};
     // Keep database iteration and block-index construction in order; only
@@ -176,8 +175,8 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
             for (size_t pos = result.size(); pos > 3; pos -= 3) result.insert(pos - 3, ",");
             return result;
         };
-        const auto message{strprintf("Loading block index: %s | PoW %s | %.0f/s | %s",
-                                     grouped(processed), grouped(yespower_checks),
+        const auto message{strprintf("Loading block index: %s | %.0f/s | %s",
+                                     grouped(processed),
                                      interval > 0 ? (processed - previous_processed) / interval : 0.0,
                                      FormatCompactDuration(std::chrono::duration_cast<std::chrono::seconds>(elapsed_duration)))};
         previous_processed = processed;
@@ -201,7 +200,6 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
         }
         // Never publish partial-batch success if another header failed.
         for (CBlockIndex* index : pending_indexes) index->m_checked_yespower = true;
-        yespower_checks += pending_headers.size();
         processed += pending_headers.size();
         pending_headers.clear();
         pending_indexes.clear();
@@ -239,8 +237,6 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
                     if ((pending_headers.size() == static_cast<size_t>(pow_workers) ||
                          (processed + pending_headers.size()) % 2000 == 0) && !flush_pow()) return false;
                 } else {
-                    // Count validation calls, including cache hits, rather than raw Yespower hashes.
-                    if (check_yespower) ++yespower_checks;
                     if (!CheckBlockProofOfWork(pindexNew->GetBlockHeader(), consensusParams)) {
                         LogError("%s: CheckProofOfWork failed: %s\n", __func__, pindexNew->ToString());
                         return false;
