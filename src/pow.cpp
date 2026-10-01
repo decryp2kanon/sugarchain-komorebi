@@ -393,6 +393,29 @@ HeaderPoWVerifier::HeaderPoWVerifier(int workers)
     : m_impl{workers > 1 ? std::make_unique<Impl>(workers) : nullptr} {}
 HeaderPoWVerifier::~HeaderPoWVerifier() = default;
 
+bool HeaderPoWVerifier::CheckEach(std::span<const CBlockHeader> headers, const Consensus::Params& params)
+{
+    if (!m_impl || !params.fYespowerSugar || EnableFuzzDeterminism()) {
+        return std::ranges::all_of(headers, [&](const auto& header) { return CheckBlockProofOfWork(header, params); });
+    }
+    std::unique_lock call_lock{m_impl->caller_mutex};
+    while (!headers.empty()) {
+        std::vector<HeaderPoWCheck> batch;
+        batch.reserve(m_impl->workers);
+        while (!headers.empty() && batch.size() < size_t(m_impl->workers)) {
+            batch.push_back({&headers.front(), &params});
+            headers = headers.subspan(1);
+        }
+        CCheckQueueControl<HeaderPoWCheck> control{m_impl->queue};
+        control.Add(std::move(batch));
+        if (const auto error{control.Complete()}) {
+            if (*error) std::rethrow_exception(*error);
+            return false;
+        }
+    }
+    return true;
+}
+
 bool HeaderPoWVerifier::Check(std::span<const CBlockHeader> headers, const Consensus::Params& params)
 {
     if (!params.fYespowerSugar || EnableFuzzDeterminism()) {
