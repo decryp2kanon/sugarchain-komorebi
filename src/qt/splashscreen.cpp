@@ -182,7 +182,12 @@ void SplashScreen::subscribeToCoreSignals()
 {
     // Connect signals to client
     m_handler_init_message = m_node->handleInitMessage([this](const std::string& message) {
-        InitMessage(this, message);
+        static const std::string prefix{"Loading block index: "};
+        if (message.compare(0, prefix.size(), prefix) == 0) {
+            InitMessage(this, "Loading block index...\n" + message.substr(prefix.size()));
+        } else {
+            InitMessage(this, message);
+        }
     });
     m_handler_show_progress = m_node->handleShowProgress([this](const std::string& title, int nProgress, bool resume_possible) {
         ShowProgress(this, title, nProgress, resume_possible);

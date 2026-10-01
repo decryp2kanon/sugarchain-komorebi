@@ -51,9 +51,19 @@ bool noui_ThreadSafeQuestion(const bilingual_str& /* ignored interactive message
     return noui_ThreadSafeMessageBox(Untranslated(message), style);
 }
 
+static void LogInitMessage(const std::string& message)
+{
+    static const std::string progress_prefix{"Loading block index: "};
+    if (message.compare(0, progress_prefix.size(), progress_prefix) == 0) {
+        LogInfo("%s", message);
+    } else {
+        LogInfo("init message: %s", message);
+    }
+}
+
 void noui_InitMessage(const std::string& message)
 {
-    LogInfo("init message: %s", message);
+    LogInitMessage(message);
 }
 
 void noui_connect()
@@ -77,7 +87,7 @@ bool noui_ThreadSafeQuestionRedirect(const bilingual_str& /* ignored interactive
 
 void noui_InitMessageRedirect(const std::string& message)
 {
-    LogInfo("init message: %s", message);
+    LogInitMessage(message);
 }
 
 void noui_test_redirect()
