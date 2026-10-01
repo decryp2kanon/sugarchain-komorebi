@@ -80,8 +80,11 @@ struct HeaderPoWSetup : BasicTestingSetup {
         do { ++header.nNonce; } while (CheckProofOfWorkImpl(header.GetPoWHash(), header.nBits, params));
     }
 
-    bool LoadStartupHeaders(std::vector<CBlockHeader> headers, int workers, bool cancel_before = false)
+    bool LoadStartupHeaders(std::vector<CBlockHeader> headers, int workers, bool cancel_before = false,
+                            bool fast_startup = false, uint32_t disk_status = BLOCK_VALID_UNKNOWN,
+                            bool cache_loaded = false, std::span<const uint32_t> disk_statuses = {})
     {
+        BOOST_REQUIRE(disk_statuses.empty() || disk_statuses.size() == headers.size());
         kernel::BlockTreeDB db{DBParams{.path = "", .cache_bytes = 1 << 20, .memory_only = true}};
         std::vector<uint256> hashes;
         std::vector<std::unique_ptr<CBlockIndex>> indexes;
@@ -94,6 +97,7 @@ struct HeaderPoWSetup : BasicTestingSetup {
             indexes.push_back(std::make_unique<CBlockIndex>(headers[i]));
             indexes.back()->phashBlock = &hashes.back();
             indexes.back()->nHeight = i;
+            indexes.back()->nStatus = disk_statuses.empty() ? disk_status : disk_statuses[i];
             entries.push_back(indexes.back().get());
         }
         db.WriteBatchSync({}, 0, entries);
@@ -107,8 +111,14 @@ struct HeaderPoWSetup : BasicTestingSetup {
         util::SignalInterrupt cancelled;
         if (cancel_before) (void)cancelled();
         const auto& interrupt{cancel_before ? cancelled : m_interrupt};
-        const bool valid{WITH_LOCK(cs_main, return db.LoadBlockIndexGuts(params, insert, interrupt, workers))};
-        if (valid) BOOST_CHECK_EQUAL(loaded.size(), headers.size());
+        const bool valid{WITH_LOCK(cs_main, return db.LoadBlockIndexGuts(params, insert, interrupt, workers, fast_startup))};
+        if (valid) {
+            BOOST_CHECK_EQUAL(loaded.size(), headers.size());
+            for (auto& [hash, index] : loaded) {
+                if (disk_statuses.empty()) BOOST_CHECK_EQUAL(index.nStatus, disk_status);
+                if (cache_loaded) WITH_LOCK(cs_main, CacheVerifiedBlockIndexProof(index, params));
+            }
+        }
         return valid;
     }
 };
@@ -479,6 +489,115 @@ BOOST_AUTO_TEST_CASE(startup_block_index_load_checks_every_header)
     Invalidate(invalid[8]);
     BOOST_CHECK(!LoadStartupHeaders(invalid, 1));
     BOOST_CHECK(!LoadStartupHeaders(invalid, 8));
+}
+
+BOOST_AUTO_TEST_CASE(fast_startup_trusts_only_eligible_disk_headers)
+{
+    const auto valid{Headers(304, 4)};
+    for (const int workers : {1, 8}) {
+        CacheBudget budget{1 << 20};
+        {
+            Observation observation;
+            BOOST_CHECK(LoadStartupHeaders(valid, workers, false, false, BLOCK_VALID_TREE));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+            BOOST_CHECK_EQUAL(calls.load(), valid.size());
+#endif
+        }
+        InitYespowerVerificationCache(1 << 20);
+        {
+            Observation observation;
+            BOOST_CHECK(LoadStartupHeaders(valid, workers, false, true, BLOCK_VALID_TREE));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+            BOOST_CHECK_EQUAL(calls.load(), 0U);
+#endif
+        }
+        InitYespowerVerificationCache(1 << 20);
+        {
+            Observation observation;
+            BOOST_CHECK(LoadStartupHeaders(valid, workers, false, true, BLOCK_VALID_UNKNOWN));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+            BOOST_CHECK_EQUAL(calls.load(), valid.size());
+#endif
+        }
+        InitYespowerVerificationCache(1 << 20);
+        {
+            Observation observation;
+            BOOST_CHECK(LoadStartupHeaders(valid, workers, false, true, BLOCK_VALID_TREE | BLOCK_FAILED_VALID));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+            BOOST_CHECK_EQUAL(calls.load(), valid.size());
+#endif
+        }
+        InitYespowerVerificationCache(1 << 20);
+        {
+            Observation observation;
+            BOOST_CHECK(LoadStartupHeaders(valid, workers, false, true, BLOCK_VALID_TREE | BLOCK_FAILED_CHILD));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+            BOOST_CHECK_EQUAL(calls.load(), valid.size());
+#endif
+        }
+    }
+
+    auto invalid{valid};
+    Invalidate(invalid[0]);
+    InitYespowerVerificationCache(1 << 20);
+    BOOST_CHECK(!LoadStartupHeaders(invalid, 8, false, false, BLOCK_VALID_TREE));
+    // This acceptance is the explicit opt-in disk-trust trade-off.
+    BOOST_CHECK(LoadStartupHeaders(invalid, 8, false, true, BLOCK_VALID_TREE));
+    BOOST_CHECK(!LoadStartupHeaders(invalid, 8, false, true, BLOCK_VALID_UNKNOWN));
+    invalid[0].nBits = 0;
+    BOOST_CHECK(!LoadStartupHeaders(invalid, 8, false, true, BLOCK_VALID_TREE));
+    BOOST_CHECK(!LoadStartupHeaders(valid, 8, true, true, BLOCK_VALID_TREE));
+}
+
+BOOST_AUTO_TEST_CASE(fast_startup_never_promotes_disk_trust_to_live_proof_cache)
+{
+    CacheBudget budget{1 << 20};
+    const auto header{Headers(305, 1)};
+    BOOST_REQUIRE(LoadStartupHeaders(header, 8, false, true, BLOCK_VALID_TREE, true));
+    {
+        Observation observation;
+        BOOST_CHECK(CheckBlockProofOfWork(header.front(), params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 1U);
+#endif
+    }
+
+    // Later network batches still validate previously unseen headers.
+    HeaderPoWVerifier verifier{8};
+    const auto fresh{Headers(307, 2)};
+    {
+        Observation observation;
+        BOOST_CHECK(verifier.Check(fresh, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), fresh.size());
+#endif
+    }
+    auto invalid{Headers(308, 1)};
+    Invalidate(invalid.front());
+    BOOST_CHECK(!verifier.Check(invalid, params));
+}
+
+BOOST_AUTO_TEST_CASE(fast_startup_flushes_untrusted_headers_before_trusted_entries)
+{
+    CacheBudget budget{1 << 20};
+    const auto headers{Headers(306, 4)};
+    const std::array<uint32_t, 4> statuses{BLOCK_VALID_TREE, BLOCK_VALID_UNKNOWN,
+                                            BLOCK_VALID_TREE, BLOCK_VALID_UNKNOWN};
+    Observation observation;
+    BOOST_CHECK(LoadStartupHeaders(headers, 8, false, true, BLOCK_VALID_UNKNOWN, false, statuses));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+    BOOST_CHECK_EQUAL(calls.load(), 2U);
+#endif
+}
+
+BOOST_AUTO_TEST_CASE(fast_startup_still_checks_genesis)
+{
+    CacheBudget budget{1 << 20};
+    Observation observation;
+    BOOST_CHECK(LoadStartupHeaders({main->GenesisBlock()}, 8, false, true, BLOCK_VALID_TREE));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+    BOOST_CHECK_EQUAL(calls.load(), 1U);
+#endif
 }
 
 BOOST_AUTO_TEST_CASE(invalid_first_and_later_proofs_have_bounded_speculation)

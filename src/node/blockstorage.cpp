@@ -144,7 +144,7 @@ bool BlockTreeDB::ReadFlag(const std::string& name, bool& fValue)
     return true;
 }
 
-bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, std::function<CBlockIndex*(const uint256&)> insertBlockIndex, const util::SignalInterrupt& interrupt, int pow_workers)
+bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, std::function<CBlockIndex*(const uint256&)> insertBlockIndex, const util::SignalInterrupt& interrupt, int pow_workers, bool fast_startup)
 {
     AssertLockHeld(::cs_main);
     std::unique_ptr<CDBIterator> pcursor(NewIterator());
@@ -229,7 +229,19 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
                 pindexNew->nStatus        = diskindex.nStatus;
                 pindexNew->nTx            = diskindex.nTx;
 
-                if (parallel_pow) {
+                // Opt-in: trust only persisted TREE-or-higher entries without
+                // failure flags. This does not establish live proof evidence.
+                const bool trust_disk_pow{fast_startup && check_yespower &&
+                    pindexNew->GetBlockHash() != consensusParams.hashGenesisBlock &&
+                    (pindexNew->nStatus & BLOCK_VALID_MASK) >= BLOCK_VALID_TREE &&
+                    !(pindexNew->nStatus & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD)) &&
+                    DeriveTarget(pindexNew->nBits, consensusParams.powLimit).has_value()};
+                if (trust_disk_pow) {
+                    // Commit earlier unchecked entries before advancing past this one.
+                    if (parallel_pow && !flush_pow()) return false;
+                    ++processed;
+                    if (processed % 2000 == 0) log_progress();
+                } else if (parallel_pow) {
                     pending_headers.push_back(pindexNew->GetBlockHeader());
                     pending_indexes.push_back(pindexNew);
                     // Bound speculative work by -parpow and retain the exact
@@ -521,7 +533,7 @@ CBlockIndex* BlockManager::InsertBlockIndex(const uint256& hash)
 bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockhash)
 {
     if (!m_block_tree_db->LoadBlockIndexGuts(
-            GetConsensus(), [this](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) { return this->InsertBlockIndex(hash); }, m_interrupt, m_opts.startup_pow_workers)) {
+            GetConsensus(), [this](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) { return this->InsertBlockIndex(hash); }, m_interrupt, m_opts.startup_pow_workers, m_opts.fast_startup)) {
         return false;
     }
 
