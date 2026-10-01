@@ -170,6 +170,28 @@ static void InitMessage(SplashScreen *splash, const std::string &message)
     assert(invoked);
 }
 
+std::string FormatBlockIndexSplashMessage(const std::string& message)
+{
+    if (message == "Counting block index entries...") {
+        // The final empty line reserves the same height as progress updates.
+        return "Loading block index...\nCounting entries...\n";
+    }
+    static const std::string prefix{"Loading block index: "};
+    if (message.compare(0, prefix.size(), prefix) != 0) return message;
+    const std::string body{message.substr(prefix.size())};
+    const size_t rate_pos{body.find(" | ")};
+    const size_t elapsed_pos{body.find(" | elapsed ")};
+    const size_t eta_pos{body.find(" | ETA ")};
+    if (rate_pos == std::string::npos || elapsed_pos == std::string::npos || eta_pos == std::string::npos ||
+        rate_pos >= elapsed_pos || elapsed_pos + 11 > eta_pos) {
+        return "Loading block index...\n" + body;
+    }
+    const std::string rate{body.substr(rate_pos + 3, elapsed_pos - rate_pos - 3)};
+    const std::string elapsed{body.substr(elapsed_pos + 11, eta_pos - elapsed_pos - 11)};
+    return "Loading block index...\n" + body.substr(0, rate_pos) + "\n" +
+           rate + " | " + elapsed + " elapsed" + body.substr(eta_pos);
+}
+
 static void ShowProgress(SplashScreen *splash, const std::string &title, int nProgress, bool resume_possible)
 {
     InitMessage(splash, title + std::string("\n") +
@@ -182,12 +204,7 @@ void SplashScreen::subscribeToCoreSignals()
 {
     // Connect signals to client
     m_handler_init_message = m_node->handleInitMessage([this](const std::string& message) {
-        static const std::string prefix{"Loading block index: "};
-        if (message.compare(0, prefix.size(), prefix) == 0) {
-            InitMessage(this, "Loading block index...\n" + message.substr(prefix.size()));
-        } else {
-            InitMessage(this, message);
-        }
+        InitMessage(this, FormatBlockIndexSplashMessage(message));
     });
     m_handler_show_progress = m_node->handleShowProgress([this](const std::string& title, int nProgress, bool resume_possible) {
         ShowProgress(this, title, nProgress, resume_possible);

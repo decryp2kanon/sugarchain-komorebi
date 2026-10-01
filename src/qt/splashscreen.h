@@ -8,6 +8,10 @@
 #include <QWidget>
 
 #include <memory>
+#include <string>
+
+/** Turn block-index init notifications into a fixed-height three-line splash message. */
+std::string FormatBlockIndexSplashMessage(const std::string& message);
 
 class NetworkStyle;
 

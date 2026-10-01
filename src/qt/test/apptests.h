@@ -21,6 +21,7 @@ public:
     explicit AppTests(BitcoinApplication& app) : m_app(app) {}
 
 private Q_SLOTS:
+    void splashProgressFormat();
     void appTests();
     void guiTests(BitcoinGUI* window);
     void consoleTests(RPCConsole* console);
