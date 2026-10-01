@@ -42,6 +42,8 @@
 #include <util/translation.h>
 #include <validation.h>
 
+#include <boost/sort/spreadsort/integer_sort.hpp>
+
 #include <cerrno>
 #include <chrono>
 #include <cmath>
@@ -601,8 +603,12 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
 
     // Calculate nChainWork
     std::vector<CBlockIndex*> vSortedByHeight{GetAllBlockIndices()};
-    std::sort(vSortedByHeight.begin(), vSortedByHeight.end(),
-              CBlockIndexHeightOnlyComparator());
+    // Heights strictly increase along parent links. An in-place integer sort
+    // preserves the parent-before-child traversal without a second index array.
+    boost::sort::spreadsort::integer_sort(
+        vSortedByHeight.begin(), vSortedByHeight.end(),
+        [](const CBlockIndex* index, unsigned shift) { return index->nHeight >> shift; },
+        CBlockIndexHeightOnlyComparator());
 
     CBlockIndex* previous_index{nullptr};
     for (CBlockIndex* pindex : vSortedByHeight) {
