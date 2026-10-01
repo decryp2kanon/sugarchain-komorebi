@@ -79,6 +79,38 @@ struct HeaderPoWSetup : BasicTestingSetup {
     {
         do { ++header.nNonce; } while (CheckProofOfWorkImpl(header.GetPoWHash(), header.nBits, params));
     }
+
+    bool LoadStartupHeaders(std::vector<CBlockHeader> headers, int workers, bool cancel_before = false)
+    {
+        kernel::BlockTreeDB db{DBParams{.path = "", .cache_bytes = 1 << 20, .memory_only = true}};
+        std::vector<uint256> hashes;
+        std::vector<std::unique_ptr<CBlockIndex>> indexes;
+        std::vector<const CBlockIndex*> entries;
+        hashes.reserve(headers.size());
+        indexes.reserve(headers.size());
+        entries.reserve(headers.size());
+        for (size_t i{0}; i < headers.size(); ++i) {
+            hashes.push_back(headers[i].GetHash());
+            indexes.push_back(std::make_unique<CBlockIndex>(headers[i]));
+            indexes.back()->phashBlock = &hashes.back();
+            indexes.back()->nHeight = i;
+            entries.push_back(indexes.back().get());
+        }
+        db.WriteBatchSync({}, 0, entries);
+        node::BlockMap loaded;
+        const auto insert = [&](const uint256& hash) -> CBlockIndex* {
+            if (hash.IsNull()) return nullptr;
+            auto [it, inserted] = loaded.try_emplace(hash);
+            if (inserted) it->second.phashBlock = &it->first;
+            return &it->second;
+        };
+        util::SignalInterrupt cancelled;
+        if (cancel_before) (void)cancelled();
+        const auto& interrupt{cancel_before ? cancelled : m_interrupt};
+        const bool valid{WITH_LOCK(cs_main, return db.LoadBlockIndexGuts(params, insert, interrupt, workers))};
+        if (valid) BOOST_CHECK_EQUAL(loaded.size(), headers.size());
+        return valid;
+    }
 };
 } // namespace
 
@@ -437,49 +469,16 @@ BOOST_AUTO_TEST_CASE(startup_checks_each_header_with_configured_workers)
 
 BOOST_AUTO_TEST_CASE(startup_block_index_load_checks_every_header)
 {
-    const auto load = [&](std::vector<CBlockHeader> headers, int workers, bool cancel_before = false) {
-        kernel::BlockTreeDB db{DBParams{.path = "", .cache_bytes = 1 << 20, .memory_only = true}};
-        std::vector<uint256> hashes;
-        std::vector<std::unique_ptr<CBlockIndex>> indexes;
-        std::vector<const CBlockIndex*> entries;
-        hashes.reserve(headers.size());
-        indexes.reserve(headers.size());
-        entries.reserve(headers.size());
-        for (size_t i{0}; i < headers.size(); ++i) {
-            hashes.push_back(headers[i].GetHash());
-            indexes.push_back(std::make_unique<CBlockIndex>(headers[i]));
-            indexes.back()->phashBlock = &hashes.back();
-            indexes.back()->nHeight = i;
-            entries.push_back(indexes.back().get());
-        }
-        db.WriteBatchSync({}, 0, entries);
-        node::BlockMap loaded;
-        const auto insert = [&](const uint256& hash) -> CBlockIndex* {
-            if (hash.IsNull()) return nullptr;
-            auto [it, inserted] = loaded.try_emplace(hash);
-            if (inserted) it->second.phashBlock = &it->first;
-            return &it->second;
-        };
-        util::SignalInterrupt cancelled;
-        if (cancel_before) (void)cancelled();
-        const auto& interrupt{cancel_before ? cancelled : m_interrupt};
-        const bool valid{WITH_LOCK(cs_main, return db.LoadBlockIndexGuts(params, insert, interrupt, workers))};
-        if (valid) {
-            BOOST_CHECK_EQUAL(loaded.size(), headers.size());
-        }
-        return valid;
-    };
-
     const auto valid{Headers(302, 2001)};
-    BOOST_CHECK(load(valid, 1));
-    BOOST_CHECK(load(valid, 3));
-    BOOST_CHECK(load(valid, 8));
-    BOOST_CHECK(!load(valid, 8, true));
+    BOOST_CHECK(LoadStartupHeaders(valid, 1));
+    BOOST_CHECK(LoadStartupHeaders(valid, 3));
+    BOOST_CHECK(LoadStartupHeaders(valid, 8));
+    BOOST_CHECK(!LoadStartupHeaders(valid, 8, true));
 
     auto invalid{Headers(303, 17)};
     Invalidate(invalid[8]);
-    BOOST_CHECK(!load(invalid, 1));
-    BOOST_CHECK(!load(invalid, 8));
+    BOOST_CHECK(!LoadStartupHeaders(invalid, 1));
+    BOOST_CHECK(!LoadStartupHeaders(invalid, 8));
 }
 
 BOOST_AUTO_TEST_CASE(invalid_first_and_later_proofs_have_bounded_speculation)

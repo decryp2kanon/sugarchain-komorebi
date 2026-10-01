@@ -395,6 +395,8 @@ HeaderPoWVerifier::~HeaderPoWVerifier() = default;
 
 bool HeaderPoWVerifier::CheckEach(std::span<const CBlockHeader> headers, const Consensus::Params& params)
 {
+    // Startup checks every stored header, including cache hits. Check() has
+    // different first-header and batch-cache policy for incoming messages.
     if (!m_impl || !params.fYespowerSugar || EnableFuzzDeterminism()) {
         return std::ranges::all_of(headers, [&](const auto& header) { return CheckBlockProofOfWork(header, params); });
     }
