@@ -63,7 +63,7 @@ std::string FormatCompactDuration(std::chrono::seconds duration)
 {
     uint64_t remaining{duration.count() > 0 ? static_cast<uint64_t>(duration.count()) : 0};
     std::string result;
-    const auto append = [&](uint64_t unit, char suffix) {
+    const auto append = [&](uint64_t unit, std::string_view suffix) {
         const uint64_t value{remaining / unit};
         if (value) {
             result += std::to_string(value);
@@ -71,11 +71,14 @@ std::string FormatCompactDuration(std::chrono::seconds duration)
         }
         remaining %= unit;
     };
-    append(7 * 24 * 60 * 60, 'w');
-    append(24 * 60 * 60, 'd');
-    append(60 * 60, 'h');
-    append(60, 'm');
-    return result + std::to_string(remaining) + 's';
+    append(365 * 24 * 60 * 60, "y");
+    append(30 * 24 * 60 * 60, "mo");
+    append(7 * 24 * 60 * 60, "w");
+    append(24 * 60 * 60, "d");
+    append(60 * 60, "h");
+    append(60, "m");
+    append(1, "s");
+    return result.empty() ? "0s" : result;
 }
 } // namespace
 
