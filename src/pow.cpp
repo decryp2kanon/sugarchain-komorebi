@@ -388,6 +388,8 @@ struct HeaderPoWVerifier::Impl {
     explicit Impl(int count)
         : workers{std::clamp(count, 1, MAX_HEADER_POW_WORKERS)}, queue{1, workers - 1, "powch"} {}
 
+    // Share queue execution without merging Check() and CheckEach() header/cache
+    // policies. Worker exceptions reach the caller; validation failure returns false.
     bool RunBatch(std::vector<HeaderPoWCheck>&& batch)
     {
         CCheckQueueControl<HeaderPoWCheck> control{queue};
