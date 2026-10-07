@@ -4980,7 +4980,16 @@ bool ChainstateManager::LoadBlockIndex()
         // cs_main is held throughout. Pruned-file cleanup changes only files,
         // so reuse the height ordering already built for index linking.
         node::StartupProgress selecting{"Selecting best block header", vSortedByHeight.size()};
-        for (CBlockIndex* pindex : vSortedByHeight) {
+        for (size_t position = 0; position < vSortedByHeight.size(); ++position) {
+#if defined(__GNUC__) || defined(__clang__)
+            constexpr size_t PREFETCH_DISTANCE{8};
+            if (vSortedByHeight.size() - position > PREFETCH_DISTANCE) {
+                const auto* upcoming{vSortedByHeight[position + PREFETCH_DISTANCE]};
+                __builtin_prefetch(&upcoming->nChainWork, 0, 3);
+                __builtin_prefetch(&upcoming->nStatus, 0, 3);
+            }
+#endif
+            CBlockIndex* pindex{vSortedByHeight[position]};
             if (m_interrupt) return false;
             if (pindex->nStatus & BLOCK_FAILED_VALID && (!m_best_invalid || pindex->nChainWork > m_best_invalid->nChainWork)) {
                 m_best_invalid = pindex;
