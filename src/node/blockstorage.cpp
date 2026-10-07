@@ -53,6 +53,7 @@
 #include <cstdio>
 #include <exception>
 #include <map>
+#include <new>
 #include <optional>
 #include <ostream>
 #include <span>
@@ -348,6 +349,38 @@ bool CBlockIndexHeightOnlyComparator::operator()(const CBlockIndex* pa, const CB
     return pa->nHeight < pb->nHeight;
 }
 
+void SortBlockIndicesByHeight(std::vector<CBlockIndex*>& indices)
+{
+    const auto pointer_sort = [&] {
+        boost::sort::spreadsort::integer_sort(
+            indices.begin(), indices.end(),
+            [](const CBlockIndex* index, unsigned shift) { return index->nHeight >> shift; },
+            CBlockIndexHeightOnlyComparator());
+    };
+    if (indices.size() < 4096) {
+        pointer_sort();
+        return;
+    }
+    struct CachedIndex {
+        int height;
+        CBlockIndex* index;
+    };
+    std::vector<CachedIndex> cached;
+    try {
+        cached.reserve(indices.size());
+    } catch (const std::bad_alloc&) {
+        // Keep the original lower-memory path if the extra allocation fails.
+        pointer_sort();
+        return;
+    }
+    for (auto* index : indices) cached.push_back({index->nHeight, index});
+    boost::sort::spreadsort::integer_sort(
+        cached.begin(), cached.end(),
+        [](const CachedIndex& entry, unsigned shift) { return entry.height >> shift; },
+        [](const CachedIndex& a, const CachedIndex& b) { return a.height < b.height; });
+    for (size_t i = 0; i < indices.size(); ++i) indices[i] = cached[i].index;
+}
+
 std::vector<CBlockIndex*> BlockManager::GetAllBlockIndices(const char* startup_stage)
 {
     AssertLockHeld(cs_main);
@@ -613,12 +646,9 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
     // Calculate nChainWork
     vSortedByHeight = GetAllBlockIndices("Preparing block index");
     StartupProgress sorting{"Sorting block index", vSortedByHeight.size()};
-    // Heights strictly increase along parent links. An in-place integer sort
-    // preserves the parent-before-child traversal without a second index array.
-    boost::sort::spreadsort::integer_sort(
-        vSortedByHeight.begin(), vSortedByHeight.end(),
-        [](const CBlockIndex* index, unsigned shift) { return index->nHeight >> shift; },
-        CBlockIndexHeightOnlyComparator());
+    // Cached heights avoid repeated scattered index reads during sorting.
+    // The same height-only ordering still places every parent before its child.
+    SortBlockIndicesByHeight(vSortedByHeight);
 
     sorting.FinishSort();
     StartupProgress linking{"Linking block index", vSortedByHeight.size()};

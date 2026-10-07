@@ -144,6 +144,9 @@ struct CBlockIndexHeightOnlyComparator {
     bool operator()(const CBlockIndex* pa, const CBlockIndex* pb) const;
 };
 
+/** Startup-only height ordering; temporary cached keys are released before linking. */
+void SortBlockIndicesByHeight(std::vector<CBlockIndex*>& indices);
+
 struct PruneLockInfo {
     int height_first{std::numeric_limits<int>::max()}; //! Height of earliest block that should be kept and not pruned
 };

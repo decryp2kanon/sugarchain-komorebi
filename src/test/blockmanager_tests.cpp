@@ -16,6 +16,8 @@
 #include <validation.h>
 
 #include <algorithm>
+#include <limits>
+#include <memory>
 #include <set>
 #include <vector>
 
@@ -32,6 +34,32 @@ using node::MAX_BLOCKFILE_SIZE;
 
 // use BasicTestingSetup here for the data directory configuration, setup, and cleanup
 BOOST_FIXTURE_TEST_SUITE(blockmanager_tests, BasicTestingSetup)
+
+BOOST_AUTO_TEST_CASE(startup_height_sort_preserves_indexes)
+{
+    FastRandomContext random{true};
+    for (size_t size : {0U, 1U, 64U, 4096U, 8192U}) {
+        std::vector<std::unique_ptr<CBlockIndex>> storage;
+        std::vector<CBlockIndex*> indexes;
+        for (size_t i = 0; i < size; ++i) {
+            auto index{std::make_unique<CBlockIndex>()};
+            index->nHeight = static_cast<int>(random.randrange(20001)) - 10000;
+            if (i % 37 == 0) index->nHeight = std::numeric_limits<int>::min();
+            if (i % 41 == 0) index->nHeight = std::numeric_limits<int>::max();
+            indexes.push_back(index.get());
+            storage.push_back(std::move(index));
+        }
+        auto expected{indexes};
+        std::sort(expected.begin(), expected.end(), node::CBlockIndexHeightOnlyComparator());
+        const std::set<CBlockIndex*> pointers{indexes.begin(), indexes.end()};
+        node::SortBlockIndicesByHeight(indexes);
+        BOOST_CHECK(std::is_sorted(indexes.begin(), indexes.end(), node::CBlockIndexHeightOnlyComparator()));
+        const std::set<CBlockIndex*> result{indexes.begin(), indexes.end()};
+        BOOST_CHECK(result == pointers);
+        BOOST_REQUIRE_EQUAL(indexes.size(), expected.size());
+        for (size_t i = 0; i < size; ++i) BOOST_CHECK_EQUAL(indexes[i]->nHeight, expected[i]->nHeight);
+    }
+}
 
 BOOST_AUTO_TEST_CASE(blockmanager_find_block_pos)
 {
