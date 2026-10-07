@@ -64,6 +64,8 @@
 #include <util/translation.h>
 #include <validationinterface.h>
 
+#include <boost/sort/spreadsort/integer_sort.hpp>
+
 #include <algorithm>
 #include <cassert>
 #include <chrono>
@@ -4976,8 +4978,12 @@ bool ChainstateManager::LoadBlockIndex()
         m_blockman.ScanAndUnlinkAlreadyPrunedFiles();
 
         std::vector<CBlockIndex*> vSortedByHeight{m_blockman.GetAllBlockIndices()};
-        std::sort(vSortedByHeight.begin(), vSortedByHeight.end(),
-                  CBlockIndexHeightOnlyComparator());
+        // Keep the same height ordering, using the integer sort already used
+        // by BlockManager::LoadBlockIndex for large persisted block indexes.
+        boost::sort::spreadsort::integer_sort(
+            vSortedByHeight.begin(), vSortedByHeight.end(),
+            [](const CBlockIndex* index, unsigned shift) { return index->nHeight >> shift; },
+            CBlockIndexHeightOnlyComparator());
 
         for (CBlockIndex* pindex : vSortedByHeight) {
             if (m_interrupt) return false;

@@ -11,6 +11,7 @@
 #include <script/solver.h>
 #include <primitives/block.h>
 #include <util/chaintype.h>
+#include <util/fs.h>
 #include <validation.h>
 
 #include <boost/test/unit_test.hpp>
@@ -57,6 +58,24 @@ BOOST_AUTO_TEST_CASE(blockmanager_find_block_pos)
     // add another 8 bytes for the second block's serialization header and we get 293 + 8 = 301
     FlatFilePos actual{blockman.WriteBlock(params->GenesisBlock(), 1)};
     BOOST_CHECK_EQUAL(actual.nPos, STORAGE_HEADER_BYTES + ::GetSerializeSize(TX_WITH_WITNESS(params->GenesisBlock())) + STORAGE_HEADER_BYTES);
+}
+
+BOOST_FIXTURE_TEST_CASE(blockmanager_loadblockindex_missing_file, TestChain100Setup)
+{
+    LOCK(::cs_main);
+    auto& chainman{*Assert(m_node.chainman)};
+    auto& blockman{chainman.m_blockman};
+    blockman.WriteBlockIndexDB();
+    BOOST_REQUIRE(blockman.LoadBlockIndexDB(std::nullopt));
+
+    // Only move a file inside the test fixture, never a user's datadir.
+    const auto block_path{blockman.GetBlockPosFilename(chainman.ActiveTip()->GetBlockPos())};
+    auto missing_path{block_path};
+    missing_path += ".missing";
+    fs::rename(block_path, missing_path);
+    BOOST_CHECK(!blockman.LoadBlockIndexDB(std::nullopt));
+    fs::rename(missing_path, block_path);
+    BOOST_CHECK(blockman.LoadBlockIndexDB(std::nullopt));
 }
 
 BOOST_FIXTURE_TEST_CASE(blockmanager_scan_unlink_already_pruned_files, TestChain100Setup)
