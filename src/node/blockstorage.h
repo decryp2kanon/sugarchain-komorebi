@@ -201,7 +201,7 @@ private:
      * per index entry (nStatus, nChainWork, nTimeMax, etc.) as well as peripheral
      * collections like m_dirty_blockindex and the referenced blk file numbers.
      */
-    bool LoadBlockIndex(const std::optional<uint256>& snapshot_blockhash, std::set<int>& block_files)
+    bool LoadBlockIndex(const std::optional<uint256>& snapshot_blockhash, std::set<int>& block_files, std::vector<CBlockIndex*>& sorted_indices)
         EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
     /** Return false if block file or undo file flushing fails. */
@@ -356,7 +356,8 @@ public:
     std::unique_ptr<BlockTreeDB> m_block_tree_db GUARDED_BY(::cs_main);
 
     void WriteBlockIndexDB() EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
-    bool LoadBlockIndexDB(const std::optional<uint256>& snapshot_blockhash)
+    /** On success, optionally return all indexes in height order for this load. */
+    bool LoadBlockIndexDB(const std::optional<uint256>& snapshot_blockhash, std::vector<CBlockIndex*>* sorted_indices = nullptr)
         EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
     /**

@@ -65,8 +65,6 @@
 #include <util/translation.h>
 #include <validationinterface.h>
 
-#include <boost/sort/spreadsort/integer_sort.hpp>
-
 #include <algorithm>
 #include <cassert>
 #include <chrono>
@@ -4973,21 +4971,14 @@ bool ChainstateManager::LoadBlockIndex()
     AssertLockHeld(cs_main);
     // Load block index from databases
     if (m_blockman.m_blockfiles_indexed) {
-        bool ret{m_blockman.LoadBlockIndexDB(CurrentChainstate().m_from_snapshot_blockhash)};
+        std::vector<CBlockIndex*> vSortedByHeight;
+        bool ret{m_blockman.LoadBlockIndexDB(CurrentChainstate().m_from_snapshot_blockhash, &vSortedByHeight)};
         if (!ret) return false;
 
         m_blockman.ScanAndUnlinkAlreadyPrunedFiles();
 
-        std::vector<CBlockIndex*> vSortedByHeight{m_blockman.GetAllBlockIndices("Preparing block headers")};
-        node::StartupProgress sorting{"Sorting block headers", vSortedByHeight.size()};
-        // Keep the same height ordering, using the integer sort already used
-        // by BlockManager::LoadBlockIndex for large persisted block indexes.
-        boost::sort::spreadsort::integer_sort(
-            vSortedByHeight.begin(), vSortedByHeight.end(),
-            [](const CBlockIndex* index, unsigned shift) { return index->nHeight >> shift; },
-            CBlockIndexHeightOnlyComparator());
-
-        sorting.FinishSort();
+        // cs_main is held throughout. Pruned-file cleanup changes only files,
+        // so reuse the height ordering already built for index linking.
         node::StartupProgress selecting{"Selecting best block header", vSortedByHeight.size()};
         for (CBlockIndex* pindex : vSortedByHeight) {
             if (m_interrupt) return false;

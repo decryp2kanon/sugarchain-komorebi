@@ -60,6 +60,7 @@
 #include <string>
 #include <system_error>
 #include <unordered_map>
+#include <utility>
 
 namespace kernel {
 namespace {
@@ -578,7 +579,7 @@ CBlockIndex* BlockManager::InsertBlockIndex(const uint256& hash)
     return pindex;
 }
 
-bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockhash, std::set<int>& block_files)
+bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockhash, std::set<int>& block_files, std::vector<CBlockIndex*>& vSortedByHeight)
 {
     if (!m_block_tree_db->LoadBlockIndexGuts(
             GetConsensus(), [this](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) { return this->InsertBlockIndex(hash); }, m_interrupt, m_opts.startup_pow_workers, m_opts.fast_startup)) {
@@ -610,7 +611,7 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
     Assert(m_snapshot_height.has_value() == snapshot_blockhash.has_value());
 
     // Calculate nChainWork
-    std::vector<CBlockIndex*> vSortedByHeight{GetAllBlockIndices("Preparing block index")};
+    vSortedByHeight = GetAllBlockIndices("Preparing block index");
     StartupProgress sorting{"Sorting block index", vSortedByHeight.size()};
     // Heights strictly increase along parent links. An in-place integer sort
     // preserves the parent-before-child traversal without a second index array.
@@ -697,11 +698,12 @@ void BlockManager::WriteBlockIndexDB()
     m_block_tree_db->WriteBatchSync(vFiles, max_blockfile, vBlocks);
 }
 
-bool BlockManager::LoadBlockIndexDB(const std::optional<uint256>& snapshot_blockhash)
+bool BlockManager::LoadBlockIndexDB(const std::optional<uint256>& snapshot_blockhash, std::vector<CBlockIndex*>* sorted_indices)
 {
     // Per-load output avoids retaining stale references across reload/pruning.
     std::set<int> setBlkDataFiles;
-    if (!LoadBlockIndex(snapshot_blockhash, setBlkDataFiles)) {
+    std::vector<CBlockIndex*> loaded_indices;
+    if (!LoadBlockIndex(snapshot_blockhash, setBlkDataFiles, loaded_indices)) {
         return false;
     }
     int max_blockfile_num{0};
@@ -755,6 +757,8 @@ bool BlockManager::LoadBlockIndexDB(const std::optional<uint256>& snapshot_block
     m_block_tree_db->ReadReindexing(fReindexing);
     if (fReindexing) m_blockfiles_indexed = false;
 
+    // Publish only after the file checks succeed. No persistent pointer cache.
+    if (sorted_indices) *sorted_indices = std::move(loaded_indices);
     return true;
 }
 

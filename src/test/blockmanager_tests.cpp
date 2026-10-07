@@ -15,6 +15,10 @@
 #include <util/fs.h>
 #include <validation.h>
 
+#include <algorithm>
+#include <set>
+#include <vector>
+
 #include <boost/test/unit_test.hpp>
 #include <test/util/common.h>
 #include <test/util/logging.h>
@@ -67,16 +71,28 @@ BOOST_FIXTURE_TEST_CASE(blockmanager_loadblockindex_missing_file, TestChain100Se
     auto& chainman{*Assert(m_node.chainman)};
     auto& blockman{chainman.m_blockman};
     blockman.WriteBlockIndexDB();
-    BOOST_REQUIRE(blockman.LoadBlockIndexDB(std::nullopt));
+    std::vector<CBlockIndex*> ordered;
+    BOOST_REQUIRE(blockman.LoadBlockIndexDB(std::nullopt, &ordered));
+    BOOST_REQUIRE_EQUAL(ordered.size(), blockman.m_block_index.size());
+    BOOST_CHECK(std::is_sorted(ordered.begin(), ordered.end(), node::CBlockIndexHeightOnlyComparator()));
+    const std::set<CBlockIndex*> unique{ordered.begin(), ordered.end()};
+    BOOST_CHECK_EQUAL(unique.size(), ordered.size());
+    for (auto& [hash, index] : blockman.m_block_index) {
+        BOOST_CHECK(unique.contains(&index));
+    }
+    const auto previous{ordered};
 
     // Only move a file inside the test fixture, never a user's datadir.
     const auto block_path{blockman.GetBlockPosFilename(chainman.ActiveTip()->GetBlockPos())};
     auto missing_path{block_path};
     missing_path += ".missing";
     fs::rename(block_path, missing_path);
-    BOOST_CHECK(!blockman.LoadBlockIndexDB(std::nullopt));
+    BOOST_CHECK(!blockman.LoadBlockIndexDB(std::nullopt, &ordered));
+    BOOST_CHECK(ordered == previous); // Failed loads do not publish partial output.
     fs::rename(missing_path, block_path);
-    BOOST_CHECK(blockman.LoadBlockIndexDB(std::nullopt));
+    BOOST_CHECK(blockman.LoadBlockIndexDB(std::nullopt, &ordered));
+    BOOST_CHECK_EQUAL(ordered.size(), previous.size()); // Reload replaces, not appends.
+
 }
 
 // File-presence checks cover data on non-active/invalid branches, but must not
