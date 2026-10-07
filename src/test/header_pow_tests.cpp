@@ -5,6 +5,7 @@
 #include <consensus/validation.h>
 #include <node/blockstorage.h>
 #include <node/interface_ui.h>
+#include <node/startup_progress.h>
 #include <kernel/chainparams.h>
 #include <pow.h>
 #include <primitives/block.h>
@@ -982,5 +983,46 @@ BOOST_AUTO_TEST_CASE(local_worker_failure_reaches_caller_without_poisoning_queue
     BOOST_CHECK(verifier.Check(headers, params));
 }
 #endif
+
+BOOST_AUTO_TEST_CASE(startup_phase_progress_reports_real_work_and_opaque_sort)
+{
+    std::vector<std::string> messages;
+    boost::signals2::scoped_connection connection{uiInterface.InitMessage_connect(
+        [&](const std::string& message) { messages.push_back(message); })};
+    {
+        node::StartupProgress progress{"Linking block index", 10000};
+        for (unsigned i = 0; i < 10000; ++i) progress.Advance();
+        BOOST_REQUIRE_EQUAL(messages.size(), 100U); // Start plus 1..99, not premature 100.
+        progress.Finish();
+    }
+    BOOST_REQUIRE_EQUAL(messages.size(), 101U);
+    for (unsigned percent = 1; percent <= 100; ++percent) {
+        BOOST_CHECK(messages[percent].find(strprintf("(%u%%)", percent)) != std::string::npos);
+    }
+    BOOST_CHECK(messages.back().find("10,000 / 10,000 (100%)") != std::string::npos);
+    messages.clear();
+    {
+        node::StartupProgress progress{"Checking block files", 3};
+        progress.Advance();
+        progress.Finish(); // Incomplete work cannot publish 100.
+    }
+    BOOST_REQUIRE_EQUAL(messages.size(), 2U);
+    BOOST_CHECK(messages.back().find("(33%)") != std::string::npos);
+    messages.clear();
+    {
+        node::StartupProgress sorting{"Sorting block headers", 44782474};
+        sorting.FinishSort();
+    }
+    BOOST_REQUIRE_EQUAL(messages.size(), 2U);
+    BOOST_CHECK(messages.front().find("44,782,474 entries") != std::string::npos);
+    for (const auto& message : messages) {
+        BOOST_CHECK(message.find('%') == std::string::npos);
+        BOOST_CHECK(message.find("ETA") == std::string::npos);
+    }
+    messages.clear();
+    node::StartupProgress empty{"Linking block index", 0};
+    empty.Finish();
+    BOOST_CHECK(messages.back().find("0 / 0 (100%)") != std::string::npos);
+}
 
 BOOST_AUTO_TEST_SUITE_END()

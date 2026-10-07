@@ -17,6 +17,7 @@
 #include <kernel/notifications_interface.h>
 #include <kernel/types.h>
 #include <node/interface_ui.h>
+#include <node/startup_progress.h>
 #include <pow.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
@@ -346,13 +347,20 @@ bool CBlockIndexHeightOnlyComparator::operator()(const CBlockIndex* pa, const CB
     return pa->nHeight < pb->nHeight;
 }
 
-std::vector<CBlockIndex*> BlockManager::GetAllBlockIndices()
+std::vector<CBlockIndex*> BlockManager::GetAllBlockIndices(const char* startup_stage)
 {
     AssertLockHeld(cs_main);
     std::vector<CBlockIndex*> rv;
     rv.reserve(m_block_index.size());
-    for (auto& [_, block_index] : m_block_index) {
-        rv.push_back(&block_index);
+    if (startup_stage) {
+        StartupProgress progress{startup_stage, m_block_index.size()};
+        for (auto& [_, block_index] : m_block_index) {
+            rv.push_back(&block_index);
+            progress.Advance();
+        }
+        progress.Finish();
+    } else {
+        for (auto& [_, block_index] : m_block_index) rv.push_back(&block_index);
     }
     return rv;
 }
@@ -602,7 +610,8 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
     Assert(m_snapshot_height.has_value() == snapshot_blockhash.has_value());
 
     // Calculate nChainWork
-    std::vector<CBlockIndex*> vSortedByHeight{GetAllBlockIndices()};
+    std::vector<CBlockIndex*> vSortedByHeight{GetAllBlockIndices("Preparing block index")};
+    StartupProgress sorting{"Sorting block index", vSortedByHeight.size()};
     // Heights strictly increase along parent links. An in-place integer sort
     // preserves the parent-before-child traversal without a second index array.
     boost::sort::spreadsort::integer_sort(
@@ -610,6 +619,8 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
         [](const CBlockIndex* index, unsigned shift) { return index->nHeight >> shift; },
         CBlockIndexHeightOnlyComparator());
 
+    sorting.FinishSort();
+    StartupProgress linking{"Linking block index", vSortedByHeight.size()};
     CBlockIndex* previous_index{nullptr};
     for (CBlockIndex* pindex : vSortedByHeight) {
         if (m_interrupt) return false;
@@ -656,7 +667,9 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
         if (pindex->pprev) {
             pindex->BuildSkip();
         }
+        linking.Advance();
     }
+    linking.Finish();
 
     return true;
 }
@@ -707,17 +720,23 @@ bool BlockManager::LoadBlockIndexDB(const std::optional<uint256>& snapshot_block
     // Check presence of blk files
     LogInfo("Checking all blk files are present...");
     std::set<int> setBlkDataFiles;
+    StartupProgress collecting{"Collecting block file references", m_block_index.size()};
     for (const auto& [_, block_index] : m_block_index) {
         if (block_index.nStatus & BLOCK_HAVE_DATA) {
             setBlkDataFiles.insert(block_index.nFile);
         }
+        collecting.Advance();
     }
+    collecting.Finish();
+    StartupProgress checking{"Checking block files", setBlkDataFiles.size()};
     for (std::set<int>::iterator it = setBlkDataFiles.begin(); it != setBlkDataFiles.end(); it++) {
         FlatFilePos pos(*it, 0);
         if (OpenBlockFile(pos, /*fReadOnly=*/true).IsNull()) {
             return false;
         }
+        checking.Advance();
     }
+    checking.Finish();
 
     {
         // Initialize the blockfile cursors.

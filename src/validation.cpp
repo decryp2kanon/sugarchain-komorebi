@@ -30,6 +30,7 @@
 #include <kernel/warning.h>
 #include <logging/timer.h>
 #include <node/blockstorage.h>
+#include <node/startup_progress.h>
 #include <node/utxo_snapshot.h>
 #include <policy/ephemeral_policy.h>
 #include <policy/policy.h>
@@ -4977,7 +4978,8 @@ bool ChainstateManager::LoadBlockIndex()
 
         m_blockman.ScanAndUnlinkAlreadyPrunedFiles();
 
-        std::vector<CBlockIndex*> vSortedByHeight{m_blockman.GetAllBlockIndices()};
+        std::vector<CBlockIndex*> vSortedByHeight{m_blockman.GetAllBlockIndices("Preparing block headers")};
+        node::StartupProgress sorting{"Sorting block headers", vSortedByHeight.size()};
         // Keep the same height ordering, using the integer sort already used
         // by BlockManager::LoadBlockIndex for large persisted block indexes.
         boost::sort::spreadsort::integer_sort(
@@ -4985,6 +4987,8 @@ bool ChainstateManager::LoadBlockIndex()
             [](const CBlockIndex* index, unsigned shift) { return index->nHeight >> shift; },
             CBlockIndexHeightOnlyComparator());
 
+        sorting.FinishSort();
+        node::StartupProgress selecting{"Selecting best block header", vSortedByHeight.size()};
         for (CBlockIndex* pindex : vSortedByHeight) {
             if (m_interrupt) return false;
             if (pindex->nStatus & BLOCK_FAILED_VALID && (!m_best_invalid || pindex->nChainWork > m_best_invalid->nChainWork)) {
@@ -4992,7 +4996,9 @@ bool ChainstateManager::LoadBlockIndex()
             }
             if (pindex->IsValid(BLOCK_VALID_TREE) && (m_best_header == nullptr || CBlockIndexWorkComparator()(m_best_header, pindex)))
                 m_best_header = pindex;
+            selecting.Advance();
         }
+        selecting.Finish();
     }
     return true;
 }

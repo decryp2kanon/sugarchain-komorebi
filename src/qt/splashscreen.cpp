@@ -28,6 +28,15 @@
 SplashScreen::SplashScreen(const NetworkStyle* networkStyle)
     : QWidget()
 {
+    m_elapsed_timer.setParent(this);
+    m_elapsed_timer.setInterval(1000);
+    m_elapsed_timer.setTimerType(Qt::PreciseTimer);
+    m_elapsed_timer.setObjectName("startupElapsedTimer");
+    connect(&m_elapsed_timer, &QTimer::timeout, this, [this] {
+        curMessage = m_elapsed_prefix + QString("%1s elapsed").arg(m_stage_clock.elapsed() / 1000);
+        update();
+    });
+
     // set reference point, paddings
     int paddingRight            = 50;
     int paddingTop              = 50;
@@ -173,11 +182,33 @@ static void InitMessage(SplashScreen *splash, const std::string &message)
 std::string FormatBlockIndexSplashMessage(const std::string& message)
 {
     if (message == "Counting block index entries...") {
-        // The final empty line reserves the same height as progress updates.
-        return "Loading block index...\nCounting entries...\n";
+        // Reserve the same three-line height while the total is still unknown.
+        return "Loading block index...\nCounting entries...\n0s elapsed";
     }
     static const std::string prefix{"Loading block index: "};
-    if (message.compare(0, prefix.size(), prefix) != 0) return message;
+    if (message.compare(0, prefix.size(), prefix) != 0) {
+        // New startup stages retain the same three-line layout as index loading.
+        const std::string stages[]{"Preparing block index", "Sorting block index", "Linking block index",
+            "Collecting block file references", "Checking block files", "Preparing block headers",
+            "Sorting block headers", "Selecting best block header"};
+        for (const auto& stage : stages) {
+            if (message.compare(0, stage.size(), stage) != 0) continue;
+            const size_t elapsed{message.find(" | elapsed ")};
+            if (elapsed == std::string::npos) return message;
+            const size_t eta{message.find(" | ETA ", elapsed)};
+            const size_t body{message.find(": ")};
+            const size_t separator{message.find(" | ")};
+            if (separator == std::string::npos) return message;
+            const bool counted{body != std::string::npos && body < separator};
+            const size_t begin{counted ? body + 2 : separator + 3};
+            const size_t end{counted ? separator : elapsed};
+            if (end < begin) return message;
+            const std::string duration{message.substr(elapsed + 11, (eta == std::string::npos ? message.size() : eta) - elapsed - 11)};
+            return stage + (message.compare(stage.size(), 11, " completed:") == 0 ? " completed.\n" : "...\n") + message.substr(begin, end - begin) + "\n" + duration + " elapsed" +
+                (eta == std::string::npos ? "" : message.substr(eta));
+        }
+        return message;
+    }
     const std::string body{message.substr(prefix.size())};
     const size_t rate_pos{body.find(" | ")};
     const size_t elapsed_pos{body.find(" | elapsed ")};
@@ -239,7 +270,17 @@ void SplashScreen::unsubscribeFromCoreSignals()
 
 void SplashScreen::showMessage(const QString &message, int alignment, const QColor &color)
 {
+    m_elapsed_timer.stop();
     curMessage = message;
+    // Only opaque startup stages use the GUI-local clock. No background thread,
+    // repeated core log messages, cs_main acquisition or invented ETA is needed.
+    if ((message.startsWith("Sorting block index...\n") || message.startsWith("Sorting block headers...\n") ||
+         message.startsWith("Loading block index...\nCounting entries...\n")) &&
+        message.endsWith("\n0s elapsed")) {
+        m_elapsed_prefix = message.left(message.lastIndexOf('\n') + 1);
+        m_stage_clock.start();
+        m_elapsed_timer.start();
+    }
     curAlignment = alignment;
     curColor = color;
     update();

@@ -58,7 +58,7 @@ void AppTests::splashProgressFormat()
     const QString counting{QString::fromStdString(FormatBlockIndexSplashMessage("Counting block index entries..."))};
     const QString progress{QString::fromStdString(FormatBlockIndexSplashMessage(
         "Loading block index: 17,228,000 / 44,782,474 (38%) | 687,943/s | elapsed 25s | ETA 40s"))};
-    QCOMPARE(counting, QString("Loading block index...\nCounting entries...\n"));
+    QCOMPARE(counting, QString("Loading block index...\nCounting entries...\n0s elapsed"));
     QCOMPARE(progress, QString("Loading block index...\n17,228,000 / 44,782,474 (38%)\n687,943/s | 25s elapsed | ETA 40s"));
     const QFontMetrics metrics{QApplication::font()};
     const QRect area{0, 0, 480, 320};
@@ -74,6 +74,29 @@ void AppTests::splashProgressFormat()
     const QPixmap progress_render{splash.grab()};
     QVERIFY(!progress_render.isNull());
     QCOMPARE(counting_render.size(), progress_render.size());
+    QCOMPARE(QString::fromStdString(FormatBlockIndexSplashMessage(
+        "Linking block index: 22,391,237 / 44,782,474 (50%) | elapsed 12s | ETA 12s")),
+        QString("Linking block index...\n22,391,237 / 44,782,474 (50%)\n12s elapsed | ETA 12s"));
+    const QString sorting{QString::fromStdString(FormatBlockIndexSplashMessage(
+        "Sorting block headers... | 44,782,474 entries | elapsed 0s"))};
+    QCOMPARE(sorting, QString("Sorting block headers...\n44,782,474 entries\n0s elapsed"));
+    splash.showMessage(sorting, flags, QColor(55, 55, 55));
+    QTimer* timer{splash.findChild<QTimer*>("startupElapsedTimer")};
+    QVERIFY(timer);
+    QVERIFY(timer->isActive());
+    QSignalSpy ticks{timer, &QTimer::timeout};
+    const QPixmap before_tick{splash.grab()};
+    QVERIFY(ticks.wait(1600));
+    QTest::qWait(100);
+    QVERIFY(before_tick.toImage() != splash.grab().toImage());
+    const QString completed{QString::fromStdString(FormatBlockIndexSplashMessage(
+        "Sorting block headers completed: 44,782,474 entries | elapsed 4s"))};
+    QCOMPARE(completed, QString("Sorting block headers completed.\n44,782,474 entries\n4s elapsed"));
+    splash.showMessage(completed, flags, QColor(55, 55, 55));
+    QVERIFY(!timer->isActive());
+    splash.showMessage("Initializing chainstate...", flags, QColor(55, 55, 55));
+    QVERIFY(!timer->isActive());
+
 }
 
 //! Entry point for BitcoinApplication tests.

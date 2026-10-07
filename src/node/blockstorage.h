@@ -345,7 +345,7 @@ public:
      */
     std::optional<int> m_snapshot_height;
 
-    std::vector<CBlockIndex*> GetAllBlockIndices() EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+    std::vector<CBlockIndex*> GetAllBlockIndices(const char* startup_stage = nullptr) EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
     /**
      * All pairs A->B, where A (or one of its ancestors) misses transactions, but B has transactions.
