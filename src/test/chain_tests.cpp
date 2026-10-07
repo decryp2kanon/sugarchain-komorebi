@@ -41,6 +41,30 @@ const CBlockIndex* NaiveLastCommonAncestor(const CBlockIndex* a, const CBlockInd
 
 } // namespace
 
+// Compare with the original 256-bit formula across every compact exponent,
+// signed/overflow/zero encodings, and boundaries around powers of two.
+BOOST_AUTO_TEST_CASE(bits_proof_exact_arithmetic)
+{
+    const auto reference = [](uint32_t bits) -> arith_uint256 {
+        arith_uint256 target;
+        bool negative{false}, overflow{false};
+        target.SetCompact(bits, &negative, &overflow);
+        if (negative || overflow || target == 0) return arith_uint256{0};
+        return (~target / (target + 1)) + 1;
+    };
+    FastRandomContext random{true};
+    for (uint32_t size = 0; size < 256; ++size) {
+        for (uint32_t word : {0U, 1U, 2U, 3U, 0xffU, 0x100U, 0xffffU, 0x10000U, 0x7fffffU, 0x800000U, 0xffffffU}) {
+            const uint32_t bits{(size << 24) | word};
+            BOOST_CHECK(GetBitsProof(bits) == reference(bits));
+        }
+        for (int i = 0; i < 1000; ++i) {
+            const uint32_t bits{(size << 24) | (random.rand32() & 0xffffff)};
+            BOOST_CHECK(GetBitsProof(bits) == reference(bits));
+        }
+    }
+}
+
 BOOST_AUTO_TEST_CASE(chain_test)
 {
     FastRandomContext ctx;
