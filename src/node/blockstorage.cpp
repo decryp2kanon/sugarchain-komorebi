@@ -653,7 +653,18 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
     sorting.FinishSort();
     StartupProgress linking{"Linking block index", vSortedByHeight.size()};
     CBlockIndex* previous_index{nullptr};
-    for (CBlockIndex* pindex : vSortedByHeight) {
+    for (size_t position = 0; position < vSortedByHeight.size(); ++position) {
+#if defined(__GNUC__) || defined(__clang__)
+        // Hide scattered index-read latency without changing linking order.
+        constexpr size_t PREFETCH_DISTANCE{8};
+        if (vSortedByHeight.size() - position > PREFETCH_DISTANCE) {
+            const auto* upcoming{vSortedByHeight[position + PREFETCH_DISTANCE]};
+            __builtin_prefetch(upcoming, 0, 3);
+            __builtin_prefetch(&upcoming->nStatus, 0, 3);
+            __builtin_prefetch(&upcoming->nBits, 0, 3);
+        }
+#endif
+        CBlockIndex* pindex{vSortedByHeight[position]};
         if (m_interrupt) return false;
         if (previous_index && pindex->nHeight > previous_index->nHeight + 1) {
             LogError("%s: block index is non-contiguous, index of height %d missing\n", __func__, previous_index->nHeight + 1);
