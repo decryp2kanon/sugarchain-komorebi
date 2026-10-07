@@ -199,9 +199,9 @@ private:
     /**
      * Load the blocktree off disk and into memory. Populate certain metadata
      * per index entry (nStatus, nChainWork, nTimeMax, etc.) as well as peripheral
-     * collections like m_dirty_blockindex.
+     * collections like m_dirty_blockindex and the referenced blk file numbers.
      */
-    bool LoadBlockIndex(const std::optional<uint256>& snapshot_blockhash)
+    bool LoadBlockIndex(const std::optional<uint256>& snapshot_blockhash, std::set<int>& block_files)
         EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
     /** Return false if block file or undo file flushing fails. */

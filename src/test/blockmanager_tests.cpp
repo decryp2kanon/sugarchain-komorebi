@@ -8,6 +8,7 @@
 #include <node/blockstorage.h>
 #include <node/context.h>
 #include <node/kernel_notifications.h>
+#include <pow.h>
 #include <script/solver.h>
 #include <primitives/block.h>
 #include <util/chaintype.h>
@@ -76,6 +77,46 @@ BOOST_FIXTURE_TEST_CASE(blockmanager_loadblockindex_missing_file, TestChain100Se
     BOOST_CHECK(!blockman.LoadBlockIndexDB(std::nullopt));
     fs::rename(missing_path, block_path);
     BOOST_CHECK(blockman.LoadBlockIndexDB(std::nullopt));
+}
+
+// File-presence checks cover data on non-active/invalid branches, but must not
+// retain references once those entries are pruned and the index is reloaded.
+BOOST_FIXTURE_TEST_CASE(blockmanager_loadblockindex_branch_file_and_pruning, TestChain100Setup)
+{
+    auto& chainman{*Assert(m_node.chainman)};
+    auto& blockman{chainman.m_blockman};
+    CBlock block{CreateBlock({}, GetScriptForRawPubKey(coinbaseKey.GetPubKey()), chainman.ActiveChainstate())};
+    LOCK(::cs_main);
+    block.hashPrevBlock = chainman.ActiveChain()[99]->GetBlockHash();
+    block.nNonce = 0;
+    while (!CheckProofOfWork(block.GetHash(), block.nBits, chainman.GetConsensus())) ++block.nNonce;
+    CBlockIndex* ignored_best{nullptr};
+    auto* index{blockman.AddToBlockIndex(block, ignored_best)};
+    BOOST_REQUIRE(!chainman.ActiveChain().Contains(index));
+    blockman.GetBlockFileInfo(0)->nSize = MAX_BLOCKFILE_SIZE;
+    const FlatFilePos pos{blockman.WriteBlock(block, index->nHeight)};
+    BOOST_REQUIRE_EQUAL(pos.nFile, 1);
+    index->nFile = pos.nFile;
+    index->nDataPos = pos.nPos;
+    index->nTx = block.vtx.size();
+    index->nStatus |= BLOCK_HAVE_DATA | BLOCK_FAILED_VALID;
+    blockman.WriteBlockIndexDB();
+    BOOST_REQUIRE(blockman.LoadBlockIndexDB(std::nullopt));
+
+    const auto path{blockman.GetBlockPosFilename(pos)};
+    auto missing{path};
+    missing += ".missing";
+    fs::rename(path, missing);
+    BOOST_CHECK(!blockman.LoadBlockIndexDB(std::nullopt));
+    fs::rename(missing, path);
+    BOOST_CHECK(blockman.LoadBlockIndexDB(std::nullopt));
+
+    blockman.PruneOneBlockFile(pos.nFile);
+    blockman.WriteBlockIndexDB();
+    fs::rename(path, missing);
+    BOOST_CHECK(blockman.LoadBlockIndexDB(std::nullopt));
+    BOOST_CHECK(!(index->nStatus & BLOCK_HAVE_DATA));
+    fs::rename(missing, path);
 }
 
 BOOST_FIXTURE_TEST_CASE(blockmanager_scan_unlink_already_pruned_files, TestChain100Setup)

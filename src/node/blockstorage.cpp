@@ -578,7 +578,7 @@ CBlockIndex* BlockManager::InsertBlockIndex(const uint256& hash)
     return pindex;
 }
 
-bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockhash)
+bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockhash, std::set<int>& block_files)
 {
     if (!m_block_tree_db->LoadBlockIndexGuts(
             GetConsensus(), [this](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) { return this->InsertBlockIndex(hash); }, m_interrupt, m_opts.startup_pow_workers, m_opts.fast_startup)) {
@@ -667,6 +667,10 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
         if (pindex->pprev) {
             pindex->BuildSkip();
         }
+        // Reuse this all-index traversal for file-presence checks, including
+        // side branches and invalid blocks with data. Metadata reconstruction
+        // above never changes BLOCK_HAVE_DATA or nFile.
+        if (pindex->nStatus & BLOCK_HAVE_DATA) block_files.insert(pindex->nFile);
         linking.Advance();
     }
     linking.Finish();
@@ -695,7 +699,9 @@ void BlockManager::WriteBlockIndexDB()
 
 bool BlockManager::LoadBlockIndexDB(const std::optional<uint256>& snapshot_blockhash)
 {
-    if (!LoadBlockIndex(snapshot_blockhash)) {
+    // Per-load output avoids retaining stale references across reload/pruning.
+    std::set<int> setBlkDataFiles;
+    if (!LoadBlockIndex(snapshot_blockhash, setBlkDataFiles)) {
         return false;
     }
     int max_blockfile_num{0};
@@ -719,15 +725,6 @@ bool BlockManager::LoadBlockIndexDB(const std::optional<uint256>& snapshot_block
 
     // Check presence of blk files
     LogInfo("Checking all blk files are present...");
-    std::set<int> setBlkDataFiles;
-    StartupProgress collecting{"Collecting block file references", m_block_index.size()};
-    for (const auto& [_, block_index] : m_block_index) {
-        if (block_index.nStatus & BLOCK_HAVE_DATA) {
-            setBlkDataFiles.insert(block_index.nFile);
-        }
-        collecting.Advance();
-    }
-    collecting.Finish();
     StartupProgress checking{"Checking block files", setBlkDataFiles.size()};
     for (std::set<int>::iterator it = setBlkDataFiles.begin(); it != setBlkDataFiles.end(); it++) {
         FlatFilePos pos(*it, 0);
