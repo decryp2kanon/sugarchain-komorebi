@@ -116,7 +116,15 @@ struct HeaderPoWSetup : BasicTestingSetup {
         util::SignalInterrupt cancelled;
         if (cancel_before) (void)cancelled();
         const auto& interrupt{cancel_before ? cancelled : m_interrupt};
-        const bool valid{WITH_LOCK(cs_main, return db.LoadBlockIndexGuts(params, insert, interrupt, workers, fast_startup))};
+        unsigned reserve_calls{0};
+        const auto reserve = [&](uint64_t count) {
+            BOOST_CHECK(loaded.empty());
+            BOOST_CHECK_EQUAL(count, headers.size());
+            ++reserve_calls;
+            loaded.reserve(count);
+        };
+        const bool valid{WITH_LOCK(cs_main, return db.LoadBlockIndexGuts(params, insert, interrupt, workers, fast_startup, reserve))};
+        BOOST_CHECK_EQUAL(reserve_calls, cancel_before ? 0U : 1U);
         if (valid) {
             BOOST_CHECK_EQUAL(loaded.size(), headers.size());
             for (auto& [hash, index] : loaded) {

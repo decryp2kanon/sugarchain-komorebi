@@ -157,7 +157,7 @@ bool BlockTreeDB::ReadFlag(const std::string& name, bool& fValue)
     return true;
 }
 
-bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, std::function<CBlockIndex*(const uint256&)> insertBlockIndex, const util::SignalInterrupt& interrupt, int pow_workers, bool fast_startup)
+bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, std::function<CBlockIndex*(const uint256&)> insertBlockIndex, const util::SignalInterrupt& interrupt, int pow_workers, bool fast_startup, std::function<void(uint64_t)> reserveBlockIndex)
 {
     AssertLockHeld(::cs_main);
     uiInterface.InitMessage("Counting block index entries...");
@@ -176,6 +176,7 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
     }
     LogInfo("Counted %s block index entries in %s", FormatGroupedCount(total_entries),
             FormatCompactDuration(std::chrono::duration_cast<std::chrono::seconds>(SteadyClock::now() - count_start)));
+    if (reserveBlockIndex) reserveBlockIndex(total_entries);
     std::unique_ptr<CDBIterator> pcursor(NewIterator());
     pcursor->Seek(std::make_pair(DB_BLOCK_INDEX, uint256()));
 
@@ -615,7 +616,20 @@ CBlockIndex* BlockManager::InsertBlockIndex(const uint256& hash)
 bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockhash, std::set<int>& block_files, std::vector<CBlockIndex*>& vSortedByHeight)
 {
     if (!m_block_tree_db->LoadBlockIndexGuts(
-            GetConsensus(), [this](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) { return this->InsertBlockIndex(hash); }, m_interrupt, m_opts.startup_pow_workers, m_opts.fast_startup)) {
+            GetConsensus(), [this](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) { return this->InsertBlockIndex(hash); }, m_interrupt, m_opts.startup_pow_workers, m_opts.fast_startup,
+            [this](uint64_t count) EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
+                // Counting already inspected this DB. Reserve buckets before
+                // inserting, without changing keys, objects, or verification.
+                // Rehash preserves references to existing indexes and map keys.
+                if (count <= m_block_index.size() || count > m_block_index.max_size()) return;
+                if (count <= m_block_index.bucket_count() * static_cast<double>(m_block_index.max_load_factor())) return;
+                try {
+                    m_block_index.reserve(static_cast<size_t>(count));
+                } catch (const std::bad_alloc&) {
+                    // The original incremental-growth path remains available.
+                    LogWarning("Unable to reserve block index buckets; using incremental growth.");
+                }
+            })) {
         return false;
     }
 

@@ -106,7 +106,7 @@ public:
     void ReadReindexing(bool& fReindexing);
     void WriteFlag(const std::string& name, bool fValue);
     bool ReadFlag(const std::string& name, bool& fValue);
-    bool LoadBlockIndexGuts(const Consensus::Params& consensusParams, std::function<CBlockIndex*(const uint256&)> insertBlockIndex, const util::SignalInterrupt& interrupt, int pow_workers = 1, bool fast_startup = false)
+    bool LoadBlockIndexGuts(const Consensus::Params& consensusParams, std::function<CBlockIndex*(const uint256&)> insertBlockIndex, const util::SignalInterrupt& interrupt, int pow_workers = 1, bool fast_startup = false, std::function<void(uint64_t)> reserveBlockIndex = {})
         EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 };
 } // namespace kernel
