@@ -125,6 +125,29 @@ BOOST_FIXTURE_TEST_CASE(blockmanager_loadblockindex_missing_file, TestChain100Se
 
 // File-presence checks cover data on non-active/invalid branches, but must not
 // retain references once those entries are pruned and the index is reloaded.
+BOOST_FIXTURE_TEST_CASE(blockmanager_loadblockindex_preserves_unpersisted_header, TestChain100Setup)
+{
+    auto& chainman{*Assert(m_node.chainman)};
+    auto& blockman{chainman.m_blockman};
+    CBlock block{CreateBlock({}, GetScriptForRawPubKey(coinbaseKey.GetPubKey()), chainman.ActiveChainstate())};
+    LOCK(::cs_main);
+    blockman.WriteBlockIndexDB();
+    block.nNonce = 0;
+    while (!CheckProofOfWork(block.GetHash(), block.nBits, chainman.GetConsensus())) ++block.nNonce;
+    CBlockIndex* ignored_best{nullptr};
+    auto* unpersisted{blockman.AddToBlockIndex(block, ignored_best)};
+    for (int reload = 0; reload < 2; ++reload) {
+        std::vector<CBlockIndex*> ordered;
+        BOOST_REQUIRE(blockman.LoadBlockIndexDB(std::nullopt, &ordered));
+        const std::set<CBlockIndex*> unique{ordered.begin(), ordered.end()};
+        BOOST_CHECK_EQUAL(ordered.size(), blockman.m_block_index.size());
+        BOOST_CHECK_EQUAL(unique.size(), ordered.size());
+        BOOST_CHECK_EQUAL(unique.count(unpersisted), 1U);
+        for (auto& [hash, index] : blockman.m_block_index) BOOST_CHECK_EQUAL(unique.count(&index), 1U);
+        BOOST_CHECK(std::is_sorted(ordered.begin(), ordered.end(), node::CBlockIndexHeightOnlyComparator()));
+    }
+}
+
 BOOST_FIXTURE_TEST_CASE(blockmanager_loadblockindex_branch_file_and_pruning, TestChain100Setup)
 {
     auto& chainman{*Assert(m_node.chainman)};

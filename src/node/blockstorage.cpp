@@ -597,7 +597,7 @@ void BlockManager::UpdatePruneLock(const std::string& name, const PruneLockInfo&
     m_prune_locks[name] = lock_info;
 }
 
-CBlockIndex* BlockManager::InsertBlockIndex(const uint256& hash)
+CBlockIndex* BlockManager::InsertBlockIndex(const uint256& hash, std::vector<CBlockIndex*>* inserted_indices)
 {
     AssertLockHeld(cs_main);
 
@@ -609,15 +609,20 @@ CBlockIndex* BlockManager::InsertBlockIndex(const uint256& hash)
     CBlockIndex* pindex = &(*mi).second;
     if (inserted) {
         pindex->phashBlock = &((*mi).first);
+        if (inserted_indices) inserted_indices->push_back(pindex);
     }
     return pindex;
 }
 
 bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockhash, std::set<int>& block_files, std::vector<CBlockIndex*>& vSortedByHeight)
 {
+    // Retain in-memory entries on reload, then append newly inserted indexes
+    // (including parent placeholders) without a second post-load map traversal.
+    auto loaded_indices{GetAllBlockIndices()};
     if (!m_block_tree_db->LoadBlockIndexGuts(
-            GetConsensus(), [this](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) { return this->InsertBlockIndex(hash); }, m_interrupt, m_opts.startup_pow_workers, m_opts.fast_startup,
-            [this](uint64_t count) EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
+            GetConsensus(), [this, &loaded_indices](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) { return this->InsertBlockIndex(hash, &loaded_indices); }, m_interrupt, m_opts.startup_pow_workers, m_opts.fast_startup,
+            [this, &loaded_indices](uint64_t count) EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
+                loaded_indices.reserve(std::max<uint64_t>(loaded_indices.size(), count));
                 // Counting already inspected this DB. Reserve buckets before
                 // inserting, without changing keys, objects, or verification.
                 // Rehash preserves references to existing indexes and map keys.
@@ -658,7 +663,8 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
     Assert(m_snapshot_height.has_value() == snapshot_blockhash.has_value());
 
     // Calculate nChainWork
-    vSortedByHeight = GetAllBlockIndices("Preparing block index");
+    vSortedByHeight = std::move(loaded_indices);
+    LogInfo("Prepared block index during loading: %u entries", vSortedByHeight.size());
     StartupProgress sorting{"Sorting block index", vSortedByHeight.size()};
     // Cached heights avoid repeated scattered index reads during sorting.
     // The same height-only ordering still places every parent before its child.
