@@ -255,8 +255,9 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
     // Load m_block_index
     while (pcursor->Valid()) {
         if (interrupt) return false;
-        std::pair<uint8_t, uint256> key;
-        if (pcursor->GetKey(key) && key.first == DB_BLOCK_INDEX) {
+        // Keys are a fixed byte prefix plus a uint256. The parsed key hash was
+        // unused; retain the same size/prefix checks without decoding it.
+        if (pcursor->KeyHasPrefix(DB_BLOCK_INDEX, 1 + uint256::size())) {
             CDiskBlockIndex diskindex;
             if (pcursor->GetValue(diskindex)) {
                 // Construct block index object

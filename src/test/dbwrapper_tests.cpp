@@ -18,6 +18,33 @@ using util::ToString;
 
 BOOST_FIXTURE_TEST_SUITE(dbwrapper_tests, BasicTestingSetup)
 
+BOOST_AUTO_TEST_CASE(block_index_key_prefix_preserves_parser_boundaries)
+{
+    for (const bool obfuscate : {false, true}) {
+        CDBWrapper db{{.path = m_args.GetDataDirBase() / "key-prefix", .cache_bytes = 1_MiB, .memory_only = true, .obfuscate = obfuscate}};
+        for (size_t length = 0; length <= 40; ++length) {
+            std::vector<std::byte> bytes(length, std::byte{0x11});
+            if (!bytes.empty()) bytes.front() = std::byte{'b'};
+            db.Write(std::span<const std::byte>{bytes}, uint8_t{1});
+        }
+        for (const uint8_t prefix : {uint8_t{'a'}, uint8_t{'c'}}) {
+            std::vector<std::byte> bytes(33, std::byte{0x11});
+            bytes.front() = std::byte{prefix};
+            db.Write(std::span<const std::byte>{bytes}, uint8_t{1});
+        }
+        auto cursor{std::unique_ptr<CDBIterator>{db.NewIterator()}};
+        size_t matched{0};
+        for (cursor->SeekToFirst(); cursor->Valid(); cursor->Next()) {
+            std::pair<uint8_t, uint256> parsed;
+            const bool decoded{cursor->GetKey(parsed) && parsed.first == uint8_t{'b'}};
+            const bool prefixed{cursor->KeyHasPrefix(uint8_t{'b'}, 1 + uint256::size())};
+            BOOST_CHECK_EQUAL(prefixed, decoded);
+            matched += prefixed;
+        }
+        BOOST_CHECK_EQUAL(matched, 8U); // Lengths 33-40; trailing bytes were already accepted.
+    }
+}
+
 BOOST_AUTO_TEST_CASE(dbwrapper)
 {
     // Perform tests both obfuscated and non-obfuscated.
