@@ -18,6 +18,10 @@ void CChain::SetTip(CBlockIndex& block)
     CBlockIndex* pindex = &block;
     vChain.resize(pindex->nHeight + 1);
     while (pindex && vChain[pindex->nHeight] != pindex) {
+#if defined(__GNUC__) || defined(__clang__)
+        // The skip pointer is only a prefetch hint; pprev still defines the chain.
+        if (pindex->pskip) __builtin_prefetch(pindex->pskip, 0, 3);
+#endif
         vChain[pindex->nHeight] = pindex;
         pindex = pindex->pprev;
     }

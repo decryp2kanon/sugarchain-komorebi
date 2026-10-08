@@ -65,6 +65,43 @@ BOOST_AUTO_TEST_CASE(bits_proof_exact_arithmetic)
     }
 }
 
+BOOST_AUTO_TEST_CASE(set_tip_preserves_chain_across_extensions_and_reorgs)
+{
+    std::vector<CBlockIndex> main(128);
+    for (size_t i = 0; i < main.size(); ++i) {
+        main[i].nHeight = i;
+        main[i].pprev = i ? &main[i - 1] : nullptr;
+        main[i].BuildSkip();
+    }
+    CChain chain;
+    BOOST_CHECK_EQUAL(chain.Height(), -1);
+    chain.SetTip(main[127]);
+    BOOST_REQUIRE_EQUAL(chain.Height(), 127);
+    for (int height = 0; height <= 127; ++height) BOOST_CHECK(chain[height] == &main[height]);
+    chain.SetTip(main[63]);
+    BOOST_CHECK_EQUAL(chain.Height(), 63);
+    BOOST_CHECK(chain[64] == nullptr);
+    chain.SetTip(main[127]);
+
+    // A branch without skip links must retain identical parent-link semantics.
+    std::vector<CBlockIndex> fork(80);
+    for (size_t i = 0; i < fork.size(); ++i) {
+        fork[i].nHeight = 64 + i;
+        fork[i].pprev = i ? &fork[i - 1] : &main[63];
+    }
+    chain.SetTip(fork.back());
+    BOOST_REQUIRE_EQUAL(chain.Height(), 143);
+    for (int height = 0; height < 64; ++height) BOOST_CHECK(chain[height] == &main[height]);
+    for (size_t i = 0; i < fork.size(); ++i) BOOST_CHECK(chain[64 + i] == &fork[i]);
+    BOOST_CHECK(!chain.Contains(&main[127]));
+    chain.SetTip(main[127]);
+    for (int height = 0; height <= 127; ++height) BOOST_CHECK(chain[height] == &main[height]);
+    chain.SetTip(main[0]);
+    BOOST_CHECK(chain.Genesis() == &main[0]);
+    BOOST_CHECK(chain.Tip() == &main[0]);
+    BOOST_CHECK(chain[1] == nullptr);
+}
+
 BOOST_AUTO_TEST_CASE(chain_test)
 {
     FastRandomContext ctx;
