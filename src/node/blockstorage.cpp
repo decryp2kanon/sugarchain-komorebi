@@ -645,11 +645,18 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
                 // Rehash preserves references to existing indexes and map keys.
                 if (count <= m_block_index.size() || count > m_block_index.max_size()) return;
                 if (count <= m_block_index.bucket_count() * static_cast<double>(m_block_index.max_load_factor())) return;
+                // Spare buckets reduce collision chains during the two lookups
+                // per disk index. This changes capacity only, not verification.
+                const auto capacity{count <= m_block_index.max_size() / 2 ? count * 2 : count};
                 try {
-                    m_block_index.reserve(static_cast<size_t>(count));
+                    m_block_index.reserve(static_cast<size_t>(capacity));
                 } catch (const std::bad_alloc&) {
-                    // The original incremental-growth path remains available.
-                    LogWarning("Unable to reserve block index buckets; using incremental growth.");
+                    // Retain the original reservation if the larger table cannot fit.
+                    try {
+                        m_block_index.reserve(static_cast<size_t>(count));
+                    } catch (const std::bad_alloc&) {
+                        LogWarning("Unable to reserve block index buckets; using incremental growth.");
+                    }
                 }
             })) {
         return false;
