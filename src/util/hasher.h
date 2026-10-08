@@ -101,8 +101,9 @@ struct BlockHasher
 {
     // this used to call `GetCheapHash()` in uint256, which was later moved; the
     // cheap hash function simply calls ReadLE64() however, so the end result is
-    // identical
-    size_t operator()(const uint256& hash) const { return ReadLE64(hash.begin()); }
+    // identical. This fixed-size read cannot throw; declaring that lets
+    // unordered_map implementations omit a cached hash from each index node.
+    size_t operator()(const uint256& hash) const noexcept { return ReadLE64(hash.begin()); }
 };
 
 class SaltedSipHasher

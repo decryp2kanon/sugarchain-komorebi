@@ -81,6 +81,18 @@ seconds (1.75%) less startup time in the same local snapshot. The node
 addresses remained stable, and best block, chainwork, verification and clean
 shutdown matched the baseline. Results on a low-memory VPS remain unmeasured.
 
+A further trial marked the fixed-size `BlockHasher` read as non-throwing. On
+libstdc++ this avoids storing a redundant cached hash in every block-index
+map node. The three runs measured 63.743 / 62.010 / 61.535 seconds (median
+62.010) and median peak RSS 17,695,896 KiB. Compared with the pooled-node
+baseline, peak RSS fell another 345 MiB (1.96%) while startup time was within
+run-to-run variation (median 0.168 seconds faster). This declaration also
+changes the container's storage layout in default mode, but not its hash
+value, lookup algorithm, validation, or startup mode boundary. The isolated
+snapshot's best block, chainwork, and clean shutdown still matched. It does
+not by itself make a 4–8 GiB VPS viable; that requires a larger structural
+reduction and a constrained-memory test.
+
 ## Regression coverage
 
 `header_pow_tests` covers real Yespower validation, opt-in disk trust, failure
