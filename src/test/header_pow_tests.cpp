@@ -106,7 +106,10 @@ struct HeaderPoWSetup : BasicTestingSetup {
             entries.push_back(indexes.back().get());
         }
         db.WriteBatchSync({}, 0, entries);
-        node::BlockMap loaded;
+        std::unique_ptr<PoolResource<512, 8>> index_resource;
+        if (fast_startup) index_resource = std::make_unique<PoolResource<512, 8>>();
+        node::BlockMap loaded{0, BlockHasher{}, std::equal_to<uint256>{},
+            node::BlockMap::allocator_type{index_resource.get()}};
         const auto insert = [&](const uint256& hash) -> CBlockIndex* {
             if (hash.IsNull()) return nullptr;
             auto [it, inserted] = loaded.try_emplace(hash);

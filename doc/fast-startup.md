@@ -9,6 +9,7 @@ disk-index trust and the subsequent PR #10 performance optimizations.
 |---|---|---|
 | Disk iterator | Copying key/value streams, decode the key | Inspect key prefix, directly deserialize unobfuscated values |
 | Count and capacity | One loading pass, incremental map growth | Key-only pre-count, reserve spare buckets and pointer capacity |
+| Index node allocation | Standard per-node allocator | Stable-address pooled nodes, with large bucket allocations unchanged |
 | Pointer collection | Collect from the map after loading | Collect newly inserted entries during loading; retain pre-existing entries on reload |
 | Height ordering | `std::sort` | Integer sort with temporary compact height/pointer cache |
 | Work reconstruction | Original 256-bit formula | Equivalent exact 64-bit formula for eligible compact targets |
@@ -70,6 +71,15 @@ median peak RSS 18,391,680 KiB. This is 2,047 MiB (10.23%) less peak RSS
 and 0.935 seconds (1.46%) faster in these runs. The snapshot, build options,
 verification settings and observed best block/chainwork matched. These are
 offline local results, not a measured low-memory VPS guarantee.
+
+The next isolated trial pooled fast-mode block-index nodes without changing
+the map lookup algorithm or the default-mode allocator. Against the tiered
+cache baseline above, three runs of the final implementation measured
+61.802 / 62.646 / 62.178 seconds (median 62.178) and median peak RSS
+18,048,920 KiB. That is another 335 MiB (1.86%) less peak RSS and 1.108
+seconds (1.75%) less startup time in the same local snapshot. The node
+addresses remained stable, and best block, chainwork, verification and clean
+shutdown matched the baseline. Results on a low-memory VPS remain unmeasured.
 
 ## Regression coverage
 
