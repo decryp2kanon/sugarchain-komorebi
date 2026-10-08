@@ -278,10 +278,11 @@ CDBWrapper::CDBWrapper(const DBParams& params)
 #ifdef __linux__
     if (params.reclaim_read_cache && !params.memory_only) {
         // Bound retained table mappings; keep the caller's block/write cache budgets.
-        DBContext().options.max_open_files = std::min(DBContext().options.max_open_files, 64);
+        DBContext().options.small_table_cache = true;
+        DBContext().options.max_open_files = std::min(DBContext().options.max_open_files, 26);
         DBContext().penv = new ReclaimingReadEnv;
         DBContext().options.env = DBContext().penv;
-        LogDebug(BCLog::LEVELDB, "LevelDB inactive read-cache reclamation enabled (max_open_files=64).\n");
+        LogDebug(BCLog::LEVELDB, "LevelDB inactive read-cache reclamation enabled (table_cache=16).\n");
     }
 #endif
     if (params.memory_only) {

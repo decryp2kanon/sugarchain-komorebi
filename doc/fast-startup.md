@@ -113,7 +113,7 @@ unit cases and the startup mode/reindex/missing-file functional test passed.
 This result does not establish viability on a 4–8 GiB VPS.
 
 The next Linux fast-only change bounds the block-index DB table cache to
-64 open files and asks the kernel to reclaim clean file pages when the last
+64 tables and asks the kernel to reclaim clean file pages when the last
 read-table reference is released. Existing LevelDB reads, checksums, writes,
 DB format, and the caller's block/write cache budgets are unchanged; so are
 `-dbcache=4096` and `-maxpowcache=2048` in these measurements. Default startup
@@ -143,6 +143,42 @@ The 51 DB-wrapper/block-manager/header-PoW unit cases passed. The expanded
 private regtest functional test covers mode changes, reindex, missing files,
 and persistence/verification of newly generated blocks. Snapshot best block,
 chainwork, 500 recent and historical header digests, and verifychain matched.
+
+A follow-up small-cache option lowers only the Linux fast-mode block-index
+DB table-cache floor to 16 entries. LevelDB previously rounded both raw
+max_open_files=64 and max_open_files=32 to 74 (64 tables plus 10 other files),
+so merely lowering the wrapper value gave no further saving. The opt-in
+`small_table_cache` option keeps the historical floor for all other callers.
+The wrapper requests 26 open files (16 tables plus that existing allowance).
+Live table references, checksums, DB format and block/write budgets are
+unchanged. This is independent of user -dbcache and -maxpowcache settings.
+
+Three local baseline runs took 66.218 / 68.681 / 70.939 seconds (median
+68.681), with median peak RSS 12,144,156 KiB. The 16-table candidate took
+69.828 / 67.693 / 69.166 seconds (median 69.166), with median peak RSS
+10,899,084 KiB. That saves 1,216 MiB (10.25%) for a measured median
+0.485-second (0.71%) startup increase, within observed timing variation.
+Ready-state RSS fell from 11,797,624 to 10,552,408 KiB. The 32-table
+screening saved less memory at a similar single-run startup time, so the
+16-table variant was selected. A sizeof audit found that field rearrangement
+alone cannot shrink the current 152-byte CBlockIndex; that candidate was
+left unchanged rather than altering proof evidence or field semantics.
+
+The new regression fixture creates more than 16 SST tables and verifies
+bidirectional reads, iteration and persisted contents after reopening with
+both cache policies. All 52 DB-wrapper/block-manager/header-PoW unit cases
+and the startup mode/reindex/missing-file/new-block functional test passed.
+All six final snapshot runs matched best block, chainwork, header digests,
+verifychain and normal shutdown. Mainnet sync throughput and viability on
+4–8 GiB hosts remain unmeasured; resident anonymous index memory is unchanged.
+
+One further private cold-copy run in a fresh 24 GiB/no-swap cgroup used
+10.427 GiB sampled peak memory.current and 10.395 GiB process peak RSS,
+starting in 70.979 seconds without OOM or swap. The previous 64-table
+cold-copy record used 11.610 GiB cgroup peak. This single-run, cross-session
+comparison supports physical-memory savings; the alternating three-run
+comparison above is used for startup timing. Neither experiment proves
+4–8 GiB host viability.
 
 ## Regression coverage
 

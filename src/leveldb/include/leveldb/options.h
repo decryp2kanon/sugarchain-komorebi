@@ -86,6 +86,10 @@ struct LEVELDB_EXPORT Options {
   // one open file per 2MB of working set).
   int max_open_files = 1000;
 
+  // Opt-in smaller table cache for sequential, memory-constrained readers.
+  // Other DB users retain the historical minimum of 64 tables.
+  bool small_table_cache = false;
+
   // Control over blocks (user data is stored in a set of blocks, and
   // a block is the unit of reading from disk).
 
