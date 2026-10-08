@@ -52,8 +52,10 @@
 #include <compare>
 #include <cstddef>
 #include <cstdio>
+#include <cstdint>
 #include <cstring>
 #include <exception>
+#include <limits>
 #include <map>
 #include <new>
 #include <optional>
@@ -387,39 +389,43 @@ void SortBlockIndicesByHeight(std::vector<CBlockIndex*>& indices)
         pointer_sort();
         return;
     }
-    struct CachedIndex {
-        int height;
-        // Byte storage avoids padding for pointer alignment. memcpy restores
-        // the original pointer value without an unaligned pointer dereference.
-        std::array<std::byte, sizeof(CBlockIndex*)> index_bytes;
-
-        CachedIndex() = default;
-        explicit CachedIndex(CBlockIndex* index) : height{index->nHeight}
-        {
-            std::memcpy(index_bytes.data(), &index, sizeof(index));
-        }
-
-        CBlockIndex* GetIndex() const
-        {
-            CBlockIndex* index;
-            std::memcpy(&index, index_bytes.data(), sizeof(index));
-            return index;
-        }
-    };
-    std::vector<CachedIndex> cached;
-    try {
-        cached.reserve(indices.size());
-    } catch (const std::bad_alloc&) {
-        // Keep the original lower-memory path if the extra allocation fails.
+    // Two stable 16-bit radix passes use one pointer-sized scratch array,
+    // instead of caching a height plus a pointer for every index. Flip the
+    // sign bit so negative heights retain the signed comparator's ordering.
+    if (indices.size() > std::numeric_limits<uint32_t>::max()) {
         pointer_sort();
         return;
     }
-    for (auto* index : indices) cached.emplace_back(index);
-    boost::sort::spreadsort::integer_sort(
-        cached.begin(), cached.end(),
-        [](const CachedIndex& entry, unsigned shift) { return entry.height >> shift; },
-        [](const CachedIndex& a, const CachedIndex& b) { return a.height < b.height; });
-    for (size_t i = 0; i < indices.size(); ++i) indices[i] = cached[i].GetIndex();
+    constexpr size_t BUCKETS{1 << 16};
+    std::vector<CBlockIndex*> scratch;
+    std::vector<uint32_t> offsets;
+    try {
+        scratch.resize(indices.size());
+        offsets.resize(2 * BUCKETS);
+    } catch (const std::bad_alloc&) {
+        std::vector<CBlockIndex*>{}.swap(scratch);
+        std::vector<uint32_t>{}.swap(offsets);
+        pointer_sort();
+        return;
+    }
+    const auto key = [](const CBlockIndex* index) {
+        return static_cast<uint32_t>(index->nHeight) ^ uint32_t{0x80000000};
+    };
+    for (const auto* index : indices) {
+        const uint32_t height{key(index)};
+        ++offsets[height & 0xffff];
+        ++offsets[BUCKETS + (height >> 16)];
+    }
+    for (size_t base : {size_t{0}, BUCKETS}) {
+        uint32_t sum{0};
+        for (size_t i = 0; i < BUCKETS; ++i) {
+            const uint32_t count{offsets[base + i]};
+            offsets[base + i] = sum;
+            sum += count;
+        }
+    }
+    for (auto* index : indices) scratch[offsets[key(index) & 0xffff]++] = index;
+    for (auto* index : scratch) indices[offsets[BUCKETS + (key(index) >> 16)]++] = index;
 }
 
 std::vector<CBlockIndex*> BlockManager::GetAllBlockIndices(const char* startup_stage)
@@ -728,7 +734,7 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
         vSortedByHeight = GetAllBlockIndices("Preparing block index");
     }
     StartupProgress sorting{"Sorting block index", vSortedByHeight.size()};
-    // Cached heights avoid repeated scattered index reads during sorting.
+    // Radix passes bound both sorting work and temporary memory.
     // The same height-only ordering still places every parent before its child.
     if (m_opts.fast_startup) {
         SortBlockIndicesByHeight(vSortedByHeight);

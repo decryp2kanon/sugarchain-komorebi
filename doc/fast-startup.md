@@ -93,6 +93,25 @@ snapshot's best block, chainwork, and clean shutdown still matched. It does
 not by itself make a 4–8 GiB VPS viable; that requires a larger structural
 reduction and a constrained-memory test.
 
+
+The next fast-only change uses two stable 16-bit radix passes for height
+ordering. Scratch storage is one pointer per entry plus 512 KiB of bucket
+counters, instead of a cached height and pointer per entry. Signed heights,
+duplicate pointers, and the original height-only ordering are preserved. An
+allocation failure releases scratch storage before using the prior direct
+pointer-sort fallback. Default startup continues to use its original sort.
+
+Three alternating baseline/candidate runs on the same isolated snapshot
+measured 61.966 / 62.059 / 61.551 seconds (median 61.966) against
+61.898 / 59.457 / 62.696 seconds (median 61.898). Overall time was within
+run variation; sorting itself was faster. Median peak RSS fell from
+17,696,148 to 17,521,848 KiB: another 170 MiB (0.985%). Ready-state RSS was
+essentially unchanged; the saving is startup scratch space, not persistent
+index storage. Best block, chainwork, recent/historical header results, and
+`verifychain(3,100)` matched in all runs. The 39 block-manager/header-PoW
+unit cases and the startup mode/reindex/missing-file functional test passed.
+This result does not establish viability on a 4–8 GiB VPS.
+
 ## Regression coverage
 
 `header_pow_tests` covers real Yespower validation, opt-in disk trust, failure
