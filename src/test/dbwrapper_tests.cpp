@@ -45,6 +45,40 @@ BOOST_AUTO_TEST_CASE(block_index_key_prefix_preserves_parser_boundaries)
     }
 }
 
+BOOST_AUTO_TEST_CASE(read_cache_reclamation_preserves_db_contents)
+{
+    const fs::path path{m_args.GetDataDirBase() / "read-cache-reclaim"};
+    for (const bool obfuscate : {false, true}) {
+        {
+            CDBWrapper db{{.path = path, .cache_bytes = 1_MiB, .wipe_data = true, .obfuscate = obfuscate,
+                           .reclaim_read_cache = true}};
+            CDBBatch batch{db};
+            for (uint32_t i = 0; i < 4096; ++i) batch.Write(i, uint64_t{i} * 17);
+            db.WriteBatch(batch, true);
+            db.CompactFull();
+        }
+        for (const bool reclaim : {false, true}) {
+            CDBWrapper db{{.path = path, .cache_bytes = 1_MiB, .reclaim_read_cache = reclaim}};
+            for (uint32_t i = 0; i < 4096; ++i) {
+                uint64_t value{0};
+                BOOST_REQUIRE(db.Read(i, value));
+                BOOST_CHECK_EQUAL(value, uint64_t{i} * 17);
+            }
+            const std::unique_ptr<CDBIterator> cursor{db.NewIterator()};
+            size_t count{0};
+            for (cursor->SeekToFirst(); cursor->Valid(); cursor->Next()) {
+                uint32_t key{0};
+                if (!cursor->GetKey(key) || key >= 4096) continue; // Internal obfuscation metadata.
+                uint64_t value{0};
+                BOOST_REQUIRE(cursor->GetValue(value));
+                BOOST_CHECK_EQUAL(value, uint64_t{key} * 17);
+                ++count;
+            }
+            BOOST_CHECK_EQUAL(count, 4096U);
+        }
+    }
+}
+
 BOOST_AUTO_TEST_CASE(dbwrapper)
 {
     // Perform tests both obfuscated and non-obfuscated.

@@ -112,6 +112,38 @@ index storage. Best block, chainwork, recent/historical header results, and
 unit cases and the startup mode/reindex/missing-file functional test passed.
 This result does not establish viability on a 4–8 GiB VPS.
 
+The next Linux fast-only change bounds the block-index DB table cache to
+64 open files and asks the kernel to reclaim clean file pages when the last
+read-table reference is released. Existing LevelDB reads, checksums, writes,
+DB format, and the caller's block/write cache budgets are unchanged; so are
+`-dbcache=4096` and `-maxpowcache=2048` in these measurements. Default startup
+explicitly disables this policy. Other platforms retain their existing Env.
+This policy remains enabled for that block-index DB after startup; mainnet
+sync throughput has not been benchmarked.
+
+Three candidate runs measured 68.295 / 66.841 / 68.757 seconds (median
+68.295) and median peak RSS 12,143,836 KiB. Compared with the accepted
+pointer-scratch baseline above, peak RSS fell 5,252 MiB (30.69%) at a
+6.397-second (10.33%) startup cost. The memory/time tradeoff was accepted
+for OOM risk reduction. Ready-state RSS fell from 17,175,520 to
+11,797,252 KiB. Persistent anonymous memory remained about 9.45 GiB;
+the main saving is file-backed read cache, not smaller index objects.
+
+A separate cold-copy comparison ran each version once in its own 24 GiB
+cgroup with swap disabled. Copy preparation occurred outside that cgroup,
+and only private copied files received cache-reclamation advice. Sampled
+cgroup memory.current peaks fell from 16.770 to 11.610 GiB, including
+file cache and kernel accounting; startup took 63.559 and 68.419 seconds.
+There were no OOM events or swap use. This confirms a physical-accounting
+saving in that experiment, not viability on a 4–8 GiB VPS. Early physical
+measurements that charged snapshot-copy cache to the measurement cgroup
+were excluded. The final three warm process-RSS runs are reported separately.
+
+The 51 DB-wrapper/block-manager/header-PoW unit cases passed. The expanded
+private regtest functional test covers mode changes, reindex, missing files,
+and persistence/verification of newly generated blocks. Snapshot best block,
+chainwork, 500 recent and historical header digests, and verifychain matched.
+
 ## Regression coverage
 
 `header_pow_tests` covers real Yespower validation, opt-in disk trust, failure

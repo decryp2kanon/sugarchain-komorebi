@@ -1550,7 +1550,9 @@ BlockManager::BlockManager(const util::SignalInterrupt& interrupt, Options opts)
       m_block_index_resource{m_opts.fast_startup ? std::make_unique<PoolResource<512, 8>>() : nullptr},
       m_block_index{0, BlockHasher{}, std::equal_to<uint256>{}, BlockMap::allocator_type{m_block_index_resource.get()}}
 {
-    m_block_tree_db = std::make_unique<BlockTreeDB>(m_opts.block_tree_db_params);
+    auto db_params{m_opts.block_tree_db_params};
+    db_params.reclaim_read_cache = m_opts.fast_startup;
+    m_block_tree_db = std::make_unique<BlockTreeDB>(db_params);
 
     if (m_opts.block_tree_db_params.wipe_data) {
         m_block_tree_db->WriteReindexing(true);

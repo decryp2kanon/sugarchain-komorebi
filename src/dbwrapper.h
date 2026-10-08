@@ -45,6 +45,8 @@ struct DBParams {
     bool obfuscate = false;
     //! Passed-through options.
     DBOptions options{};
+    //! Release inactive read-table mappings and clean file cache (Linux only).
+    bool reclaim_read_cache = false;
 };
 
 class dbwrapper_error : public std::runtime_error

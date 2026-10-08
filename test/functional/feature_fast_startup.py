@@ -66,6 +66,16 @@ class FastStartupTest(BitcoinTestFramework):
             missing_file.rename(block_file)
         self.start_node(0, ["-fast-startup=1"])
         assert_equal(node.getbestblockhash(), expected["bestblockhash"])
+        # New blocks written with the fast-mode DB policy survive mode changes.
+        self.generate(node, 20)
+        updated = node.getblockchaininfo()
+        for mode in ["0", "1"]:
+            self.stop_node(0)
+            self.start_node(0, [f"-fast-startup={mode}"])
+            actual = node.getblockchaininfo()
+            for key in ["blocks", "headers", "bestblockhash", "chainwork"]:
+                assert_equal(actual[key], updated[key])
+            assert node.verifychain(3, 20)
 
 
 if __name__ == '__main__':
