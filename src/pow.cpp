@@ -25,6 +25,7 @@
 #include <limits>
 #include <shared_mutex>
 #include <stdexcept>
+#include <vector>
 
 namespace {
 // Exact unsigned long division, eight base-2^32 limbs instead of 256 bit steps.
@@ -49,9 +50,57 @@ static_assert(MAX_YESPOWER_CACHE_BYTES / sizeof(uint256) <= std::numeric_limits<
 class YespowerVerificationCache {
     using Cache = CuckooCache::cache<uint256, SignatureCacheHasher>;
     CSHA256 m_hasher;
-    std::unique_ptr<Cache> m_valid{std::make_unique<Cache>()};
+    std::vector<std::unique_ptr<Cache>> m_valid;
     std::unique_ptr<Cache> m_batches;
     std::shared_mutex m_mutex;
+    size_t m_valid_budget{0};
+    size_t m_valid_allocated{0};
+    uint32_t m_active_slots{0};
+    uint32_t m_active_inserts{0};
+    bool m_grow_on_demand{false};
+    bool m_growth_disabled{false};
+
+    bool ContainsLocked(const uint256& entry) const
+    {
+        for (auto it{m_valid.rbegin()}; it != m_valid.rend(); ++it) {
+            if ((*it)->contains(entry, false)) return true;
+        }
+        return false;
+    }
+
+    void InsertLocked(const uint256& entry)
+    {
+        if (!m_grow_on_demand) {
+            m_valid.back()->insert(entry);
+            return;
+        }
+        if (ContainsLocked(entry)) return;
+        // Keep older positive proof evidence in its original tier. Allocated
+        // tables together never exceed the configured entry budget.
+        if (m_grow_on_demand && !m_growth_disabled &&
+            m_active_inserts >= m_active_slots * 45 / 100 &&
+            m_valid_allocated < m_valid_budget) {
+            const size_t remaining{m_valid_budget - m_valid_allocated};
+            const size_t next_bytes{std::min(m_valid_allocated * 2, remaining)};
+            if (next_bytes >= m_valid_allocated) {
+                try {
+                    auto next{std::make_unique<Cache>()};
+                    const auto [slots, _]{next->setup_bytes(next_bytes)};
+                    m_valid.push_back(std::move(next));
+                    m_valid_allocated += next_bytes;
+                    m_active_slots = slots;
+                    m_active_inserts = 0;
+                } catch (const std::bad_alloc&) {
+                    // A cache allocation must not invalidate a good proof.
+                    m_growth_disabled = true;
+                }
+            } else {
+                m_growth_disabled = true;
+            }
+        }
+        m_valid.back()->insert(entry);
+        if (!m_growth_disabled && m_valid_allocated < m_valid_budget) ++m_active_inserts;
+    }
 
 public:
     YespowerVerificationCache()
@@ -61,21 +110,34 @@ public:
         Reset(DEFAULT_YESPOWER_CACHE_BYTES);
     }
 
-    void Reset(size_t bytes)
+    void Reset(size_t bytes, bool grow_on_demand = false)
     {
-        auto replacement{std::make_unique<Cache>()};
         // Reserve within the configured budget, not in addition to it. Tiny
         // test caches keep their original minimum-allocation behavior.
         const size_t batch_bytes{bytes >= 1024 ? std::min(bytes / 8, size_t{2} << 20) : 0};
+        const size_t valid_budget{bytes - batch_bytes};
+        // Small budgets use the same growth path as the production 2048 MiB
+        // budget, so a bounded fixture can exercise tier transitions.
+        const size_t initial_bytes{grow_on_demand ?
+            std::min(valid_budget, std::min(DEFAULT_YESPOWER_CACHE_BYTES, std::max(size_t{64}, valid_budget / 128))) : valid_budget};
+        auto replacement{std::make_unique<Cache>()};
+        const auto [slots, _]{replacement->setup_bytes(initial_bytes)};
+        std::vector<std::unique_ptr<Cache>> valid;
+        valid.push_back(std::move(replacement));
         std::unique_ptr<Cache> batches;
         if (batch_bytes) {
             batches = std::make_unique<Cache>();
             batches->setup_bytes(batch_bytes);
         }
-        replacement->setup_bytes(bytes - batch_bytes);
         std::unique_lock lock{m_mutex};
-        std::swap(m_valid, replacement);
+        std::swap(m_valid, valid);
         std::swap(m_batches, batches);
+        m_valid_budget = valid_budget;
+        m_valid_allocated = initial_bytes;
+        m_active_slots = slots;
+        m_active_inserts = 0;
+        m_grow_on_demand = grow_on_demand;
+        m_growth_disabled = false;
     }
 
     uint256 Entry(const CBlockHeader& header) const
@@ -91,13 +153,13 @@ public:
     bool Contains(const uint256& entry)
     {
         std::shared_lock lock{m_mutex};
-        return m_valid->contains(entry, false);
+        return ContainsLocked(entry);
     }
 
     void Insert(const uint256& entry)
     {
         std::unique_lock lock{m_mutex};
-        m_valid->insert(entry);
+        InsertLocked(entry);
     }
 
     uint256 BatchEntry(std::span<const CBlockHeader> headers) const
@@ -124,7 +186,7 @@ public:
         if (!m_batches || !m_batches->contains(entry, false)) return false;
         // Repopulate ordinary proof evidence for subsequent AcceptBlockHeader
         // checks. The caller must first recheck every current target limit.
-        for (const auto& header : headers) m_valid->insert(Entry(header));
+        for (const auto& header : headers) InsertLocked(Entry(header));
         return true;
     }
 
@@ -159,12 +221,12 @@ struct HeaderPoWCheck {
 };
 } // namespace
 
-void InitYespowerVerificationCache(size_t bytes)
+void InitYespowerVerificationCache(size_t bytes, bool grow_on_demand)
 {
     if (!bytes || bytes > MAX_YESPOWER_CACHE_BYTES) {
         throw std::invalid_argument("Yespower cache size must be positive and at most 2048 MiB");
     }
-    VerificationCache().Reset(bytes);
+    VerificationCache().Reset(bytes, grow_on_demand);
 }
 
 // Preserve integer operation ordering (divide before multiply) for consensus.

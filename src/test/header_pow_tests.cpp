@@ -789,6 +789,24 @@ BOOST_AUTO_TEST_CASE(cache_budget_eviction_and_reset_only_trigger_reverification
     }
 }
 
+BOOST_AUTO_TEST_CASE(growing_cache_retains_verified_proofs_and_rejects_invalid_headers)
+{
+    const auto headers{Headers(190, 25)};
+    CacheBudget budget{2048};
+    InitYespowerVerificationCache(2048, /*grow_on_demand=*/true);
+    for (const auto& header : headers) BOOST_REQUIRE(CheckBlockProofOfWork(header, params));
+    auto invalid{headers.front()};
+    Invalidate(invalid);
+    BOOST_CHECK(!CheckBlockProofOfWork(invalid, params));
+    {
+        Observation observation;
+        BOOST_CHECK(CheckBlockProofOfWork(headers.front(), params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 0U);
+#endif
+    }
+}
+
 BOOST_AUTO_TEST_CASE(cache_reset_is_safe_during_verification)
 {
     const auto headers{Headers(91, 33)};

@@ -17,6 +17,7 @@ disk-index trust and the subsequent PR #10 performance optimizations.
 | Best-header selection | Collect and sort a second time | Reuse this load's sorted vector and prefetch fields |
 | Chainstate candidates | Temporary pointer vector | Iterate the map directly |
 | Active-chain construction / sequence IDs / witness checks | Original traversals | Read-ahead hints; the same checks and traversal results |
+| Verified Yespower cache | Allocate the configured entry budget at startup | Allocate a small positive-proof cache first and grow in tiers within the same `-maxpowcache` budget as verified proofs accumulate |
 
 The common DB iterator, work calculation and chain-array helpers default to
 their original behavior. Only explicit fast-startup calls select their
@@ -50,6 +51,25 @@ formula is tested against the original formula; it does not approximate work.
 `-fast-startup=1 -reindex=1` is rejected. A GUI recovery retry that enables
 reindex constructs the block manager with fast startup disabled.
 `-reindex-chainstate` can use either mode because it retains the index DB.
+
+## Fast-mode memory tradeoff
+
+The fast-mode Yespower cache allocates at most 16 MiB for individual entries
+initially, plus the existing batch cache. It grows in bounded tiers only after
+verified entries fill the active tier. Older tiers retain their successful
+proofs; cache misses still run full Yespower verification. The configured
+`-maxpowcache` value remains the upper entry-memory budget, including batch
+entries. Default mode keeps eager allocation and its previous cache behavior.
+
+An isolated 44,806,391-entry mainnet snapshot with `-fast-startup=1`,
+`-dbcache=4096` and `-maxpowcache=2048` measured three startups per version.
+The prior 3x-reserve version started in 64.507 / 64.222 / 63.827 seconds
+(median 64.222) with median peak RSS 20,487,880 KiB. The tiered-cache
+candidate started in 62.796 / 63.286 / 63.950 seconds (median 63.286) with
+median peak RSS 18,391,680 KiB. This is 2,047 MiB (10.23%) less peak RSS
+and 0.935 seconds (1.46%) faster in these runs. The snapshot, build options,
+verification settings and observed best block/chainwork matched. These are
+offline local results, not a measured low-memory VPS guarantee.
 
 ## Regression coverage
 

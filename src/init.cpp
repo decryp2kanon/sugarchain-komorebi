@@ -1851,8 +1851,13 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
         return InitError(Untranslated("-maxpowcache must be between 1 and 2048 MiB"));
     }
     if (chainparams.GetConsensus().fYespowerSugar) {
-        InitYespowerVerificationCache(size_t(pow_cache_mib) << 20);
-        LogInfo("* Using %i MiB plus metadata for verified Yespower headers", pow_cache_mib);
+        const bool grow_pow_cache{args.GetBoolArg("-fast-startup", false)};
+        InitYespowerVerificationCache(size_t(pow_cache_mib) << 20, grow_pow_cache);
+        if (grow_pow_cache) {
+            LogInfo("* Using up to %i MiB plus metadata for verified Yespower headers (grows on demand)", pow_cache_mib);
+        } else {
+            LogInfo("* Using %i MiB plus metadata for verified Yespower headers", pow_cache_mib);
+        }
     }
     LogInfo("* Using %.1f MiB for block index database", kernel_cache_sizes.block_tree_db * (1.0 / 1024 / 1024));
     if (args.GetBoolArg("-txindex", DEFAULT_TXINDEX)) {
