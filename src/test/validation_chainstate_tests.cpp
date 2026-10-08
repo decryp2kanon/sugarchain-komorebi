@@ -51,6 +51,27 @@ BOOST_FIXTURE_TEST_CASE(load_chain_tip_resets_only_active_chain_sequence, TestCh
     for (const auto& cs : manager.m_chainstates) cs->PopulateBlockIndexCandidates();
 }
 
+BOOST_FIXTURE_TEST_CASE(witness_redownload_detects_missing_status_at_all_chain_depths, TestChain100Setup)
+{
+    LOCK(::cs_main);
+    auto& chainstate{Assert(m_node.chainman)->ActiveChainstate()};
+    std::vector<std::pair<CBlockIndex*, uint32_t>> original_status;
+    for (int height = 0; height <= chainstate.m_chain.Height(); ++height) {
+        auto* index{chainstate.m_chain[height]};
+        original_status.emplace_back(index, index->nStatus);
+        index->nStatus |= BLOCK_OPT_WITNESS;
+    }
+    BOOST_CHECK(!chainstate.NeedsRedownload());
+    for (const int height : {0, 7, 8, 50, 100}) {
+        auto* index{chainstate.m_chain[height]};
+        index->nStatus &= ~BLOCK_OPT_WITNESS;
+        BOOST_CHECK(chainstate.NeedsRedownload());
+        index->nStatus |= BLOCK_OPT_WITNESS;
+        BOOST_CHECK(!chainstate.NeedsRedownload());
+    }
+    for (const auto& [index, status] : original_status) index->nStatus = status;
+}
+
 //! Test resizing coins-related Chainstate caches during runtime.
 //!
 BOOST_AUTO_TEST_CASE(validation_chainstate_resize_caches)

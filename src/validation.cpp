@@ -4945,6 +4945,17 @@ bool Chainstate::NeedsRedownload() const
     CBlockIndex* block{m_chain.Tip()};
 
     while (block != nullptr && DeploymentActiveAt(*block, m_chainman, Consensus::DEPLOYMENT_SEGWIT)) {
+#if defined(__GNUC__) || defined(__clang__)
+        // Keep every witness check and the original parent traversal. The
+        // already-built active chain supplies only read-ahead hints.
+        constexpr int PREFETCH_DISTANCE{8};
+        if (block->nHeight >= PREFETCH_DISTANCE) {
+            if (const auto* upcoming{m_chain[block->nHeight - PREFETCH_DISTANCE]}) {
+                __builtin_prefetch(&upcoming->pprev, 0, 3);
+                __builtin_prefetch(&upcoming->nStatus, 0, 3);
+            }
+        }
+#endif
         if (!(block->nStatus & BLOCK_OPT_WITNESS)) {
             // block is insufficiently validated for a segwit client
             return true;
