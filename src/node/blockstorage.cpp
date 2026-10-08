@@ -648,17 +648,20 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
                 if (count <= m_block_index.bucket_count() * static_cast<double>(m_block_index.max_load_factor())) return;
                 // Spare buckets reduce collision chains during the two lookups
                 // per disk index. This changes capacity only, not verification.
-                const auto capacity{count <= m_block_index.max_size() / 2 ? count * 2 : count};
-                try {
-                    m_block_index.reserve(static_cast<size_t>(capacity));
-                } catch (const std::bad_alloc&) {
-                    // Retain the original reservation if the larger table cannot fit.
+                const auto fallback_capacity{count <= m_block_index.max_size() / 2 ? count * 2 : count};
+                const auto capacity{count <= m_block_index.max_size() / 4 ? count * 4 : fallback_capacity};
+                uint64_t previous_capacity{0};
+                for (const uint64_t target : {capacity, fallback_capacity, count}) {
+                    if (target == previous_capacity) continue;
+                    previous_capacity = target;
                     try {
-                        m_block_index.reserve(static_cast<size_t>(count));
+                        m_block_index.reserve(static_cast<size_t>(target));
+                        return;
                     } catch (const std::bad_alloc&) {
-                        LogWarning("Unable to reserve block index buckets; using incremental growth.");
+                        // Fall back to the previous spare capacity, then exact count.
                     }
                 }
+                LogWarning("Unable to reserve block index buckets; using incremental growth.");
             })) {
         return false;
     }
