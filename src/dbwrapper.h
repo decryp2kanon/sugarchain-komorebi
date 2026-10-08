@@ -157,7 +157,7 @@ public:
 
     template<typename K> bool GetKey(K& key) {
         try {
-            DataStream ssKey{GetKeyImpl()};
+            SpanReader ssKey{GetKeyImpl()};
             ssKey >> key;
         } catch (const std::exception&) {
             return false;
@@ -167,9 +167,17 @@ public:
 
     template<typename V> bool GetValue(V& value) {
         try {
-            DataStream ssValue{GetValueImpl()};
-            dbwrapper_private::GetObfuscation(parent)(ssValue);
-            ssValue >> value;
+            const auto& obfuscation{dbwrapper_private::GetObfuscation(parent)};
+            if (!obfuscation) {
+                // The iterator bytes remain valid throughout deserialization.
+                SpanReader ssValue{GetValueImpl()};
+                ssValue >> value;
+            } else {
+                // Never mutate the iterator's storage to undo obfuscation.
+                DataStream ssValue{GetValueImpl()};
+                obfuscation(ssValue);
+                ssValue >> value;
+            }
         } catch (const std::exception&) {
             return false;
         }
