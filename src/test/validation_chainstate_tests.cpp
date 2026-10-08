@@ -7,6 +7,7 @@
 #include <consensus/validation.h>
 #include <node/kernel_notifications.h>
 #include <random.h>
+#include <pow.h>
 #include <rpc/blockchain.h>
 #include <script/script.h>
 #include <sync.h>
@@ -24,6 +25,31 @@
 #include <boost/test/unit_test.hpp>
 
 BOOST_FIXTURE_TEST_SUITE(validation_chainstate_tests, ChainTestingSetup)
+
+BOOST_FIXTURE_TEST_CASE(load_chain_tip_resets_only_active_chain_sequence, TestChain100Setup)
+{
+    LOCK(::cs_main);
+    auto& manager{*Assert(m_node.chainman)};
+    auto& chainstate{manager.ActiveChainstate()};
+    auto* tip{chainstate.m_chain.Tip()};
+    BOOST_REQUIRE(tip);
+    CBlockHeader fork_header{tip->GetBlockHeader()};
+    ++fork_header.nNonce;
+    while (!CheckProofOfWork(fork_header.GetHash(), fork_header.nBits, manager.GetConsensus())) ++fork_header.nNonce;
+    CBlockIndex* ignored_best{nullptr};
+    auto* fork{manager.m_blockman.AddToBlockIndex(fork_header, ignored_best)};
+    BOOST_REQUIRE(fork != tip);
+    fork->nSequenceId = 77;
+    for (int height = 0; height <= chainstate.m_chain.Height(); ++height) chainstate.m_chain[height]->nSequenceId = SEQ_ID_INIT_FROM_DISK;
+    for (const auto& cs : manager.m_chainstates) cs->ClearBlockIndexCandidates();
+    chainstate.CoinsTip().SetBestBlock(tip->GetBlockHash());
+    chainstate.m_chain.SetTip(*chainstate.m_chain.Genesis());
+    BOOST_REQUIRE(chainstate.LoadChainTip());
+    BOOST_CHECK(chainstate.m_chain.Tip() == tip);
+    for (int height = 0; height <= chainstate.m_chain.Height(); ++height) BOOST_CHECK_EQUAL(chainstate.m_chain[height]->nSequenceId, SEQ_ID_BEST_CHAIN_FROM_DISK);
+    BOOST_CHECK_EQUAL(fork->nSequenceId, 77);
+    for (const auto& cs : manager.m_chainstates) cs->PopulateBlockIndexCandidates();
+}
 
 //! Test resizing coins-related Chainstate caches during runtime.
 //!
