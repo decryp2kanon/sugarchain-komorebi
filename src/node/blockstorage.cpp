@@ -673,7 +673,7 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
                     // Spare buckets reduce collision chains during the two lookups
                     // per disk index. This changes capacity only, not verification.
                     const auto fallback_capacity{count <= m_block_index.max_size() / 2 ? count * 2 : count};
-                    const auto capacity{count <= m_block_index.max_size() / 4 ? count * 4 : fallback_capacity};
+                    const auto capacity{count <= m_block_index.max_size() / 3 ? count * 3 : fallback_capacity};
                     uint64_t previous_capacity{0};
                     for (const uint64_t target : {capacity, fallback_capacity, count}) {
                         if (target == previous_capacity) continue;
