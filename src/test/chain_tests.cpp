@@ -57,10 +57,12 @@ BOOST_AUTO_TEST_CASE(bits_proof_exact_arithmetic)
         for (uint32_t word : {0U, 1U, 2U, 3U, 0xffU, 0x100U, 0xffffU, 0x10000U, 0x7fffffU, 0x800000U, 0xffffffU}) {
             const uint32_t bits{(size << 24) | word};
             BOOST_CHECK(GetBitsProof(bits) == reference(bits));
+            BOOST_CHECK(GetBitsProof(bits, /*fast_startup=*/true) == reference(bits));
         }
         for (int i = 0; i < 1000; ++i) {
             const uint32_t bits{(size << 24) | (random.rand32() & 0xffffff)};
             BOOST_CHECK(GetBitsProof(bits) == reference(bits));
+            BOOST_CHECK(GetBitsProof(bits, /*fast_startup=*/true) == reference(bits));
         }
     }
 }
@@ -73,33 +75,35 @@ BOOST_AUTO_TEST_CASE(set_tip_preserves_chain_across_extensions_and_reorgs)
         main[i].pprev = i ? &main[i - 1] : nullptr;
         main[i].BuildSkip();
     }
-    CChain chain;
-    BOOST_CHECK_EQUAL(chain.Height(), -1);
-    chain.SetTip(main[127]);
-    BOOST_REQUIRE_EQUAL(chain.Height(), 127);
-    for (int height = 0; height <= 127; ++height) BOOST_CHECK(chain[height] == &main[height]);
-    chain.SetTip(main[63]);
-    BOOST_CHECK_EQUAL(chain.Height(), 63);
-    BOOST_CHECK(chain[64] == nullptr);
-    chain.SetTip(main[127]);
+    for (const bool fast_startup : {false, true}) {
+        CChain chain;
+        BOOST_CHECK_EQUAL(chain.Height(), -1);
+        chain.SetTip(main[127], fast_startup);
+        BOOST_REQUIRE_EQUAL(chain.Height(), 127);
+        for (int height = 0; height <= 127; ++height) BOOST_CHECK(chain[height] == &main[height]);
+        chain.SetTip(main[63], fast_startup);
+        BOOST_CHECK_EQUAL(chain.Height(), 63);
+        BOOST_CHECK(chain[64] == nullptr);
+        chain.SetTip(main[127], fast_startup);
 
-    // A branch without skip links must retain identical parent-link semantics.
-    std::vector<CBlockIndex> fork(80);
-    for (size_t i = 0; i < fork.size(); ++i) {
-        fork[i].nHeight = 64 + i;
-        fork[i].pprev = i ? &fork[i - 1] : &main[63];
+        // A branch without skip links must retain identical parent-link semantics.
+        std::vector<CBlockIndex> fork(80);
+        for (size_t i = 0; i < fork.size(); ++i) {
+            fork[i].nHeight = 64 + i;
+            fork[i].pprev = i ? &fork[i - 1] : &main[63];
+        }
+        chain.SetTip(fork.back(), fast_startup);
+        BOOST_REQUIRE_EQUAL(chain.Height(), 143);
+        for (int height = 0; height < 64; ++height) BOOST_CHECK(chain[height] == &main[height]);
+        for (size_t i = 0; i < fork.size(); ++i) BOOST_CHECK(chain[64 + i] == &fork[i]);
+        BOOST_CHECK(!chain.Contains(&main[127]));
+        chain.SetTip(main[127], fast_startup);
+        for (int height = 0; height <= 127; ++height) BOOST_CHECK(chain[height] == &main[height]);
+        chain.SetTip(main[0], fast_startup);
+        BOOST_CHECK(chain.Genesis() == &main[0]);
+        BOOST_CHECK(chain.Tip() == &main[0]);
+        BOOST_CHECK(chain[1] == nullptr);
     }
-    chain.SetTip(fork.back());
-    BOOST_REQUIRE_EQUAL(chain.Height(), 143);
-    for (int height = 0; height < 64; ++height) BOOST_CHECK(chain[height] == &main[height]);
-    for (size_t i = 0; i < fork.size(); ++i) BOOST_CHECK(chain[64 + i] == &fork[i]);
-    BOOST_CHECK(!chain.Contains(&main[127]));
-    chain.SetTip(main[127]);
-    for (int height = 0; height <= 127; ++height) BOOST_CHECK(chain[height] == &main[height]);
-    chain.SetTip(main[0]);
-    BOOST_CHECK(chain.Genesis() == &main[0]);
-    BOOST_CHECK(chain.Tip() == &main[0]);
-    BOOST_CHECK(chain[1] == nullptr);
 }
 
 BOOST_AUTO_TEST_CASE(chain_test)

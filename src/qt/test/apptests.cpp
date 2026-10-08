@@ -60,6 +60,9 @@ void AppTests::splashProgressFormat()
         "Loading block index: 17,228,000 / 44,782,474 (38%) | 687,943/s | elapsed 25s | ETA 40s"))};
     QCOMPARE(counting, QString("Loading block index...\nCounting entries...\n0s elapsed"));
     QCOMPARE(progress, QString("Loading block index...\n17,228,000 / 44,782,474 (38%)\n687,943/s | 25s elapsed | ETA 40s"));
+    const QString legacy{QString::fromStdString(FormatBlockIndexSplashMessage(
+        "Loading block index: 2,000 | 150/s | 13s"))};
+    QCOMPARE(legacy, QString("Loading block index...\n2,000 | 150/s | 13s"));
     const QFontMetrics metrics{QApplication::font()};
     const QRect area{0, 0, 480, 320};
     const int flags{Qt::AlignBottom | Qt::AlignHCenter};
@@ -70,6 +73,8 @@ void AppTests::splashProgressFormat()
     splash.showMessage(counting, flags, QColor(55, 55, 55));
     const QPixmap counting_render{splash.grab()};
     QVERIFY(!counting_render.isNull());
+    splash.showMessage(legacy, flags, QColor(55, 55, 55));
+    QVERIFY(!splash.grab().isNull());
     splash.showMessage(progress, flags, QColor(55, 55, 55));
     const QPixmap progress_render{splash.grab()};
     QVERIFY(!progress_render.isNull());

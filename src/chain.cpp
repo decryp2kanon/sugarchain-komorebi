@@ -13,14 +13,14 @@ std::string CBlockIndex::ToString() const
                      pprev, nHeight, hashMerkleRoot.ToString(), GetBlockHash().ToString());
 }
 
-void CChain::SetTip(CBlockIndex& block)
+void CChain::SetTip(CBlockIndex& block, bool fast_startup)
 {
     CBlockIndex* pindex = &block;
     vChain.resize(pindex->nHeight + 1);
     while (pindex && vChain[pindex->nHeight] != pindex) {
 #if defined(__GNUC__) || defined(__clang__)
         // The skip pointer is only a prefetch hint; pprev still defines the chain.
-        if (pindex->pskip) __builtin_prefetch(pindex->pskip, 0, 3);
+        if (fast_startup && pindex->pskip) __builtin_prefetch(pindex->pskip, 0, 3);
 #endif
         vChain[pindex->nHeight] = pindex;
         pindex = pindex->pprev;
@@ -122,7 +122,7 @@ void CBlockIndex::BuildSkip()
         pskip = pprev->GetAncestor(GetSkipHeight(nHeight));
 }
 
-arith_uint256 GetBitsProof(uint32_t bits)
+arith_uint256 GetBitsProof(uint32_t bits, bool fast_startup)
 {
     arith_uint256 bnTarget;
     bool fNegative;
@@ -137,7 +137,7 @@ arith_uint256 GetBitsProof(uint32_t bits)
     // gives the exact result using a numerator of at most 56 bits.
     // Keep the same invalid-target checks above and generic arithmetic below.
     const uint32_t size{bits >> 24};
-    if (size >= 28 && size <= 34) {
+    if (fast_startup && size >= 28 && size <= 34) {
         const uint32_t mantissa{bits & 0x007fffff};
         const unsigned numerator_bits{8 * (35 - size)};
         return arith_uint256{((uint64_t{1} << numerator_bits) - 1) / mantissa};

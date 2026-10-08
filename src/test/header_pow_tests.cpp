@@ -124,7 +124,7 @@ struct HeaderPoWSetup : BasicTestingSetup {
             loaded.reserve(count);
         };
         const bool valid{WITH_LOCK(cs_main, return db.LoadBlockIndexGuts(params, insert, interrupt, workers, fast_startup, reserve))};
-        BOOST_CHECK_EQUAL(reserve_calls, cancel_before ? 0U : 1U);
+        BOOST_CHECK_EQUAL(reserve_calls, cancel_before || !fast_startup ? 0U : 1U);
         if (valid) {
             BOOST_CHECK_EQUAL(loaded.size(), headers.size());
             for (auto& [hash, index] : loaded) {
@@ -623,6 +623,15 @@ BOOST_AUTO_TEST_CASE(startup_progress_counts_entries_and_reports_one_percent_buc
         CacheBudget budget{1 << 20};
         Observation observation;
         BOOST_CHECK(LoadStartupHeaders(headers, 8, false, fast_startup, BLOCK_VALID_TREE));
+        if (!fast_startup) {
+            BOOST_REQUIRE_EQUAL(messages.size(), 1U);
+            BOOST_CHECK(messages.front().find("Loading block index: 101 | ") == 0);
+            BOOST_CHECK(messages.front().find("ETA") == std::string::npos);
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+            BOOST_CHECK_EQUAL(calls.load(), headers.size());
+#endif
+            continue;
+        }
         BOOST_REQUIRE_EQUAL(messages.size(), 101U);
         BOOST_CHECK_EQUAL(messages.front(), "Counting block index entries...");
         for (unsigned percent{1}; percent <= 100; ++percent) {
@@ -646,13 +655,13 @@ BOOST_AUTO_TEST_CASE(startup_progress_handles_empty_small_and_interrupted_indexe
     std::vector<std::string> messages;
     boost::signals2::scoped_connection capture{uiInterface.InitMessage_connect(
         [&](const std::string& message) { messages.push_back(message); })};
-    BOOST_CHECK(LoadStartupHeaders({}, 1));
+    BOOST_CHECK(LoadStartupHeaders({}, 1, false, true));
     BOOST_REQUIRE_EQUAL(messages.size(), 2U);
     BOOST_CHECK(messages.back().find("0 / 0 (100%)") != std::string::npos);
     BOOST_CHECK(messages.back().find(" | ETA 0s") != std::string::npos);
 
     messages.clear();
-    BOOST_CHECK(LoadStartupHeaders(Headers(310, 3), 8));
+    BOOST_CHECK(LoadStartupHeaders(Headers(310, 3), 8, false, true));
     BOOST_REQUIRE_EQUAL(messages.size(), 4U);
     BOOST_CHECK(messages[1].find("(33%)") != std::string::npos);
     BOOST_CHECK(messages[2].find("(66%)") != std::string::npos);
@@ -661,12 +670,27 @@ BOOST_AUTO_TEST_CASE(startup_progress_handles_empty_small_and_interrupted_indexe
     messages.clear();
     const auto interrupted_headers{Headers(311, 3)};
     Observation observation;
-    BOOST_CHECK(!LoadStartupHeaders(interrupted_headers, 8, true));
+    BOOST_CHECK(!LoadStartupHeaders(interrupted_headers, 8, true, true));
     BOOST_REQUIRE_EQUAL(messages.size(), 1U);
     BOOST_CHECK_EQUAL(messages.front(), "Counting block index entries...");
 #ifdef ENABLE_YESPOWER_TEST_WRAP
     BOOST_CHECK_EQUAL(calls.load(), 0U);
 #endif
+}
+
+BOOST_AUTO_TEST_CASE(startup_legacy_progress_retains_2000_entry_batches)
+{
+    const auto headers{Headers(312, 2001)};
+    for (const int workers : {1, 3, 8}) {
+        std::vector<std::string> messages;
+        boost::signals2::scoped_connection capture{uiInterface.InitMessage_connect(
+            [&](const std::string& message) { messages.push_back(message); })};
+        CacheBudget budget{1 << 20};
+        BOOST_REQUIRE(LoadStartupHeaders(headers, workers));
+        BOOST_REQUIRE_EQUAL(messages.size(), 2U);
+        BOOST_CHECK(messages[0].find("Loading block index: 2,000 | ") == 0);
+        BOOST_CHECK(messages[1].find("Loading block index: 2,001 | ") == 0);
+    }
 }
 
 BOOST_AUTO_TEST_CASE(invalid_first_and_later_proofs_have_bounded_speculation)

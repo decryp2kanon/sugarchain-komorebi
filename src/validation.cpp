@@ -4628,7 +4628,7 @@ bool Chainstate::LoadChainTip()
     if (!pindex) {
         return false;
     }
-    m_chain.SetTip(*pindex);
+    m_chain.SetTip(*pindex, m_blockman.m_opts.fast_startup);
     m_chainman.UpdateIBDStatus();
     tip = m_chain.Tip();
 
@@ -4646,7 +4646,7 @@ bool Chainstate::LoadChainTip()
         // SetTip's array supplies prefetch hints only. Keep the original parent
         // traversal as the authority for which indexes receive the sequence ID.
         constexpr int PREFETCH_DISTANCE{8};
-        if (target->nHeight >= PREFETCH_DISTANCE) {
+        if (m_blockman.m_opts.fast_startup && target->nHeight >= PREFETCH_DISTANCE) {
             if (const auto* upcoming{m_chain[target->nHeight - PREFETCH_DISTANCE]}) {
                 __builtin_prefetch(&upcoming->pprev, 0, 3);
                 __builtin_prefetch(&upcoming->nSequenceId, 1, 3);
@@ -4949,7 +4949,7 @@ bool Chainstate::NeedsRedownload() const
         // Keep every witness check and the original parent traversal. The
         // already-built active chain supplies only read-ahead hints.
         constexpr int PREFETCH_DISTANCE{8};
-        if (block->nHeight >= PREFETCH_DISTANCE) {
+        if (m_blockman.m_opts.fast_startup && block->nHeight >= PREFETCH_DISTANCE) {
             if (const auto* upcoming{m_chain[block->nHeight - PREFETCH_DISTANCE]}) {
                 __builtin_prefetch(&upcoming->pprev, 0, 3);
                 __builtin_prefetch(&upcoming->nStatus, 0, 3);
@@ -4976,9 +4976,7 @@ void Chainstate::PopulateBlockIndexCandidates()
 {
     AssertLockHeld(::cs_main);
 
-    // cs_main keeps the map stable; avoid a temporary full-size pointer list.
-    for (auto& [hash, index] : m_blockman.m_block_index) {
-        CBlockIndex* pindex{&index};
+    const auto add_candidate = [&](CBlockIndex* pindex) EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
         // With assumeutxo, the snapshot block is a candidate for the tip, but it
         // may not have BLOCK_VALID_TRANSACTIONS (e.g. if we haven't yet downloaded
         // the block), so we special-case it here.
@@ -4987,6 +4985,12 @@ void Chainstate::PopulateBlockIndexCandidates()
                  (pindex->HaveNumChainTxs() || pindex->pprev == nullptr))) {
             TryAddBlockIndexCandidate(pindex);
         }
+    };
+    if (m_blockman.m_opts.fast_startup) {
+        // cs_main keeps the map stable; avoid a temporary full-size pointer list.
+        for (auto& [hash, index] : m_blockman.m_block_index) add_candidate(&index);
+    } else {
+        for (CBlockIndex* pindex : m_blockman.GetAllBlockIndices()) add_candidate(pindex);
     }
 }
 
@@ -4996,18 +5000,25 @@ bool ChainstateManager::LoadBlockIndex()
     // Load block index from databases
     if (m_blockman.m_blockfiles_indexed) {
         std::vector<CBlockIndex*> vSortedByHeight;
-        bool ret{m_blockman.LoadBlockIndexDB(CurrentChainstate().m_from_snapshot_blockhash, &vSortedByHeight)};
+        bool ret{m_blockman.LoadBlockIndexDB(CurrentChainstate().m_from_snapshot_blockhash,
+            m_blockman.m_opts.fast_startup ? &vSortedByHeight : nullptr)};
         if (!ret) return false;
 
         m_blockman.ScanAndUnlinkAlreadyPrunedFiles();
 
-        // cs_main is held throughout. Pruned-file cleanup changes only files,
+        if (!m_blockman.m_opts.fast_startup) {
+            vSortedByHeight = m_blockman.GetAllBlockIndices("Preparing block headers");
+            node::StartupProgress sorting{"Sorting block headers", vSortedByHeight.size()};
+            std::sort(vSortedByHeight.begin(), vSortedByHeight.end(), node::CBlockIndexHeightOnlyComparator());
+            sorting.FinishSort();
+        }
+        // In fast mode cs_main is held throughout. Pruned-file cleanup changes only files,
         // so reuse the height ordering already built for index linking.
         node::StartupProgress selecting{"Selecting best block header", vSortedByHeight.size()};
         for (size_t position = 0; position < vSortedByHeight.size(); ++position) {
 #if defined(__GNUC__) || defined(__clang__)
             constexpr size_t PREFETCH_DISTANCE{8};
-            if (vSortedByHeight.size() - position > PREFETCH_DISTANCE) {
+            if (m_blockman.m_opts.fast_startup && vSortedByHeight.size() - position > PREFETCH_DISTANCE) {
                 const auto* upcoming{vSortedByHeight[position + PREFETCH_DISTANCE]};
                 __builtin_prefetch(&upcoming->nChainWork, 0, 3);
                 __builtin_prefetch(&upcoming->nStatus, 0, 3);

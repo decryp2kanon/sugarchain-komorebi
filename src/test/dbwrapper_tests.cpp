@@ -263,14 +263,16 @@ BOOST_AUTO_TEST_CASE(iterator_failed_read_does_not_consume_storage)
         cursor->Seek(uint8_t{'j'});
         std::pair<uint8_t, uint256> oversized_key;
         uint256 oversized_value;
-        for (int repeat = 0; repeat < 2; ++repeat) {
-            BOOST_CHECK(!cursor->GetKey(oversized_key));
-            BOOST_CHECK(!cursor->GetValue(oversized_value));
-            uint8_t key{0}, value{0};
-            BOOST_REQUIRE(cursor->GetKey(key));
-            BOOST_REQUIRE(cursor->GetValue(value));
-            BOOST_CHECK_EQUAL(key, uint8_t{'j'});
-            BOOST_CHECK_EQUAL(value, 42);
+        for (const bool direct_read : {false, true}) {
+            for (int repeat = 0; repeat < 2; ++repeat) {
+                BOOST_CHECK(!cursor->GetKey(oversized_key, direct_read));
+                BOOST_CHECK(!cursor->GetValue(oversized_value, direct_read));
+                uint8_t key{0}, value{0};
+                BOOST_REQUIRE(cursor->GetKey(key, direct_read));
+                BOOST_REQUIRE(cursor->GetValue(value, direct_read));
+                BOOST_CHECK_EQUAL(key, uint8_t{'j'});
+                BOOST_CHECK_EQUAL(value, 42);
+            }
         }
     }
 }

@@ -155,20 +155,26 @@ public:
 
     void Next();
 
-    template<typename K> bool GetKey(K& key) {
+    /** Direct reads are opt-in; ordinary callers retain the copying stream. */
+    template<typename K> bool GetKey(K& key, bool direct_read = false) {
         try {
-            SpanReader ssKey{GetKeyImpl()};
-            ssKey >> key;
+            if (direct_read) {
+                SpanReader ssKey{GetKeyImpl()};
+                ssKey >> key;
+            } else {
+                DataStream ssKey{GetKeyImpl()};
+                ssKey >> key;
+            }
         } catch (const std::exception&) {
             return false;
         }
         return true;
     }
 
-    template<typename V> bool GetValue(V& value) {
+    template<typename V> bool GetValue(V& value, bool direct_read = false) {
         try {
             const auto& obfuscation{dbwrapper_private::GetObfuscation(parent)};
-            if (!obfuscation) {
+            if (direct_read && !obfuscation) {
                 // The iterator bytes remain valid throughout deserialization.
                 SpanReader ssValue{GetValueImpl()};
                 ssValue >> value;

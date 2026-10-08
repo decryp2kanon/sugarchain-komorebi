@@ -27,6 +27,7 @@ struct BlockManagerOpts {
     uint64_t prune_target{0};
     bool fast_prune{false};
     int startup_pow_workers{1};
+    /** Opt in to disk PoW trust and startup performance optimizations together. */
     bool fast_startup{false};
     const fs::path blocks_dir;
     Notifications& notifications;
