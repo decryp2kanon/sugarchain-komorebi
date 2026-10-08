@@ -45,12 +45,14 @@
 
 #include <boost/sort/spreadsort/integer_sort.hpp>
 
+#include <array>
 #include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <compare>
 #include <cstddef>
 #include <cstdio>
+#include <cstring>
 #include <exception>
 #include <map>
 #include <new>
@@ -364,7 +366,22 @@ void SortBlockIndicesByHeight(std::vector<CBlockIndex*>& indices)
     }
     struct CachedIndex {
         int height;
-        CBlockIndex* index;
+        // Byte storage avoids padding for pointer alignment. memcpy restores
+        // the original pointer value without an unaligned pointer dereference.
+        std::array<std::byte, sizeof(CBlockIndex*)> index_bytes;
+
+        CachedIndex() = default;
+        explicit CachedIndex(CBlockIndex* index) : height{index->nHeight}
+        {
+            std::memcpy(index_bytes.data(), &index, sizeof(index));
+        }
+
+        CBlockIndex* GetIndex() const
+        {
+            CBlockIndex* index;
+            std::memcpy(&index, index_bytes.data(), sizeof(index));
+            return index;
+        }
     };
     std::vector<CachedIndex> cached;
     try {
@@ -374,12 +391,12 @@ void SortBlockIndicesByHeight(std::vector<CBlockIndex*>& indices)
         pointer_sort();
         return;
     }
-    for (auto* index : indices) cached.push_back({index->nHeight, index});
+    for (auto* index : indices) cached.emplace_back(index);
     boost::sort::spreadsort::integer_sort(
         cached.begin(), cached.end(),
         [](const CachedIndex& entry, unsigned shift) { return entry.height >> shift; },
         [](const CachedIndex& a, const CachedIndex& b) { return a.height < b.height; });
-    for (size_t i = 0; i < indices.size(); ++i) indices[i] = cached[i].index;
+    for (size_t i = 0; i < indices.size(); ++i) indices[i] = cached[i].GetIndex();
 }
 
 std::vector<CBlockIndex*> BlockManager::GetAllBlockIndices(const char* startup_stage)
