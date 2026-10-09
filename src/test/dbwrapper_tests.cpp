@@ -57,7 +57,7 @@ BOOST_AUTO_TEST_CASE(small_table_cache_preserves_reads_across_eviction)
     leveldb::Options options;
     options.create_if_missing = true;
     options.small_table_cache = true;
-    options.max_open_files = 26;
+    options.max_open_files = 10; // Opt-in zero retained tables; live iterators keep their references.
     options.write_buffer_size = 64 * 1024;
     options.max_file_size = 1024 * 1024;
     options.compression = leveldb::kNoCompression;

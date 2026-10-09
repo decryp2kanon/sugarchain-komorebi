@@ -180,6 +180,30 @@ comparison supports physical-memory savings; the alternating three-run
 comparison above is used for startup timing. Neither experiment proves
 4–8 GiB host viability.
 
+A final small-cache trial permits zero retained table-cache entries only
+through the existing opt-in flag. Linux fast-mode block-index DB requests
+max_open_files=10, the existing non-table allowance. LevelDB's supported
+capacity-zero LRU path does not retain a cache reference; active iterator
+handles continue owning their tables until normal release. Block/write cache
+budgets, checksums, validation and the default 64-table floor are unchanged.
+Reducing a positive capacity from 16 to 8 would not help: the 16 cache shards
+round both requests up to one entry per shard.
+
+Three alternating baseline/candidate runs measured baseline
+68.005 / 71.892 / 69.027 seconds (median 69.027), against
+67.675 / 71.067 / 66.907 seconds (median 67.675). Timing differences were
+within run variation. Median peak RSS fell from 10,899,600 to 10,267,356 KiB,
+another 617 MiB (5.80%). Ready RSS fell from 10,553,024 to 9,921,084 KiB.
+All state/header checks and verifychain matched; the 52 relevant unit cases
+and startup mode/reindex/missing-file/new-block functional test passed. The
+multi-SST regression fixture now exercises zero retained tables as well.
+
+A private cold-copy/no-swap 24 GiB cgroup run measured 9.811 GiB sampled
+memory.current peak, 9.793 GiB process peak RSS and 68.618-second startup,
+without OOM or swap. Resident anonymous index memory remains about 9.45 GiB,
+and mainnet sync throughput/4–8 GiB viability remain unmeasured. The retained
+read-cache policy stays in effect after startup, potentially adding disk reads.
+
 ## Regression coverage
 
 `header_pow_tests` covers real Yespower validation, opt-in disk trust, failure
