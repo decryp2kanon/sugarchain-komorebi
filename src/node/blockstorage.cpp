@@ -69,28 +69,6 @@
 
 namespace kernel {
 namespace {
-std::string FormatCompactDuration(std::chrono::seconds duration)
-{
-    uint64_t remaining{duration.count() > 0 ? static_cast<uint64_t>(duration.count()) : 0};
-    std::string result;
-    const auto append = [&](uint64_t unit, std::string_view suffix) {
-        const uint64_t value{remaining / unit};
-        if (value) {
-            result += std::to_string(value);
-            result += suffix;
-        }
-        remaining %= unit;
-    };
-    append(365 * 24 * 60 * 60, "y");
-    append(30 * 24 * 60 * 60, "mo");
-    append(7 * 24 * 60 * 60, "w");
-    append(24 * 60 * 60, "d");
-    append(60 * 60, "h");
-    append(60, "m");
-    append(1, "s");
-    return result.empty() ? "0s" : result;
-}
-
 std::string FormatGroupedCount(uint64_t count)
 {
     std::string result{std::to_string(count)};
@@ -167,7 +145,6 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
     uint64_t total_entries{0};
     if (fast_startup) {
         uiInterface.InitMessage("Counting block index entries...");
-        const auto count_start{SteadyClock::now()};
         {
             std::unique_ptr<CDBIterator> count_cursor(NewIterator());
             count_cursor->Seek(std::make_pair(DB_BLOCK_INDEX, uint256()));
@@ -179,18 +156,15 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
                 count_cursor->Next();
             }
         }
-        LogInfo("Counted %s block index entries in %s", FormatGroupedCount(total_entries),
-                FormatCompactDuration(std::chrono::duration_cast<std::chrono::seconds>(SteadyClock::now() - count_start)));
+        LogInfo("Counted %s block index entries", FormatGroupedCount(total_entries));
         if (reserveBlockIndex) reserveBlockIndex(total_entries);
     }
     std::unique_ptr<CDBIterator> pcursor(NewIterator());
     pcursor->Seek(std::make_pair(DB_BLOCK_INDEX, uint256()));
 
-    const auto start{SteadyClock::now()};
-    auto previous_time{start};
     uint64_t processed{0};
-    uint64_t previous_processed{0};
     unsigned next_percent{1};
+    unsigned next_log_percent{25};
     const auto progress_threshold = [&](unsigned percent) {
         // Ceil(percent * total / 100) without overflowing uint64_t.
         return (total_entries / 100) * percent + ((total_entries % 100) * percent + 99) / 100;
@@ -209,27 +183,18 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
         pending_indexes.reserve(pow_workers);
     }
     const auto log_progress = [&](unsigned percent) {
-        const auto now{SteadyClock::now()};
-        const auto elapsed_duration{now - start};
-        const double interval{Ticks<SecondsDouble>(now - previous_time)};
-        const double rate{interval > 0 ? (processed - previous_processed) / interval : 0.0};
         std::string message;
+        bool log{true};
         if (fast_startup) {
-            const std::string eta{processed == total_entries ? "0s" : rate > 0 ?
-                FormatCompactDuration(std::chrono::seconds{static_cast<int64_t>(std::ceil((total_entries - processed) / rate))}) : "--"};
-            message = strprintf("Loading block index: %s / %s (%u%%) | %.0f/s | elapsed %s | ETA %s",
-                                         FormatGroupedCount(processed), FormatGroupedCount(total_entries), percent, rate,
-                                         FormatCompactDuration(std::chrono::duration_cast<std::chrono::seconds>(elapsed_duration)), eta);
+            message = strprintf("Loading block index: %s / %s (%u%%)",
+                FormatGroupedCount(processed), FormatGroupedCount(total_entries), percent);
+            log = percent >= next_log_percent;
+            while (percent >= next_log_percent) next_log_percent += 25;
         } else {
-            // Preserve the pre-PR #10 processed-count/rate/elapsed display.
-            message = strprintf("Loading block index: %s | %.0f/s | %s",
-                FormatGroupedCount(processed), rate,
-                FormatCompactDuration(std::chrono::duration_cast<std::chrono::seconds>(elapsed_duration)));
+            // Legacy loading still reports at the original 2,000-entry boundaries.
+            message = strprintf("Loading block index: %s", FormatGroupedCount(processed));
         }
-        previous_processed = processed;
-        previous_time = now;
-        // InitMessage logs in both GUI and daemon, and queues the splash update in Qt.
-        uiInterface.InitMessage(message);
+        uiInterface.InitMessage(message, log);
     };
     const auto report_progress = [&] {
         if (!fast_startup) {

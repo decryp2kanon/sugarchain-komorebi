@@ -103,10 +103,13 @@ void AppTests::splashProgressFormat()
 
     for (const std::string stage : {"Preparing block index", "Linking block index", "Collecting block file references",
              "Checking block files", "Preparing block headers", "Selecting best block header"}) {
+        QCOMPARE(FormatBlockIndexSplashMessage(stage + "..."), stage + "...\n ");
+        QCOMPARE(FormatBlockIndexSplashMessage(stage + ": 50 / 100 (50%)"), stage + "...\n50 / 100 (50%)");
         QCOMPARE(FormatBlockIndexSplashMessage(stage + "... | 100 entries | elapsed 0s"), stage + "...\n ");
         QCOMPARE(FormatBlockIndexSplashMessage(stage + ": 50 / 100 (50%) | elapsed 1s | ETA 1s"), stage + "...\n50 / 100 (50%)");
         QCOMPARE(FormatBlockIndexSplashMessage(stage + ": 100 / 100 (100%) | elapsed 2s | ETA 0s"), stage + "...\n100 / 100 (100%)");
     }
+    QCOMPARE(FormatBlockIndexSplashMessage("Sorting block index completed."), std::string("Sorting block index completed.\n "));
 
 }
 

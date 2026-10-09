@@ -35,7 +35,7 @@ class FastStartupTest(BitcoinTestFramework):
                             "Prepared block index during loading: 202 entries"]
                 forbidden = ["Preparing block headers...", "Sorting block headers..."]
             else:
-                messages = ["Loading block index: 202 |", "Preparing block index...",
+                messages = ["Loading block index: 202", "Preparing block index...",
                             "Preparing block headers...", "Sorting block headers..."]
                 forbidden = ["Counting block index entries...", "Counted 202 block index entries",
                              "Prepared block index during loading:"]

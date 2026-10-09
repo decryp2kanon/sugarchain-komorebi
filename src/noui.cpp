@@ -62,16 +62,16 @@ static void LogInitMessage(const std::string& message)
     }
 }
 
-void noui_InitMessage(const std::string& message)
+void noui_InitMessage(const std::string& message, bool log)
 {
-    LogInitMessage(message);
+    if (log) LogInitMessage(message);
 }
 
 void noui_connect()
 {
     noui_ThreadSafeMessageBoxConn = uiInterface.ThreadSafeMessageBox_connect(noui_ThreadSafeMessageBox);
     noui_ThreadSafeQuestionConn = uiInterface.ThreadSafeQuestion_connect(noui_ThreadSafeQuestion);
-    noui_InitMessageConn = uiInterface.InitMessage_connect(noui_InitMessage);
+    noui_InitMessageConn = uiInterface.InitMessageWithLog_connect(noui_InitMessage);
 }
 
 bool noui_ThreadSafeMessageBoxRedirect(const bilingual_str& message, unsigned int style)
@@ -86,9 +86,9 @@ bool noui_ThreadSafeQuestionRedirect(const bilingual_str& /* ignored interactive
     return false;
 }
 
-void noui_InitMessageRedirect(const std::string& message)
+void noui_InitMessageRedirect(const std::string& message, bool log)
 {
-    LogInitMessage(message);
+    if (log) LogInitMessage(message);
 }
 
 void noui_test_redirect()
@@ -98,7 +98,7 @@ void noui_test_redirect()
     noui_InitMessageConn.disconnect();
     noui_ThreadSafeMessageBoxConn = uiInterface.ThreadSafeMessageBox_connect(noui_ThreadSafeMessageBoxRedirect);
     noui_ThreadSafeQuestionConn = uiInterface.ThreadSafeQuestion_connect(noui_ThreadSafeQuestionRedirect);
-    noui_InitMessageConn = uiInterface.InitMessage_connect(noui_InitMessageRedirect);
+    noui_InitMessageConn = uiInterface.InitMessageWithLog_connect(noui_InitMessageRedirect);
 }
 
 void noui_reconnect()

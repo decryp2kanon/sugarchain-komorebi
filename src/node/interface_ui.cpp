@@ -17,7 +17,7 @@ CClientUIInterface uiInterface;
 struct UISignals {
     boost::signals2::signal<CClientUIInterface::ThreadSafeMessageBoxSig, boost::signals2::optional_last_value<bool>> ThreadSafeMessageBox;
     boost::signals2::signal<CClientUIInterface::ThreadSafeQuestionSig, boost::signals2::optional_last_value<bool>> ThreadSafeQuestion;
-    boost::signals2::signal<CClientUIInterface::InitMessageSig> InitMessage;
+    boost::signals2::signal<CClientUIInterface::InitMessageWithLogSig> InitMessage;
     boost::signals2::signal<CClientUIInterface::InitWalletSig> InitWallet;
     boost::signals2::signal<CClientUIInterface::NotifyNumConnectionsChangedSig> NotifyNumConnectionsChanged;
     boost::signals2::signal<CClientUIInterface::NotifyNetworkActiveChangedSig> NotifyNetworkActiveChanged;
@@ -37,7 +37,15 @@ static UISignals g_ui_signals;
 
 ADD_SIGNALS_IMPL_WRAPPER(ThreadSafeMessageBox);
 ADD_SIGNALS_IMPL_WRAPPER(ThreadSafeQuestion);
-ADD_SIGNALS_IMPL_WRAPPER(InitMessage);
+boost::signals2::connection CClientUIInterface::InitMessage_connect(std::function<InitMessageSig> fn)
+{
+    return g_ui_signals.InitMessage.connect([fn](const std::string& message, bool) { fn(message); });
+}
+
+boost::signals2::connection CClientUIInterface::InitMessageWithLog_connect(std::function<InitMessageWithLogSig> fn)
+{
+    return g_ui_signals.InitMessage.connect(fn);
+}
 ADD_SIGNALS_IMPL_WRAPPER(InitWallet);
 ADD_SIGNALS_IMPL_WRAPPER(NotifyNumConnectionsChanged);
 ADD_SIGNALS_IMPL_WRAPPER(NotifyNetworkActiveChanged);
@@ -49,7 +57,7 @@ ADD_SIGNALS_IMPL_WRAPPER(BannedListChanged);
 
 bool CClientUIInterface::ThreadSafeMessageBox(const bilingual_str& message, unsigned int style) { return g_ui_signals.ThreadSafeMessageBox(message, style).value_or(false);}
 bool CClientUIInterface::ThreadSafeQuestion(const bilingual_str& message, const std::string& non_interactive_message, unsigned int style) { return g_ui_signals.ThreadSafeQuestion(message, non_interactive_message, style).value_or(false);}
-void CClientUIInterface::InitMessage(const std::string& message) { return g_ui_signals.InitMessage(message); }
+void CClientUIInterface::InitMessage(const std::string& message, bool log) { return g_ui_signals.InitMessage(message, log); }
 void CClientUIInterface::InitWallet() { return g_ui_signals.InitWallet(); }
 void CClientUIInterface::NotifyNumConnectionsChanged(int newNumConnections) { return g_ui_signals.NotifyNumConnectionsChanged(newNumConnections); }
 void CClientUIInterface::NotifyNetworkActiveChanged(bool networkActive) { return g_ui_signals.NotifyNetworkActiveChanged(networkActive); }

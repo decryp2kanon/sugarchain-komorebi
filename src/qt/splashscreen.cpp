@@ -185,11 +185,11 @@ std::string FormatBlockIndexSplashMessage(const std::string& message)
             if (message.compare(0, stage.size(), stage) != 0) continue;
             const size_t body{message.find(": ")};
             const size_t separator{message.find(" | ")};
-            if (separator == std::string::npos) return message + "\n ";
-            const bool counted{body != std::string::npos && body < separator};
-            const bool progress{counted && message.substr(body + 2, separator - body - 2).find(" / ") != std::string::npos};
-            return stage + (message.compare(stage.size(), 11, " completed:") == 0 ? " completed.\n" : "...\n") +
-                (progress ? message.substr(body + 2, separator - body - 2) : " ");
+            const size_t end{separator == std::string::npos ? message.size() : separator};
+            const bool counted{body != std::string::npos && body < end};
+            const bool progress{counted && message.substr(body + 2, end - body - 2).find(" / ") != std::string::npos};
+            return stage + (message.compare(stage.size(), 10, " completed") == 0 ? " completed.\n" : "...\n") +
+                (progress ? message.substr(body + 2, end - body - 2) : " ");
         }
         return message.find('\n') == std::string::npos ? message + "\n " : message;
     }
