@@ -9,6 +9,9 @@
 #include <versionbits.h>
 #include <versionbits_impl.h>
 
+#include <bit>
+#include <unordered_map>
+
 using enum ThresholdState;
 
 std::string StateName(ThresholdState state)
@@ -21,6 +24,16 @@ std::string StateName(ThresholdState state)
     case FAILED: return "failed";
     }
     return "invalid";
+}
+
+int AbstractThresholdConditionChecker::CountSignals(const CBlockIndex* pindex) const
+{
+    int count{0};
+    const int period{Period()};
+    for (int i = 0; i < period; ++i, pindex = pindex->pprev) {
+        if (Condition(pindex)) ++count;
+    }
+    return count;
 }
 
 ThresholdState AbstractThresholdConditionChecker::GetStateFor(const CBlockIndex* pindexPrev, ThresholdConditionCache& cache) const
@@ -82,14 +95,7 @@ ThresholdState AbstractThresholdConditionChecker::GetStateFor(const CBlockIndex*
             }
             case ThresholdState::STARTED: {
                 // We need to count
-                const CBlockIndex* pindexCount = pindexPrev;
-                int count = 0;
-                for (int i = 0; i < nPeriod; i++) {
-                    if (Condition(pindexCount)) {
-                        count++;
-                    }
-                    pindexCount = pindexCount->pprev;
-                }
+                const int count{CountSignals(pindexPrev)};
                 if (count >= nThreshold) {
                     stateNext = ThresholdState::LOCKED_IN;
                 } else if (pindexPrev->GetMedianTimePast() >= nTimeTimeout) {
@@ -304,10 +310,13 @@ private:
     int m_bit;
     int period{2016};
     int threshold{1815}; // 90% threshold used in BIP 341
+    using Counts = std::array<int, VERSIONBITS_NUM_BITS>;
+    std::unordered_map<const CBlockIndex*, Counts>* m_shared_counts;
 
 public:
-    explicit WarningBitsConditionChecker(const CChainParams& chainparams, std::array<ThresholdConditionCache, Consensus::MAX_VERSION_BITS_DEPLOYMENTS>& caches, int bit)
-    : m_params{chainparams.GetConsensus()}, m_caches{caches}, m_bit(bit)
+    explicit WarningBitsConditionChecker(const CChainParams& chainparams, std::array<ThresholdConditionCache, Consensus::MAX_VERSION_BITS_DEPLOYMENTS>& caches, int bit,
+                                        std::unordered_map<const CBlockIndex*, Counts>* shared_counts = nullptr)
+    : m_params{chainparams.GetConsensus()}, m_caches{caches}, m_bit(bit), m_shared_counts{shared_counts}
     {
         if (chainparams.IsTestChain()) {
             period = chainparams.GetConsensus().DifficultyAdjustmentInterval();
@@ -320,6 +329,28 @@ public:
     int Period() const override { return period; }
     int Threshold() const override { return threshold; }
 
+    int CountSignals(const CBlockIndex* pindex) const override
+    {
+        if (!m_shared_counts) return AbstractThresholdConditionChecker::CountSignals(pindex);
+        auto [it, inserted] = m_shared_counts->try_emplace(pindex, Counts{});
+        if (inserted) {
+            // All warning bits use the same period. Inspect each header once,
+            // preserving Condition()'s height, top-bit and expected-version checks.
+            for (int i = 0; i < period; ++i, pindex = pindex->pprev) {
+                if (pindex->nHeight < m_params.MinBIP9WarningHeight ||
+                    (pindex->nVersion & VERSIONBITS_TOP_MASK) != VERSIONBITS_TOP_BITS) continue;
+                uint32_t bits = uint32_t(pindex->nVersion) & ((uint32_t{1} << VERSIONBITS_NUM_BITS) - 1);
+                if (!bits) continue;
+                bits &= ~uint32_t(::ComputeBlockVersion(pindex->pprev, m_params, m_caches));
+                while (bits) {
+                    ++it->second[std::countr_zero(bits)];
+                    bits &= bits - 1;
+                }
+            }
+        }
+        return it->second[m_bit];
+    }
+
     bool Condition(const CBlockIndex* pindex) const override
     {
         return pindex->nHeight >= m_params.MinBIP9WarningHeight &&
@@ -330,12 +361,15 @@ public:
 };
 } // anonymous namespace
 
-std::vector<std::pair<int, bool>> VersionBitsCache::CheckUnknownActivations(const CBlockIndex* pindex, const CChainParams& chainparams)
+std::vector<std::pair<int, bool>> VersionBitsCache::CheckUnknownActivations(const CBlockIndex* pindex, const CChainParams& chainparams, bool share_counts)
 {
     LOCK(m_mutex);
     std::vector<std::pair<int, bool>> result;
+    // Temporary, keyed by period-ending block (not height), so fork counts
+    // cannot be mixed. Existing per-bit state caches remain authoritative.
+    std::unordered_map<const CBlockIndex*, std::array<int, VERSIONBITS_NUM_BITS>> shared_counts;
     for (int bit = 0; bit < VERSIONBITS_NUM_BITS; ++bit) {
-        WarningBitsConditionChecker checker(chainparams, m_caches, bit);
+        WarningBitsConditionChecker checker(chainparams, m_caches, bit, share_counts ? &shared_counts : nullptr);
         ThresholdState state = checker.GetStateFor(pindex, m_warning_caches.at(bit));
         if (state == ACTIVE || state == LOCKED_IN) {
             result.emplace_back(bit, state == ACTIVE);

@@ -93,8 +93,9 @@ public:
 
     /** Check for unknown activations
      *  Returns a vector containing the bit number used for signalling and a bool
-     *  indicating the deployment is likely to be ACTIVE, rather than merely LOCKED_IN. */
-    std::vector<std::pair<int,bool>> CheckUnknownActivations(const CBlockIndex* pindex, const CChainParams& chainparams) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+     *  indicating the deployment is likely to be ACTIVE, rather than merely LOCKED_IN.
+     *  share_counts inspects each uncached warning period once for all bits. */
+    std::vector<std::pair<int,bool>> CheckUnknownActivations(const CBlockIndex* pindex, const CChainParams& chainparams, bool share_counts = false) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     void Clear() EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 };
