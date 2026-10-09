@@ -671,6 +671,10 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
                 GetConsensus(), [this, &loaded_indices](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) { return this->InsertBlockIndex(hash, &loaded_indices); }, m_interrupt, m_opts.startup_pow_workers, m_opts.fast_startup,
                 [this, &loaded_indices](uint64_t count) EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
                     loaded_indices.reserve(std::max<uint64_t>(loaded_indices.size(), count));
+                    if (m_block_index.IsCompact()) {
+                        m_block_index.reserve(count);
+                        return;
+                    }
                     // Counting already inspected this DB. Reserve buckets before
                     // inserting, without changing keys, objects, or verification.
                     // Rehash preserves references to existing indexes and map keys.
@@ -1548,7 +1552,7 @@ BlockManager::BlockManager(const util::SignalInterrupt& interrupt, Options opts)
       m_undo_file_seq{FlatFileSeq{m_opts.blocks_dir, "rev", UNDOFILE_CHUNK_SIZE}},
       m_interrupt{interrupt},
       m_block_index_resource{m_opts.fast_startup ? std::make_unique<PoolResource<512, 8>>() : nullptr},
-      m_block_index{0, BlockHasher{}, std::equal_to<uint256>{}, BlockMap::allocator_type{m_block_index_resource.get()}}
+      m_block_index{0, BlockHasher{}, std::equal_to<uint256>{}, BlockMap::allocator_type{m_block_index_resource.get()}, m_opts.fast_startup}
 {
     auto db_params{m_opts.block_tree_db_params};
     db_params.reclaim_read_cache = m_opts.fast_startup;

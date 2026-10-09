@@ -13,10 +13,10 @@
 #include <kernel/chainparams.h>
 #include <kernel/cs_main.h>
 #include <kernel/messagestartchars.h>
+#include <node/blockmap.h>
 #include <primitives/block.h>
 #include <serialize.h>
 #include <streams.h>
-#include <support/allocators/pool.h>
 #include <sync.h>
 #include <uint256.h>
 #include <util/expected.h>
@@ -128,39 +128,6 @@ static constexpr uint32_t STORAGE_HEADER_BYTES{std::tuple_size_v<MessageStartCha
 
 /** Total overhead when writing undo data: header (8 bytes) plus checksum (32 bytes) */
 static constexpr uint32_t UNDO_DATA_DISK_OVERHEAD{STORAGE_HEADER_BYTES + uint256::size()};
-
-// Because validation code takes pointers to the map's CBlockIndex objects, if
-// we ever switch to another associative container, we need to either use a
-// container that has stable addressing (true of all std associative
-// containers), or make the key a `std::unique_ptr<CBlockIndex>`
-template <class T>
-class BlockIndexAllocator {
-    template <class U> friend class BlockIndexAllocator;
-    PoolResource<512, 8>* m_resource;
-
-public:
-    using value_type = T;
-    explicit BlockIndexAllocator(PoolResource<512, 8>* resource = nullptr) noexcept : m_resource{resource} {}
-    template <class U>
-    BlockIndexAllocator(const BlockIndexAllocator<U>& other) noexcept : m_resource{other.m_resource} {}
-    template <class U> struct rebind { using other = BlockIndexAllocator<U>; };
-
-    T* allocate(size_t count)
-    {
-        if (m_resource) return static_cast<T*>(m_resource->Allocate(count * sizeof(T), alignof(T)));
-        return std::allocator<T>{}.allocate(count);
-    }
-    void deallocate(T* ptr, size_t count) noexcept
-    {
-        if (m_resource) m_resource->Deallocate(ptr, count * sizeof(T), alignof(T));
-        else std::allocator<T>{}.deallocate(ptr, count);
-    }
-    template <class U>
-    bool operator==(const BlockIndexAllocator<U>& other) const noexcept { return m_resource == other.m_resource; }
-};
-
-using BlockMap = std::unordered_map<uint256, CBlockIndex, BlockHasher, std::equal_to<uint256>,
-    BlockIndexAllocator<std::pair<const uint256, CBlockIndex>>>;
 
 struct CBlockIndexWorkComparator {
     bool operator()(const CBlockIndex* pa, const CBlockIndex* pb) const;

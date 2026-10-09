@@ -204,6 +204,71 @@ without OOM or swap. Resident anonymous index memory remains about 9.45 GiB,
 and mainnet sync throughput/4–8 GiB viability remain unmeasured. The retained
 read-cache policy stays in effect after startup, potentially adding disk reads.
 
+## Fast-only compact block-index map
+
+Fast startup uses stable append-only chunks for the original hash/index pairs
+and an open-addressed lookup table instead of per-node links and pointer-sized
+buckets. Each lookup slot stores a checked 32-bit entry ID and an 8-bit hash
+fingerprint in five bytes. Salted full-key hashing limits predictable probe
+collisions; the fingerprint is only a filter and every match still compares
+the complete 256-bit key. This changes neither block hashes nor validation.
+
+Live keys and CBlockIndex objects retain their addresses during growth and
+rehash. Deleted entries are destroyed, and their storage is reused through an
+allocation-free free list. Iteration skips deleted entries. The representable
+entry count is bounded by the reserved 32-bit IDs and address-space capacity;
+oversized reservation/insertion throws instead of truncating an ID.
+
+The compact backend is selected only by `-fast-startup=1`. Mode zero retains
+the original unordered_map backend, allocator, full CBlockIndex fields,
+historical Yespower checks and startup algorithms. The public container facade
+has constant overhead in both modes, but there is no shared compressed field
+representation. DB formats, progress messages, user `-dbcache` and
+`-maxpowcache` values are unchanged. The shared compact-chainwork prototype
+was rejected after the user requested fast-only structural changes.
+
+Three alternating fresh offline-snapshot runs used 44,806,391 entries and
+the same `-parpow=8 -dbcache=4096 -maxpowcache=2048 -assumevalid=0` settings.
+The control was tag `fast-startup-rss-stable-20261009` (8943f1f).
+
+| Metric | Control | Compact map | Change |
+|---|---:|---:|---:|
+| Startup median | 73.963 s | 74.877 s | +0.915 s / +1.24% |
+| Peak RSS median | 10,266,932 KiB | 9,162,092 KiB | -1,079 MiB / -10.76% |
+| Ready RSS median | 9,920,540 KiB | 8,815,240 KiB | -1,079 MiB |
+
+Control times were 73.963 / 75.061 / 72.373 seconds; candidate times were
+74.877 / 74.550 / 76.706 seconds. The ranges overlap, so the small startup
+difference is not a guaranteed per-run cost. The repeatable memory saving is
+substantially larger than the measured percentage time increase. All six runs
+matched best block, chainwork and 500 recent/500 historical header digests;
+verifychain passed and the nodes shut down normally, without process swap.
+
+Separate cold-copy trials in fresh 24 GiB/no-swap cgroups sampled physical
+memory.current peaks of 9.822 GiB and 8.763 GiB. Process peak RSS was 9.793
+and 8.737 GiB; startup took 73.233 and 75.618 seconds. Snapshot copying
+occurred outside the measurement cgroups. No OOM or swap events occurred.
+These single-run physical checks corroborate memory savings; the alternating
+three-run comparison is the timing result. They do not prove 4-8 GiB VPS
+viability or mainnet synchronization throughput.
+
+The requested additional 50% RSS reduction was not reached: 9.79 GiB fell to
+8.74 GiB, rather than about 4.9 GiB. On this build, the unchanged 152-byte
+CBlockIndex and 32-byte key alone require about 7.68 GiB for this snapshot.
+Much larger savings require a separate representation of index fields and
+changes to their consumers, beyond this lookup-container refactor. Chunks
+retain their high-water allocation for reuse. Future lookup-table growth can
+temporarily retain both old and new tables; this is not an OOM guarantee.
+
+The 101 relevant block-manager/header-PoW/chain/chainstate/wallet unit cases
+passed with default options and with explicit `-fast-startup=1`. The final
+erase/reuse tests and a 100,000-entry lifecycle harness passed ASan/UBSan.
+Private functional tests cover competing branches, invalidate/reconsider,
+mode-zero/mode-one restarts, reindex-chainstate, missing files and persistence.
+The daemon, Qt executable and unit-test executable built successfully.
+Raw measurements and the scope/goal analysis are preserved in
+`/home/ak/ibd-optimization-evidence/20261009-pr10-compact-index/report.md`.
+
 ## Regression coverage
 
 `header_pow_tests` covers real Yespower validation, opt-in disk trust, failure

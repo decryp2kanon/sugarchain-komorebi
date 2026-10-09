@@ -36,6 +36,83 @@ using node::MAX_BLOCKFILE_SIZE;
 // use BasicTestingSetup here for the data directory configuration, setup, and cleanup
 BOOST_FIXTURE_TEST_SUITE(blockmanager_tests, BasicTestingSetup)
 
+BOOST_AUTO_TEST_CASE(compact_blockmap_keeps_addresses_and_keys_across_growth)
+{
+    for (bool compact : {false, true}) {
+        node::BlockMap map{0, BlockHasher{}, std::equal_to<uint256>{}, node::BlockMap::allocator_type{}, compact};
+        BOOST_CHECK_EQUAL(map.IsCompact(), compact);
+        std::vector<std::pair<const uint256*, CBlockIndex*>> original;
+        for (uint64_t id = 1; id <= 20000; ++id) {
+            // Identical low words also exercise full-key hashing/equality.
+            const auto hash{ArithToUint256(arith_uint256{id} << 64)};
+            auto [it, inserted]{map.try_emplace(hash)};
+            BOOST_REQUIRE(inserted);
+            it->second.phashBlock = &it->first;
+            it->second.nHeight = id;
+            if (!original.empty()) it->second.pprev = original.back().second;
+            original.emplace_back(&it->first, &it->second);
+            auto [duplicate, changed]{map.try_emplace(hash)};
+            BOOST_CHECK(!changed);
+            BOOST_CHECK(&duplicate->second == &it->second);
+        }
+        map.reserve(100000);
+        BOOST_CHECK_EQUAL(map.size(), original.size());
+        size_t visited{0};
+        for (const auto& [key, index] : map) {
+            BOOST_CHECK(index.GetBlockHash() == key);
+            BOOST_CHECK(original[index.nHeight - 1].first == &key);
+            BOOST_CHECK(original[index.nHeight - 1].second == &index);
+            if (index.nHeight > 1) BOOST_CHECK(index.pprev == original[index.nHeight - 2].second);
+            ++visited;
+        }
+        BOOST_CHECK_EQUAL(visited, map.size());
+        const auto& constant{map};
+        for (const auto& [key, index] : original) {
+            BOOST_CHECK(&constant.find(*key)->second == index);
+        }
+        BOOST_CHECK(!constant.contains(ArithToUint256(arith_uint256{1} << 255)));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(compact_blockmap_erase_reinsert_and_work)
+{
+    node::BlockMap map{0, BlockHasher{}, std::equal_to<uint256>{}, node::BlockMap::allocator_type{}, true};
+    map.reserve(6000);
+    for (uint64_t id = 1; id <= 6000; ++id) {
+        auto [it, inserted]{map.try_emplace(ArithToUint256(arith_uint256{id}))};
+        BOOST_REQUIRE(inserted);
+        it->second.nHeight = id;
+        it->second.phashBlock = &it->first;
+        it->second.nChainWork = arith_uint256{1} << 200;
+    }
+    for (auto it = map.begin(); it != map.end();) {
+        if (it->second.nHeight % 2) it = map.erase(it); else ++it;
+    }
+    BOOST_CHECK_EQUAL(map.size(), 3000);
+    for (uint64_t id = 1; id <= 6000; ++id) {
+        const auto key{ArithToUint256(arith_uint256{id})};
+        BOOST_CHECK_EQUAL(map.contains(key), id % 2 == 0);
+        auto [it, inserted]{map.try_emplace(key)};
+        BOOST_CHECK_EQUAL(inserted, id % 2 != 0);
+        it->second.nHeight = id;
+        it->second.phashBlock = &it->first;
+    }
+    map.reserve(100000);
+    BOOST_CHECK_EQUAL(map.size(), 6000);
+    size_t count{0};
+    for (auto it = map.cbegin(); it != map.cend(); ++it) {
+        BOOST_CHECK(it->second.GetBlockHash() == it->first);
+        if (it->second.nHeight % 2 == 0) BOOST_CHECK(it->second.nChainWork == (arith_uint256{1} << 200));
+        ++count;
+    }
+    BOOST_CHECK_EQUAL(count, 6000);
+    for (auto it = map.begin(); it != map.end();) it = map.erase(it);
+    BOOST_CHECK(map.empty());
+    BOOST_CHECK(map.begin() == map.end());
+    BOOST_CHECK(map.try_emplace(uint256{}).second);
+    BOOST_CHECK_THROW(map.reserve(map.max_size() + 1), std::length_error);
+}
+
 BOOST_AUTO_TEST_CASE(startup_height_sort_preserves_indexes)
 {
     FastRandomContext random{true};
