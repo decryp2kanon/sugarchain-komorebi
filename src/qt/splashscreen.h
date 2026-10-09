@@ -6,13 +6,11 @@
 #define BITCOIN_QT_SPLASHSCREEN_H
 
 #include <QWidget>
-#include <QElapsedTimer>
-#include <QTimer>
 
 #include <memory>
 #include <string>
 
-/** Turn block-index init notifications into a fixed-height three-line splash message. */
+/** Turn startup init notifications into a fixed-height two-line splash message. */
 std::string FormatBlockIndexSplashMessage(const std::string& message);
 
 class NetworkStyle;
@@ -64,9 +62,6 @@ private:
     QString curMessage;
     QColor curColor;
     int curAlignment{0};
-    QTimer m_elapsed_timer;
-    QElapsedTimer m_stage_clock;
-    QString m_elapsed_prefix;
 
     interfaces::Node* m_node = nullptr;
     bool m_shutdown = false;
