@@ -1551,8 +1551,7 @@ BlockManager::BlockManager(const util::SignalInterrupt& interrupt, Options opts)
       m_block_file_seq{FlatFileSeq{m_opts.blocks_dir, "blk", m_opts.fast_prune ? 0x4000 /* 16kB */ : BLOCKFILE_CHUNK_SIZE}},
       m_undo_file_seq{FlatFileSeq{m_opts.blocks_dir, "rev", UNDOFILE_CHUNK_SIZE}},
       m_interrupt{interrupt},
-      m_block_index_resource{m_opts.fast_startup ? std::make_unique<PoolResource<512, 8>>() : nullptr},
-      m_block_index{0, BlockHasher{}, std::equal_to<uint256>{}, BlockMap::allocator_type{m_block_index_resource.get()}, m_opts.fast_startup}
+      m_block_index{m_opts.fast_startup}
 {
     auto db_params{m_opts.block_tree_db_params};
     db_params.reclaim_read_cache = m_opts.fast_startup;

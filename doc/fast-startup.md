@@ -9,7 +9,7 @@ disk-index trust and the subsequent PR #10 performance optimizations.
 |---|---|---|
 | Disk iterator | Copying key/value streams, decode the key | Inspect key prefix, directly deserialize unobfuscated values |
 | Count and capacity | One loading pass, incremental map growth | Key-only pre-count, reserve spare buckets and pointer capacity |
-| Index node allocation | Standard per-node allocator | Stable-address pooled nodes, with large bucket allocations unchanged |
+| Index storage | Original `std::unordered_map` type, default allocator and cached hash policy | Stable original hash/index pairs in chunks, five-byte compact lookup slots |
 | Pointer collection | Collect from the map after loading | Collect newly inserted entries during loading; retain pre-existing entries on reload |
 | Height ordering | `std::sort` | Integer sort with temporary compact height/pointer cache |
 | Work reconstruction | Original 256-bit formula | Equivalent exact 64-bit formula for eligible compact targets |
@@ -87,8 +87,11 @@ map node. The three runs measured 63.743 / 62.010 / 61.535 seconds (median
 62.010) and median peak RSS 17,695,896 KiB. Compared with the pooled-node
 baseline, peak RSS fell another 345 MiB (1.96%) while startup time was within
 run-to-run variation (median 0.168 seconds faster). This declaration also
-changes the container's storage layout in default mode, but not its hash
-value, lookup algorithm, validation, or startup mode boundary. The isolated
+changed the container's storage layout in default mode, but not its hash
+value, lookup algorithm, or validation. This was a memory-policy leak across
+the intended mode boundary. The later mode-isolation change restores the
+original throwing signature and cached-hash policy for the legacy map; fast
+mode's separate compact table does not use `BlockHasher`. The isolated
 snapshot's best block, chainwork, and clean shutdown still matched. It does
 not by itself make a 4–8 GiB VPS viable; that requires a larger structural
 reduction and a constrained-memory test.
@@ -268,6 +271,55 @@ mode-zero/mode-one restarts, reindex-chainstate, missing files and persistence.
 The daemon, Qt executable and unit-test executable built successfully.
 Raw measurements and the scope/goal analysis are preserved in
 `/home/ak/ibd-optimization-evidence/20261009-pr10-compact-index/report.md`.
+
+## Original-mode storage isolation
+
+The legacy backend is now exactly
+`std::unordered_map<uint256, CBlockIndex, BlockHasher>` with its default
+allocator, as before PR #10. Compact chunks, lookup slots, free-list state
+and salted hashing are owned by a separately constructed fast backend.
+Mode zero creates none of those allocations. `BlockHasher` has its original
+non-`noexcept` signature, preserving the original libstdc++ cached-hash policy.
+The regression test compares the exact map type, bucket growth, reservation,
+iteration order and erasure against a directly instantiated original map.
+
+The Yespower cache similarly selects either the original single eagerly
+allocated cache or a separately owned tiered fast cache. Tier metadata is
+not constructed in mode zero. The configured budget, successful-proof-only
+evidence, batch domain separation and locking are unchanged. Tests switch
+backends repeatedly and check genuine-proof caching and invalid-proof
+rejection after every reset.
+
+These boundaries restore the original storage and startup algorithms, not
+an identical historical executable: progress improvements and constant mode
+dispatch remain shared. More memory in mode zero is expected and is not a
+regression against the user's requested original policy. No mode-zero
+startup benchmark is required for this change.
+
+Existing mode-one policies are preserved. In particular the compact lookup
+map, tiered proof cache and block-index DB read-cache policy still remain
+selected for that block manager/process after startup; this change does not
+turn them into transient startup-only policies or measure IBD throughput.
+
+Three alternating before/after runs, all with `-fast-startup=1`, used fresh
+copies of the same 44,806,391-entry offline snapshot and the same cache,
+verification and worker settings as the compact-map comparison above.
+
+| Median metric | Before separation (133bc57) | After separation |
+|---|---:|---:|
+| Startup | 77.585 s | 75.237 s |
+| Peak RSS | 9,162,200 KiB | 9,161,488 KiB |
+
+Control times were 77.585 / 75.023 / 77.776 seconds; candidate times were
+75.218 / 77.479 / 75.237 seconds. The time ranges overlap, so this confirms
+preservation of the fast path rather than a guaranteed new 3% speedup.
+Peak RSS remains about 8.74 GiB. All six runs matched best block, chainwork
+and recent/historical header digests, passed verifychain and shut down cleanly
+with no sampled process swap. The 103 relevant unit cases passed in both
+default and explicit fast modes; both private functional suites and the
+100,000-entry ASan/UBSan lifecycle harness passed. Mode-zero startup was
+not benchmarked, as requested. Raw results and the scope audit are in
+`/home/ak/ibd-optimization-evidence/20261009-pr10-mode-isolation/report.md`.
 
 ## Regression coverage
 

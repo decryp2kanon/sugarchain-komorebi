@@ -327,8 +327,6 @@ public:
      */
     std::atomic_bool m_blockfiles_indexed{true};
 
-    // Node allocations remain stable while avoiding per-entry allocator overhead.
-    std::unique_ptr<PoolResource<512, 8>> m_block_index_resource;
     BlockMap m_block_index GUARDED_BY(cs_main);
 
     /**

@@ -25,6 +25,7 @@
 #include <limits>
 #include <shared_mutex>
 #include <stdexcept>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -49,57 +50,71 @@ static_assert(MAX_YESPOWER_CACHE_BYTES / sizeof(uint256) <= std::numeric_limits<
 // neither a peer nor a persisted block-index status can populate it.
 class YespowerVerificationCache {
     using Cache = CuckooCache::cache<uint256, SignatureCacheHasher>;
+    // Only the fast backend owns tier metadata. The legacy backend remains
+    // the original single CuckooCache with eager configured-budget allocation.
+    struct GrowingCache {
+        std::vector<std::unique_ptr<Cache>> valid;
+        size_t budget;
+        size_t allocated;
+        uint32_t active_slots;
+        uint32_t active_inserts{0};
+        bool growth_disabled{false};
+
+        explicit GrowingCache(size_t valid_budget) : budget{valid_budget}
+        {
+            allocated = std::min(budget, std::min(DEFAULT_YESPOWER_CACHE_BYTES, std::max(size_t{64}, budget / 128)));
+            auto initial{std::make_unique<Cache>()};
+            active_slots = initial->setup_bytes(allocated).first;
+            valid.push_back(std::move(initial));
+        }
+        bool Contains(const uint256& entry) const
+        {
+            for (auto it{valid.rbegin()}; it != valid.rend(); ++it) {
+                if ((*it)->contains(entry, false)) return true;
+            }
+            return false;
+        }
+        void Insert(const uint256& entry)
+        {
+            if (Contains(entry)) return;
+            // Preserve older positive proof evidence and the configured budget.
+            if (!growth_disabled && active_inserts >= active_slots * 45 / 100 && allocated < budget) {
+                const size_t remaining{budget - allocated};
+                const size_t next_bytes{std::min(allocated * 2, remaining)};
+                if (next_bytes >= allocated) {
+                    try {
+                        auto next{std::make_unique<Cache>()};
+                        const auto [slots, _]{next->setup_bytes(next_bytes)};
+                        valid.push_back(std::move(next));
+                        allocated += next_bytes;
+                        active_slots = slots;
+                        active_inserts = 0;
+                    } catch (const std::bad_alloc&) {
+                        growth_disabled = true;
+                    }
+                } else {
+                    growth_disabled = true;
+                }
+            }
+            valid.back()->insert(entry);
+            if (!growth_disabled && allocated < budget) ++active_inserts;
+        }
+    };
+    using ValidStore = std::variant<std::unique_ptr<Cache>, std::unique_ptr<GrowingCache>>;
     CSHA256 m_hasher;
-    std::vector<std::unique_ptr<Cache>> m_valid;
+    ValidStore m_valid;
     std::unique_ptr<Cache> m_batches;
     std::shared_mutex m_mutex;
-    size_t m_valid_budget{0};
-    size_t m_valid_allocated{0};
-    uint32_t m_active_slots{0};
-    uint32_t m_active_inserts{0};
-    bool m_grow_on_demand{false};
-    bool m_growth_disabled{false};
 
     bool ContainsLocked(const uint256& entry) const
     {
-        for (auto it{m_valid.rbegin()}; it != m_valid.rend(); ++it) {
-            if ((*it)->contains(entry, false)) return true;
-        }
-        return false;
+        if (m_valid.index() == 0) return std::get<0>(m_valid)->contains(entry, false);
+        return std::get<1>(m_valid)->Contains(entry);
     }
-
     void InsertLocked(const uint256& entry)
     {
-        if (!m_grow_on_demand) {
-            m_valid.back()->insert(entry);
-            return;
-        }
-        if (ContainsLocked(entry)) return;
-        // Keep older positive proof evidence in its original tier. Allocated
-        // tables together never exceed the configured entry budget.
-        if (m_grow_on_demand && !m_growth_disabled &&
-            m_active_inserts >= m_active_slots * 45 / 100 &&
-            m_valid_allocated < m_valid_budget) {
-            const size_t remaining{m_valid_budget - m_valid_allocated};
-            const size_t next_bytes{std::min(m_valid_allocated * 2, remaining)};
-            if (next_bytes >= m_valid_allocated) {
-                try {
-                    auto next{std::make_unique<Cache>()};
-                    const auto [slots, _]{next->setup_bytes(next_bytes)};
-                    m_valid.push_back(std::move(next));
-                    m_valid_allocated += next_bytes;
-                    m_active_slots = slots;
-                    m_active_inserts = 0;
-                } catch (const std::bad_alloc&) {
-                    // A cache allocation must not invalidate a good proof.
-                    m_growth_disabled = true;
-                }
-            } else {
-                m_growth_disabled = true;
-            }
-        }
-        m_valid.back()->insert(entry);
-        if (!m_growth_disabled && m_valid_allocated < m_valid_budget) ++m_active_inserts;
+        if (m_valid.index() == 0) std::get<0>(m_valid)->insert(entry);
+        else std::get<1>(m_valid)->Insert(entry);
     }
 
 public:
@@ -112,32 +127,21 @@ public:
 
     void Reset(size_t bytes, bool grow_on_demand = false)
     {
-        // Reserve within the configured budget, not in addition to it. Tiny
-        // test caches keep their original minimum-allocation behavior.
         const size_t batch_bytes{bytes >= 1024 ? std::min(bytes / 8, size_t{2} << 20) : 0};
         const size_t valid_budget{bytes - batch_bytes};
-        // Small budgets use the same growth path as the production 2048 MiB
-        // budget, so a bounded fixture can exercise tier transitions.
-        const size_t initial_bytes{grow_on_demand ?
-            std::min(valid_budget, std::min(DEFAULT_YESPOWER_CACHE_BYTES, std::max(size_t{64}, valid_budget / 128))) : valid_budget};
-        auto replacement{std::make_unique<Cache>()};
-        const auto [slots, _]{replacement->setup_bytes(initial_bytes)};
-        std::vector<std::unique_ptr<Cache>> valid;
-        valid.push_back(std::move(replacement));
+        ValidStore replacement;
+        if (grow_on_demand) replacement.emplace<1>(std::make_unique<GrowingCache>(valid_budget));
+        else replacement.emplace<0>(std::make_unique<Cache>());
         std::unique_ptr<Cache> batches;
         if (batch_bytes) {
             batches = std::make_unique<Cache>();
             batches->setup_bytes(batch_bytes);
         }
+        // Original mode-zero setup and insertion policy: one full-size cache.
+        if (!grow_on_demand) std::get<0>(replacement)->setup_bytes(valid_budget);
         std::unique_lock lock{m_mutex};
-        std::swap(m_valid, valid);
+        std::swap(m_valid, replacement);
         std::swap(m_batches, batches);
-        m_valid_budget = valid_budget;
-        m_valid_allocated = initial_bytes;
-        m_active_slots = slots;
-        m_active_inserts = 0;
-        m_grow_on_demand = grow_on_demand;
-        m_growth_disabled = false;
     }
 
     uint256 Entry(const CBlockHeader& header) const

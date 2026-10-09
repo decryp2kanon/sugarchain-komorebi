@@ -36,10 +36,43 @@ using node::MAX_BLOCKFILE_SIZE;
 // use BasicTestingSetup here for the data directory configuration, setup, and cleanup
 BOOST_FIXTURE_TEST_SUITE(blockmanager_tests, BasicTestingSetup)
 
+BOOST_AUTO_TEST_CASE(legacy_blockmap_matches_original_type_and_growth)
+{
+    using OriginalMap = std::unordered_map<uint256, CBlockIndex, BlockHasher>;
+    static_assert(std::is_same_v<node::BlockMap::Legacy, OriginalMap>);
+    static_assert(!std::is_nothrow_invocable_v<BlockHasher, const uint256&>);
+    node::BlockMap map{false};
+    OriginalMap original;
+    BOOST_CHECK(!map.IsCompact());
+    for (uint64_t id = 1; id <= 10000; ++id) {
+        const auto key{ArithToUint256(arith_uint256{id * 7919})};
+        map.try_emplace(key);
+        original.try_emplace(key);
+        BOOST_CHECK_EQUAL(map.bucket_count(), original.bucket_count());
+    }
+    map.reserve(25000);
+    original.reserve(25000);
+    BOOST_CHECK_EQUAL(map.max_size(), original.max_size());
+    BOOST_CHECK_EQUAL(map.max_load_factor(), original.max_load_factor());
+    BOOST_CHECK_EQUAL(map.bucket_count(), original.bucket_count());
+    auto expected{original.begin()};
+    for (const auto& [key, index] : map) {
+        BOOST_REQUIRE(expected != original.end());
+        BOOST_CHECK(key == expected->first);
+        ++expected;
+    }
+    BOOST_CHECK(expected == original.end());
+    const auto first{map.begin()->first};
+    map.erase(map.begin());
+    original.erase(original.begin());
+    BOOST_CHECK(!map.contains(first));
+    BOOST_CHECK_EQUAL(map.size(), original.size());
+}
+
 BOOST_AUTO_TEST_CASE(compact_blockmap_keeps_addresses_and_keys_across_growth)
 {
     for (bool compact : {false, true}) {
-        node::BlockMap map{0, BlockHasher{}, std::equal_to<uint256>{}, node::BlockMap::allocator_type{}, compact};
+        node::BlockMap map{compact};
         BOOST_CHECK_EQUAL(map.IsCompact(), compact);
         std::vector<std::pair<const uint256*, CBlockIndex*>> original;
         for (uint64_t id = 1; id <= 20000; ++id) {
@@ -76,7 +109,7 @@ BOOST_AUTO_TEST_CASE(compact_blockmap_keeps_addresses_and_keys_across_growth)
 
 BOOST_AUTO_TEST_CASE(compact_blockmap_erase_reinsert_and_work)
 {
-    node::BlockMap map{0, BlockHasher{}, std::equal_to<uint256>{}, node::BlockMap::allocator_type{}, true};
+    node::BlockMap map{true};
     map.reserve(6000);
     for (uint64_t id = 1; id <= 6000; ++id) {
         auto [it, inserted]{map.try_emplace(ArithToUint256(arith_uint256{id}))};

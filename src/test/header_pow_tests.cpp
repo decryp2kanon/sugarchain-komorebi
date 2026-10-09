@@ -106,10 +106,7 @@ struct HeaderPoWSetup : BasicTestingSetup {
             entries.push_back(indexes.back().get());
         }
         db.WriteBatchSync({}, 0, entries);
-        std::unique_ptr<PoolResource<512, 8>> index_resource;
-        if (fast_startup) index_resource = std::make_unique<PoolResource<512, 8>>();
-        node::BlockMap loaded{0, BlockHasher{}, std::equal_to<uint256>{},
-            node::BlockMap::allocator_type{index_resource.get()}, fast_startup};
+        node::BlockMap loaded{fast_startup};
         const auto insert = [&](const uint256& hash) -> CBlockIndex* {
             if (hash.IsNull()) return nullptr;
             auto [it, inserted] = loaded.try_emplace(hash);
@@ -806,6 +803,30 @@ BOOST_AUTO_TEST_CASE(growing_cache_retains_verified_proofs_and_rejects_invalid_h
         BOOST_CHECK(CheckBlockProofOfWork(headers.front(), params));
 #ifdef ENABLE_YESPOWER_TEST_WRAP
         BOOST_CHECK_EQUAL(calls.load(), 0U);
+#endif
+    }
+}
+
+BOOST_AUTO_TEST_CASE(cache_backend_mode_changes_reset_evidence_and_keep_rejection)
+{
+    CacheBudget budget{128 << 10};
+    const auto header{Headers(191, 1).front()};
+    auto invalid{header};
+    Invalidate(invalid);
+    for (bool growing : {false, true, false, true}) {
+        InitYespowerVerificationCache(128 << 10, growing);
+        Observation observation;
+        BOOST_REQUIRE(CheckBlockProofOfWork(header, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 1U);
+#endif
+        BOOST_REQUIRE(CheckBlockProofOfWork(header, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 1U); // Warm proof survives in either backend.
+#endif
+        BOOST_CHECK(!CheckBlockProofOfWork(invalid, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 2U); // A genuine invalid proof is never cached.
 #endif
     }
 }
