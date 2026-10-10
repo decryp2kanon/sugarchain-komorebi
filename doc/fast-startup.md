@@ -18,6 +18,7 @@ disk-index trust and the subsequent PR #10 performance optimizations.
 | Best-header selection | Collect and sort a second time | Reuse this load's sorted vector and prefetch fields |
 | Chainstate candidates | Temporary pointer vector | Iterate the map directly |
 | Active-chain construction / sequence IDs / witness checks | Original traversals | Read-ahead hints; the same checks and traversal results |
+| Unknown-versionbits warning counts | Scan historical periods separately for each bit | Share counts across bits for each period during a non-IBD tip update |
 | Verified Yespower cache | Allocate the configured entry budget at startup | Allocate a small positive-proof cache first and grow in tiers within the same `-maxpowcache` budget as verified proofs accumulate |
 
 The common DB iterator, work calculation and chain-array helpers default to
@@ -270,7 +271,7 @@ Private functional tests cover competing branches, invalidate/reconsider,
 mode-zero/mode-one restarts, reindex-chainstate, missing files and persistence.
 The daemon, Qt executable and unit-test executable built successfully.
 Raw measurements and the scope/goal analysis are preserved in
-`/home/ak/ibd-optimization-evidence/20261009-pr10-compact-index/report.md`.
+`~/work-archive/sugarchain-tests/ibd-optimization-evidence/20261009-pr10-compact-index/report.md`.
 
 ## Original-mode storage isolation
 
@@ -319,7 +320,7 @@ with no sampled process swap. The 103 relevant unit cases passed in both
 default and explicit fast modes; both private functional suites and the
 100,000-entry ASan/UBSan lifecycle harness passed. Mode-zero startup was
 not benchmarked, as requested. Raw results and the scope audit are in
-`/home/ak/ibd-optimization-evidence/20261009-pr10-mode-isolation/report.md`.
+`~/work-archive/sugarchain-tests/ibd-optimization-evidence/20261009-pr10-mode-isolation/report.md`.
 
 ## Regression coverage
 
@@ -331,3 +332,44 @@ paths. `feature_fast_startup.py` uses private regtest data to check mode
 switching, unchanged chain state, progress, invalid flags, reindex-chainstate
 and missing block files. No full historical mainnet PoW replay is required for
 these boundary tests.
+
+## First-block warning delay: final remeasurement
+
+Commit `5293ff3dba` batches unknown-versionbits warning counts only when
+`-fast-startup=1`. Default mode retains the separate per-bit scans. Shared
+counts preserve the existing eligibility rules, deployment thresholds, fork
+boundaries and per-bit state caches; they do not skip new-block verification.
+
+Three runs of parent `c221e78cb5` and three runs of `5293ff3dba`, in
+A/B/B/A/A/B order, connected the same real mainnet block to independent copies
+of a 44,806,391-entry offline snapshot. Both versions used `-fast-startup=1`.
+The metric runs from the script-verification announcement to the first
+`UpdateTip` log, using microsecond log timestamps.
+
+| Metric | Parent | Batched warning counts |
+|---|---:|---:|
+| Three elapsed times (seconds) | 162.289 / 165.093 / 159.355 | 8.776 / 9.026 / 9.079 |
+| Median (seconds) | 162.289 | 9.026 |
+| Median process peak RSS (KiB) | 9,175,880 | 9,175,980 |
+
+The median saving is 153.263 seconds (94.44%). All six runs reached height
+44,805,168 with identical tip hash and chainwork, passed `verifychain(3,100)`
+and shut down normally. No process swap was sampled. The original snapshot's
+618 file names, sizes and modification times remained unchanged; this was a
+metadata comparison, not a full content-hash audit. The operating node's PID
+and start time remained unchanged.
+
+Both versions used `-parpow=8`, `-dbcache=4096`, `-maxpowcache=2048`,
+`-assumevalid=0`, `-checkblocks=6`, `-checklevel=3`, disabled wallets and P2P,
+and received the block through local `submitblock`. **The experiment also
+used `-maxtipage=31536000` to exercise the non-IBD warning path with this old
+snapshot.** IBD was confirmed false before and after submission. This override
+is a measurement condition, not a recommended normal-node setting.
+
+This measures actual block connection, but excludes peer discovery and block
+download. It does not replay the original 168-second network session, establish
+IBD throughput or guarantee the same improvement on every machine. Background
+host load and filesystem cache can affect these local measurements. Default
+mode startup was not benchmarked in this remeasurement. The focused
+`versionbits_tests/unknown_warning_shared_counts` regression test passed again.
+Sanitized timing data is in [the benchmark summary](benchmarks/first-tip-warning-20261010.json).
