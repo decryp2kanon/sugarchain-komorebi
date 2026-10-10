@@ -11,10 +11,12 @@
 #include <qt/bitcoingui.h>
 #include <qt/networkstyle.h>
 #include <qt/rpcconsole.h>
+#include <qt/splashscreen.h>
 #include <test/util/setup_common.h>
 #include <validation.h>
 
 #include <QAction>
+#include <QFontMetrics>
 #include <QLineEdit>
 #include <QRegularExpression>
 #include <QScopedPointer>
@@ -50,6 +52,66 @@ void TestRpcCommand(RPCConsole* console)
     QCOMPARE(FindInConsole(output, pattern), QString("regtest"));
 }
 } // namespace
+
+void AppTests::splashProgressFormat()
+{
+    const QString counting{QString::fromStdString(FormatBlockIndexSplashMessage("Counting block index entries..."))};
+    const QString progress{QString::fromStdString(FormatBlockIndexSplashMessage(
+        "Loading block index: 17,228,000 / 44,782,474 (38%) | 687,943/s | elapsed 25s | ETA 40s"))};
+    QCOMPARE(counting, QString("Counting block index entries...\n "));
+    QCOMPARE(progress, QString("Loading block index...\n17,228,000 / 44,782,474 (38%)"));
+    const QString legacy{QString::fromStdString(FormatBlockIndexSplashMessage(
+        "Loading block index: 2,000 | 150/s | 13s"))};
+    QCOMPARE(legacy, QString("Loading block index...\n2,000"));
+    const QFontMetrics metrics{QApplication::font()};
+    const QRect area{0, 0, 480, 320};
+    const int flags{Qt::AlignBottom | Qt::AlignHCenter};
+    QCOMPARE(metrics.boundingRect(area, flags, counting).height(), metrics.boundingRect(area, flags, progress).height());
+    QScopedPointer<const NetworkStyle> style{NetworkStyle::instantiate(ChainType::REGTEST)};
+    QVERIFY(style);
+    SplashScreen splash{style.data()};
+    splash.showMessage(counting, flags, QColor(55, 55, 55));
+    const QPixmap counting_render{splash.grab()};
+    QVERIFY(!counting_render.isNull());
+    splash.showMessage(legacy, flags, QColor(55, 55, 55));
+    QVERIFY(!splash.grab().isNull());
+    splash.showMessage(progress, flags, QColor(55, 55, 55));
+    const QPixmap progress_render{splash.grab()};
+    QVERIFY(!progress_render.isNull());
+    QCOMPARE(counting_render.size(), progress_render.size());
+    QCOMPARE(QString::fromStdString(FormatBlockIndexSplashMessage(
+        "Linking block index: 22,391,237 / 44,782,474 (50%) | elapsed 12s | ETA 12s")),
+        QString("Linking block index...\n22,391,237 / 44,782,474 (50%)"));
+    const QString sorting{QString::fromStdString(FormatBlockIndexSplashMessage(
+        "Sorting block headers... | 44,782,474 entries | elapsed 0s"))};
+    QCOMPARE(sorting, QString("Sorting block headers...\n "));
+    splash.showMessage(sorting, flags, QColor(55, 55, 55));
+    const QString completed{QString::fromStdString(FormatBlockIndexSplashMessage(
+        "Sorting block headers completed: 44,782,474 entries | elapsed 4s"))};
+    QCOMPARE(completed, QString("Sorting block headers completed.\n "));
+    splash.showMessage(completed, flags, QColor(55, 55, 55));
+    const QString chainstate{QString::fromStdString(FormatBlockIndexSplashMessage("Initializing chainstate..."))};
+    QCOMPARE(chainstate, QString("Initializing chainstate...\n "));
+    QCOMPARE(metrics.boundingRect(area, flags, chainstate).height(), metrics.boundingRect(area, flags, progress).height());
+    splash.showMessage(chainstate, flags, QColor(55, 55, 55));
+    const QImage blank_row{splash.grab().toImage()};
+    splash.showMessage("Initializing chainstate...\n50%", flags, QColor(55, 55, 55));
+    const QImage filled_row{splash.grab().toImage()};
+    const int title_bottom{static_cast<int>((splash.height() - 5 - metrics.lineSpacing()) * blank_row.devicePixelRatio())};
+    // Filling the second row must not move the title or any of the artwork.
+    QCOMPARE(blank_row.copy(0, 0, blank_row.width(), title_bottom), filled_row.copy(0, 0, filled_row.width(), title_bottom));
+
+    for (const std::string stage : {"Preparing block index", "Linking block index", "Collecting block file references",
+             "Checking block files", "Preparing block headers", "Selecting best block header"}) {
+        QCOMPARE(FormatBlockIndexSplashMessage(stage + "..."), stage + "...\n ");
+        QCOMPARE(FormatBlockIndexSplashMessage(stage + ": 50 / 100 (50%)"), stage + "...\n50 / 100 (50%)");
+        QCOMPARE(FormatBlockIndexSplashMessage(stage + "... | 100 entries | elapsed 0s"), stage + "...\n ");
+        QCOMPARE(FormatBlockIndexSplashMessage(stage + ": 50 / 100 (50%) | elapsed 1s | ETA 1s"), stage + "...\n50 / 100 (50%)");
+        QCOMPARE(FormatBlockIndexSplashMessage(stage + ": 100 / 100 (100%) | elapsed 2s | ETA 0s"), stage + "...\n100 / 100 (100%)");
+    }
+    QCOMPARE(FormatBlockIndexSplashMessage("Sorting block index completed."), std::string("Sorting block index completed.\n "));
+
+}
 
 //! Entry point for BitcoinApplication tests.
 void AppTests::appTests()

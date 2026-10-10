@@ -14,7 +14,7 @@ bool noui_ThreadSafeMessageBox(const bilingual_str& message, unsigned int style)
 /** Non-GUI handler, which logs and prints questions. */
 bool noui_ThreadSafeQuestion(const bilingual_str& /* ignored interactive message */, const std::string& message, unsigned int style);
 /** Non-GUI handler, which only logs a message. */
-void noui_InitMessage(const std::string& message);
+void noui_InitMessage(const std::string& message, bool log);
 
 /** Connect all bitcoind signal handlers */
 void noui_connect();

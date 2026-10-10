@@ -285,6 +285,7 @@ ChainTestingSetup::ChainTestingSetup(const ChainType chainType, TestOpts opts)
         }
         const BlockManager::Options blockman_opts{
             .chainparams = chainman_opts.chainparams,
+            .fast_startup = m_args.GetBoolArg("-fast-startup", false),
             .blocks_dir = m_args.GetBlocksDirPath(),
             .notifications = chainman_opts.notifications,
             .block_tree_db_params = DBParams{

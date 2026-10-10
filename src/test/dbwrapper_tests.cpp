@@ -9,6 +9,9 @@
 #include <uint256.h>
 #include <util/string.h>
 
+#include <leveldb/db.h>
+#include <leveldb/options.h>
+
 #include <memory>
 #include <ranges>
 
@@ -17,6 +20,120 @@
 using util::ToString;
 
 BOOST_FIXTURE_TEST_SUITE(dbwrapper_tests, BasicTestingSetup)
+
+BOOST_AUTO_TEST_CASE(block_index_key_prefix_preserves_parser_boundaries)
+{
+    for (const bool obfuscate : {false, true}) {
+        CDBWrapper db{{.path = m_args.GetDataDirBase() / "key-prefix", .cache_bytes = 1_MiB, .memory_only = true, .obfuscate = obfuscate}};
+        for (size_t length = 0; length <= 40; ++length) {
+            std::vector<std::byte> bytes(length, std::byte{0x11});
+            if (!bytes.empty()) bytes.front() = std::byte{'b'};
+            db.Write(std::span<const std::byte>{bytes}, uint8_t{1});
+        }
+        for (const uint8_t prefix : {uint8_t{'a'}, uint8_t{'c'}}) {
+            std::vector<std::byte> bytes(33, std::byte{0x11});
+            bytes.front() = std::byte{prefix};
+            db.Write(std::span<const std::byte>{bytes}, uint8_t{1});
+        }
+        auto cursor{std::unique_ptr<CDBIterator>{db.NewIterator()}};
+        size_t matched{0};
+        for (cursor->SeekToFirst(); cursor->Valid(); cursor->Next()) {
+            std::pair<uint8_t, uint256> parsed;
+            const bool decoded{cursor->GetKey(parsed) && parsed.first == uint8_t{'b'}};
+            const bool prefixed{cursor->KeyHasPrefix(uint8_t{'b'}, 1 + uint256::size())};
+            BOOST_CHECK_EQUAL(prefixed, decoded);
+            matched += prefixed;
+        }
+        BOOST_CHECK_EQUAL(matched, 8U); // Lengths 33-40; trailing bytes were already accepted.
+    }
+}
+
+BOOST_AUTO_TEST_CASE(small_table_cache_preserves_reads_across_eviction)
+{
+    const std::string path{fs::PathToString(m_args.GetDataDirBase() / "small-table-cache")};
+    constexpr uint32_t ROWS{4096};
+    auto key = [](uint32_t i) { return strprintf("%08u", i); };
+    auto value = [&key](uint32_t i) { return key(i) + std::string(8192, char(i % 251)); };
+    leveldb::Options options;
+    options.create_if_missing = true;
+    options.small_table_cache = true;
+    options.max_open_files = 10; // Opt-in zero retained tables; live iterators keep their references.
+    options.write_buffer_size = 64 * 1024;
+    options.max_file_size = 1024 * 1024;
+    options.compression = leveldb::kNoCompression;
+    {
+        leveldb::DB* raw{nullptr};
+        BOOST_REQUIRE(leveldb::DB::Open(options, path, &raw).ok());
+        const std::unique_ptr<leveldb::DB> db{raw};
+        for (uint32_t i = 0; i < ROWS; ++i) {
+            BOOST_REQUIRE(db->Put(leveldb::WriteOptions{}, key(i), value(i)).ok());
+        }
+        db->CompactRange(nullptr, nullptr);
+        size_t tables{0};
+        for (int level = 0; level < 7; ++level) {
+            std::string count;
+            BOOST_REQUIRE(db->GetProperty(strprintf("leveldb.num-files-at-level%d", level), &count));
+            tables += std::stoul(count);
+        }
+        BOOST_REQUIRE_GT(tables, 16U); // Force reads across more tables than the cache can retain.
+    }
+    for (const bool small : {false, true}) {
+        options.small_table_cache = small;
+        leveldb::DB* raw{nullptr};
+        BOOST_REQUIRE(leveldb::DB::Open(options, path, &raw).ok());
+        const std::unique_ptr<leveldb::DB> db{raw};
+        for (uint32_t i = 0; i < ROWS; ++i) {
+            for (const uint32_t row : {i, ROWS - 1 - i}) {
+                std::string actual;
+                BOOST_REQUIRE(db->Get(leveldb::ReadOptions{}, key(row), &actual).ok());
+                BOOST_CHECK_EQUAL(actual, value(row));
+            }
+        }
+        const std::unique_ptr<leveldb::Iterator> cursor{db->NewIterator(leveldb::ReadOptions{})};
+        uint32_t row{0};
+        for (cursor->SeekToFirst(); cursor->Valid(); cursor->Next(), ++row) {
+            BOOST_REQUIRE_LT(row, ROWS);
+            BOOST_CHECK_EQUAL(cursor->key().ToString(), key(row));
+            BOOST_CHECK_EQUAL(cursor->value().ToString(), value(row));
+        }
+        BOOST_CHECK(cursor->status().ok());
+        BOOST_CHECK_EQUAL(row, ROWS);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(read_cache_reclamation_preserves_db_contents)
+{
+    const fs::path path{m_args.GetDataDirBase() / "read-cache-reclaim"};
+    for (const bool obfuscate : {false, true}) {
+        {
+            CDBWrapper db{{.path = path, .cache_bytes = 1_MiB, .wipe_data = true, .obfuscate = obfuscate,
+                           .reclaim_read_cache = true}};
+            CDBBatch batch{db};
+            for (uint32_t i = 0; i < 4096; ++i) batch.Write(i, uint64_t{i} * 17);
+            db.WriteBatch(batch, true);
+            db.CompactFull();
+        }
+        for (const bool reclaim : {false, true}) {
+            CDBWrapper db{{.path = path, .cache_bytes = 1_MiB, .reclaim_read_cache = reclaim}};
+            for (uint32_t i = 0; i < 4096; ++i) {
+                uint64_t value{0};
+                BOOST_REQUIRE(db.Read(i, value));
+                BOOST_CHECK_EQUAL(value, uint64_t{i} * 17);
+            }
+            const std::unique_ptr<CDBIterator> cursor{db.NewIterator()};
+            size_t count{0};
+            for (cursor->SeekToFirst(); cursor->Valid(); cursor->Next()) {
+                uint32_t key{0};
+                if (!cursor->GetKey(key) || key >= 4096) continue; // Internal obfuscation metadata.
+                uint64_t value{0};
+                BOOST_REQUIRE(cursor->GetValue(value));
+                BOOST_CHECK_EQUAL(value, uint64_t{key} * 17);
+                ++count;
+            }
+            BOOST_CHECK_EQUAL(count, 4096U);
+        }
+    }
+}
 
 BOOST_AUTO_TEST_CASE(dbwrapper)
 {
@@ -223,6 +340,30 @@ BOOST_AUTO_TEST_CASE(dbwrapper_iterator)
 
         it->Next();
         BOOST_CHECK_EQUAL(it->Valid(), false);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(iterator_failed_read_does_not_consume_storage)
+{
+    for (const bool obfuscate : {false, true}) {
+        CDBWrapper dbw({.path = m_args.GetDataDirBase() / (obfuscate ? "failed_read_obfuscated" : "failed_read_plain"),
+                       .cache_bytes = 1 << 20, .memory_only = true, .obfuscate = obfuscate});
+        dbw.Write(uint8_t{'j'}, uint8_t{42});
+        auto cursor{std::unique_ptr<CDBIterator>(dbw.NewIterator())};
+        cursor->Seek(uint8_t{'j'});
+        std::pair<uint8_t, uint256> oversized_key;
+        uint256 oversized_value;
+        for (const bool direct_read : {false, true}) {
+            for (int repeat = 0; repeat < 2; ++repeat) {
+                BOOST_CHECK(!cursor->GetKey(oversized_key, direct_read));
+                BOOST_CHECK(!cursor->GetValue(oversized_value, direct_read));
+                uint8_t key{0}, value{0};
+                BOOST_REQUIRE(cursor->GetKey(key, direct_read));
+                BOOST_REQUIRE(cursor->GetValue(value, direct_read));
+                BOOST_CHECK_EQUAL(key, uint8_t{'j'});
+                BOOST_CHECK_EQUAL(value, 42);
+            }
+        }
     }
 }
 

@@ -4,6 +4,8 @@
 #include <crypto/yespower-1.0.1/yespower.h>
 #include <consensus/validation.h>
 #include <node/blockstorage.h>
+#include <node/interface_ui.h>
+#include <node/startup_progress.h>
 #include <kernel/chainparams.h>
 #include <pow.h>
 #include <primitives/block.h>
@@ -12,12 +14,14 @@
 #include <test/util/setup_common.h>
 #include <test/util/net.h>
 #include <test/util/logging.h>
+#include <tinyformat.h>
 #include <node/protocol_version.h>
 #include <util/chaintype.h>
 #include <util/strencodings.h>
 #include <validation.h>
 
 #include <boost/test/unit_test.hpp>
+#include <boost/signals2/connection.hpp>
 
 #include <algorithm>
 #include <array>
@@ -26,6 +30,7 @@
 #include <memory>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -80,8 +85,11 @@ struct HeaderPoWSetup : BasicTestingSetup {
         do { ++header.nNonce; } while (CheckProofOfWorkImpl(header.GetPoWHash(), header.nBits, params));
     }
 
-    bool LoadStartupHeaders(std::vector<CBlockHeader> headers, int workers, bool cancel_before = false)
+    bool LoadStartupHeaders(std::vector<CBlockHeader> headers, int workers, bool cancel_before = false,
+                            bool fast_startup = false, uint32_t disk_status = BLOCK_VALID_UNKNOWN,
+                            bool cache_loaded = false, std::span<const uint32_t> disk_statuses = {})
     {
+        BOOST_REQUIRE(disk_statuses.empty() || disk_statuses.size() == headers.size());
         kernel::BlockTreeDB db{DBParams{.path = "", .cache_bytes = 1 << 20, .memory_only = true}};
         std::vector<uint256> hashes;
         std::vector<std::unique_ptr<CBlockIndex>> indexes;
@@ -94,10 +102,11 @@ struct HeaderPoWSetup : BasicTestingSetup {
             indexes.push_back(std::make_unique<CBlockIndex>(headers[i]));
             indexes.back()->phashBlock = &hashes.back();
             indexes.back()->nHeight = i;
+            indexes.back()->nStatus = disk_statuses.empty() ? disk_status : disk_statuses[i];
             entries.push_back(indexes.back().get());
         }
         db.WriteBatchSync({}, 0, entries);
-        node::BlockMap loaded;
+        node::BlockMap loaded{fast_startup};
         const auto insert = [&](const uint256& hash) -> CBlockIndex* {
             if (hash.IsNull()) return nullptr;
             auto [it, inserted] = loaded.try_emplace(hash);
@@ -107,8 +116,22 @@ struct HeaderPoWSetup : BasicTestingSetup {
         util::SignalInterrupt cancelled;
         if (cancel_before) (void)cancelled();
         const auto& interrupt{cancel_before ? cancelled : m_interrupt};
-        const bool valid{WITH_LOCK(cs_main, return db.LoadBlockIndexGuts(params, insert, interrupt, workers))};
-        if (valid) BOOST_CHECK_EQUAL(loaded.size(), headers.size());
+        unsigned reserve_calls{0};
+        const auto reserve = [&](uint64_t count) {
+            BOOST_CHECK(loaded.empty());
+            BOOST_CHECK_EQUAL(count, headers.size());
+            ++reserve_calls;
+            loaded.reserve(count);
+        };
+        const bool valid{WITH_LOCK(cs_main, return db.LoadBlockIndexGuts(params, insert, interrupt, workers, fast_startup, reserve))};
+        BOOST_CHECK_EQUAL(reserve_calls, cancel_before || !fast_startup ? 0U : 1U);
+        if (valid) {
+            BOOST_CHECK_EQUAL(loaded.size(), headers.size());
+            for (auto& [hash, index] : loaded) {
+                if (disk_statuses.empty()) BOOST_CHECK_EQUAL(index.nStatus, disk_status);
+                if (cache_loaded) WITH_LOCK(cs_main, CacheVerifiedBlockIndexProof(index, params));
+            }
+        }
         return valid;
     }
 };
@@ -481,6 +504,198 @@ BOOST_AUTO_TEST_CASE(startup_block_index_load_checks_every_header)
     BOOST_CHECK(!LoadStartupHeaders(invalid, 8));
 }
 
+BOOST_AUTO_TEST_CASE(fast_startup_trusts_only_eligible_disk_headers)
+{
+    const auto valid{Headers(304, 4)};
+    for (const int workers : {1, 8}) {
+        CacheBudget budget{1 << 20};
+        {
+            Observation observation;
+            BOOST_CHECK(LoadStartupHeaders(valid, workers, false, false, BLOCK_VALID_TREE));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+            BOOST_CHECK_EQUAL(calls.load(), valid.size());
+#endif
+        }
+        InitYespowerVerificationCache(1 << 20);
+        {
+            Observation observation;
+            BOOST_CHECK(LoadStartupHeaders(valid, workers, false, true, BLOCK_VALID_TREE));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+            BOOST_CHECK_EQUAL(calls.load(), 0U);
+#endif
+        }
+        InitYespowerVerificationCache(1 << 20);
+        {
+            Observation observation;
+            BOOST_CHECK(LoadStartupHeaders(valid, workers, false, true, BLOCK_VALID_UNKNOWN));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+            BOOST_CHECK_EQUAL(calls.load(), valid.size());
+#endif
+        }
+        InitYespowerVerificationCache(1 << 20);
+        {
+            Observation observation;
+            BOOST_CHECK(LoadStartupHeaders(valid, workers, false, true, BLOCK_VALID_TREE | BLOCK_FAILED_VALID));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+            BOOST_CHECK_EQUAL(calls.load(), valid.size());
+#endif
+        }
+        InitYespowerVerificationCache(1 << 20);
+        {
+            Observation observation;
+            BOOST_CHECK(LoadStartupHeaders(valid, workers, false, true, BLOCK_VALID_TREE | BLOCK_FAILED_CHILD));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+            BOOST_CHECK_EQUAL(calls.load(), valid.size());
+#endif
+        }
+    }
+
+    auto invalid{valid};
+    Invalidate(invalid[0]);
+    InitYespowerVerificationCache(1 << 20);
+    BOOST_CHECK(!LoadStartupHeaders(invalid, 8, false, false, BLOCK_VALID_TREE));
+    // This acceptance is the explicit opt-in disk-trust trade-off.
+    BOOST_CHECK(LoadStartupHeaders(invalid, 8, false, true, BLOCK_VALID_TREE));
+    BOOST_CHECK(!LoadStartupHeaders(invalid, 8, false, true, BLOCK_VALID_UNKNOWN));
+    invalid[0].nBits = 0;
+    BOOST_CHECK(!LoadStartupHeaders(invalid, 8, false, true, BLOCK_VALID_TREE));
+    BOOST_CHECK(!LoadStartupHeaders(valid, 8, true, true, BLOCK_VALID_TREE));
+}
+
+BOOST_AUTO_TEST_CASE(fast_startup_never_promotes_disk_trust_to_live_proof_cache)
+{
+    CacheBudget budget{1 << 20};
+    const auto header{Headers(305, 1)};
+    BOOST_REQUIRE(LoadStartupHeaders(header, 8, false, true, BLOCK_VALID_TREE, true));
+    {
+        Observation observation;
+        BOOST_CHECK(CheckBlockProofOfWork(header.front(), params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 1U);
+#endif
+    }
+
+    // Later network batches still validate previously unseen headers.
+    HeaderPoWVerifier verifier{8};
+    const auto fresh{Headers(307, 2)};
+    {
+        Observation observation;
+        BOOST_CHECK(verifier.Check(fresh, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), fresh.size());
+#endif
+    }
+    auto invalid{Headers(308, 1)};
+    Invalidate(invalid.front());
+    BOOST_CHECK(!verifier.Check(invalid, params));
+}
+
+BOOST_AUTO_TEST_CASE(fast_startup_flushes_untrusted_headers_before_trusted_entries)
+{
+    CacheBudget budget{1 << 20};
+    const auto headers{Headers(306, 4)};
+    const std::array<uint32_t, 4> statuses{BLOCK_VALID_TREE, BLOCK_VALID_UNKNOWN,
+                                            BLOCK_VALID_TREE, BLOCK_VALID_UNKNOWN};
+    Observation observation;
+    BOOST_CHECK(LoadStartupHeaders(headers, 8, false, true, BLOCK_VALID_UNKNOWN, false, statuses));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+    BOOST_CHECK_EQUAL(calls.load(), 2U);
+#endif
+}
+
+BOOST_AUTO_TEST_CASE(fast_startup_still_checks_genesis)
+{
+    CacheBudget budget{1 << 20};
+    Observation observation;
+    BOOST_CHECK(LoadStartupHeaders({main->GenesisBlock()}, 8, false, true, BLOCK_VALID_TREE));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+    BOOST_CHECK_EQUAL(calls.load(), 1U);
+#endif
+}
+
+BOOST_AUTO_TEST_CASE(startup_progress_counts_entries_and_reports_one_percent_buckets)
+{
+    const auto headers{Headers(309, 101)};
+    for (const bool fast_startup : {false, true}) {
+        std::vector<std::string> messages;
+        std::vector<std::string> logged;
+        boost::signals2::scoped_connection capture{uiInterface.InitMessageWithLog_connect(
+            [&](const std::string& message, bool log) { messages.push_back(message); if (log) logged.push_back(message); })};
+        CacheBudget budget{1 << 20};
+        Observation observation;
+        BOOST_CHECK(LoadStartupHeaders(headers, 8, false, fast_startup, BLOCK_VALID_TREE));
+        if (!fast_startup) {
+            BOOST_REQUIRE_EQUAL(messages.size(), 1U);
+            BOOST_CHECK_EQUAL(messages.front(), "Loading block index: 101");
+            BOOST_CHECK(messages.front().find("ETA") == std::string::npos);
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+            BOOST_CHECK_EQUAL(calls.load(), headers.size());
+#endif
+            continue;
+        }
+        BOOST_REQUIRE_EQUAL(messages.size(), 101U);
+        BOOST_CHECK_EQUAL(messages.front(), "Counting block index entries...");
+        for (unsigned percent{1}; percent <= 100; ++percent) {
+            const auto& message{messages[percent]};
+            BOOST_CHECK(message.find("Loading block index: ") == 0);
+            BOOST_CHECK(message.find(" / 101 (") != std::string::npos);
+            BOOST_CHECK(message.find(strprintf("(%u%%)", percent)) != std::string::npos);
+            BOOST_CHECK(message.find("/s") == std::string::npos);
+            BOOST_CHECK(message.find("elapsed") == std::string::npos);
+            BOOST_CHECK(message.find("ETA") == std::string::npos);
+        }
+        BOOST_CHECK(messages.back().find("101 / 101 (100%)") != std::string::npos);
+        BOOST_REQUIRE_EQUAL(logged.size(), 5U); // Count start plus four progress records.
+        for (unsigned i{1}; i <= 4; ++i) BOOST_CHECK_EQUAL(logged[i], messages[i * 25]);
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), fast_startup ? 0U : headers.size());
+#endif
+    }
+}
+
+BOOST_AUTO_TEST_CASE(startup_progress_handles_empty_small_and_interrupted_indexes)
+{
+    std::vector<std::string> messages;
+    boost::signals2::scoped_connection capture{uiInterface.InitMessage_connect(
+        [&](const std::string& message) { messages.push_back(message); })};
+    BOOST_CHECK(LoadStartupHeaders({}, 1, false, true));
+    BOOST_REQUIRE_EQUAL(messages.size(), 2U);
+    BOOST_CHECK(messages.back().find("0 / 0 (100%)") != std::string::npos);
+    BOOST_CHECK(messages.back().find("ETA") == std::string::npos);
+
+    messages.clear();
+    BOOST_CHECK(LoadStartupHeaders(Headers(310, 3), 8, false, true));
+    BOOST_REQUIRE_EQUAL(messages.size(), 4U);
+    BOOST_CHECK(messages[1].find("(33%)") != std::string::npos);
+    BOOST_CHECK(messages[2].find("(66%)") != std::string::npos);
+    BOOST_CHECK(messages[3].find("3 / 3 (100%)") != std::string::npos);
+
+    messages.clear();
+    const auto interrupted_headers{Headers(311, 3)};
+    Observation observation;
+    BOOST_CHECK(!LoadStartupHeaders(interrupted_headers, 8, true, true));
+    BOOST_REQUIRE_EQUAL(messages.size(), 1U);
+    BOOST_CHECK_EQUAL(messages.front(), "Counting block index entries...");
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+    BOOST_CHECK_EQUAL(calls.load(), 0U);
+#endif
+}
+
+BOOST_AUTO_TEST_CASE(startup_legacy_progress_retains_2000_entry_batches)
+{
+    const auto headers{Headers(312, 2001)};
+    for (const int workers : {1, 3, 8}) {
+        std::vector<std::string> messages;
+        boost::signals2::scoped_connection capture{uiInterface.InitMessage_connect(
+            [&](const std::string& message) { messages.push_back(message); })};
+        CacheBudget budget{1 << 20};
+        BOOST_REQUIRE(LoadStartupHeaders(headers, workers));
+        BOOST_REQUIRE_EQUAL(messages.size(), 2U);
+        BOOST_CHECK_EQUAL(messages[0], "Loading block index: 2,000");
+        BOOST_CHECK_EQUAL(messages[1], "Loading block index: 2,001");
+    }
+}
+
 BOOST_AUTO_TEST_CASE(invalid_first_and_later_proofs_have_bounded_speculation)
 {
     HeaderPoWVerifier verifier{8};
@@ -573,6 +788,48 @@ BOOST_AUTO_TEST_CASE(cache_budget_eviction_and_reset_only_trigger_reverification
         BOOST_REQUIRE(verifier.Check(headers, params));
 #ifdef ENABLE_YESPOWER_TEST_WRAP
         BOOST_CHECK_EQUAL(calls.load(), 0U); // Rejected sizes leave existing evidence intact.
+#endif
+    }
+}
+
+BOOST_AUTO_TEST_CASE(growing_cache_retains_verified_proofs_and_rejects_invalid_headers)
+{
+    const auto headers{Headers(190, 25)};
+    CacheBudget budget{2048};
+    InitYespowerVerificationCache(2048, /*grow_on_demand=*/true);
+    for (const auto& header : headers) BOOST_REQUIRE(CheckBlockProofOfWork(header, params));
+    auto invalid{headers.front()};
+    Invalidate(invalid);
+    BOOST_CHECK(!CheckBlockProofOfWork(invalid, params));
+    {
+        Observation observation;
+        BOOST_CHECK(CheckBlockProofOfWork(headers.front(), params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 0U);
+#endif
+    }
+}
+
+BOOST_AUTO_TEST_CASE(cache_backend_mode_changes_reset_evidence_and_keep_rejection)
+{
+    CacheBudget budget{128 << 10};
+    const auto header{Headers(191, 1).front()};
+    auto invalid{header};
+    Invalidate(invalid);
+    for (bool growing : {false, true, false, true}) {
+        InitYespowerVerificationCache(128 << 10, growing);
+        Observation observation;
+        BOOST_REQUIRE(CheckBlockProofOfWork(header, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 1U);
+#endif
+        BOOST_REQUIRE(CheckBlockProofOfWork(header, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 1U); // Warm proof survives in either backend.
+#endif
+        BOOST_CHECK(!CheckBlockProofOfWork(invalid, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 2U); // A genuine invalid proof is never cached.
 #endif
     }
 }
@@ -803,5 +1060,74 @@ BOOST_AUTO_TEST_CASE(local_worker_failure_reaches_caller_without_poisoning_queue
     BOOST_CHECK(verifier.Check(headers, params));
 }
 #endif
+
+BOOST_AUTO_TEST_CASE(startup_phase_progress_reports_real_work_and_opaque_sort)
+{
+    std::vector<std::string> messages;
+    std::vector<std::string> logged;
+    boost::signals2::scoped_connection connection{uiInterface.InitMessageWithLog_connect(
+        [&](const std::string& message, bool log) { messages.push_back(message); if (log) logged.push_back(message); })};
+    {
+        node::StartupProgress progress{"Linking block index", 10000};
+        for (unsigned i = 0; i < 10000; ++i) progress.Advance();
+        BOOST_REQUIRE_EQUAL(messages.size(), 100U); // Start plus 1..99, not premature 100.
+        progress.Finish();
+    }
+    BOOST_REQUIRE_EQUAL(messages.size(), 101U);
+    for (unsigned percent = 1; percent <= 100; ++percent) {
+        BOOST_CHECK(messages[percent].find(strprintf("(%u%%)", percent)) != std::string::npos);
+    }
+    BOOST_CHECK(messages.back().find("10,000 / 10,000 (100%)") != std::string::npos);
+    BOOST_REQUIRE_EQUAL(logged.size(), 5U);
+    for (unsigned i{1}; i <= 4; ++i) BOOST_CHECK_EQUAL(logged[i], messages[i * 25]);
+    for (const auto& message : messages) BOOST_CHECK(message.find("elapsed") == std::string::npos);
+    messages.clear();
+    {
+        node::StartupProgress progress{"Checking block files", 3};
+        progress.Advance();
+        progress.Finish(); // Incomplete work cannot publish 100.
+    }
+    BOOST_REQUIRE_EQUAL(messages.size(), 2U);
+    BOOST_CHECK(messages.back().find("(33%)") != std::string::npos);
+    messages.clear();
+    {
+        node::StartupProgress sorting{"Sorting block headers", 44782474};
+        sorting.FinishSort();
+    }
+    BOOST_REQUIRE_EQUAL(messages.size(), 2U);
+    BOOST_CHECK_EQUAL(messages.front(), "Sorting block headers...");
+    BOOST_CHECK_EQUAL(messages.back(), "Sorting block headers completed.");
+    for (const auto& message : messages) {
+        BOOST_CHECK(message.find('%') == std::string::npos);
+        BOOST_CHECK(message.find("ETA") == std::string::npos);
+    }
+    messages.clear();
+    node::StartupProgress empty{"Linking block index", 0};
+    empty.Finish();
+    BOOST_CHECK(messages.back().find("0 / 0 (100%)") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(startup_progress_gui_updates_are_not_all_logged)
+{
+    std::vector<std::string> logged;
+    DebugLogHelper log_capture{"init message: Checking block files", [&](const std::string* line) {
+        if (line) logged.push_back(*line);
+        return false; // Collect every matching line, including the start notification.
+    }};
+    std::vector<std::string> gui;
+    boost::signals2::scoped_connection connection{uiInterface.InitMessage_connect(
+        [&](const std::string& message) { gui.push_back(message); })};
+    node::StartupProgress progress{"Checking block files", 170};
+    for (unsigned i{0}; i < 170; ++i) progress.Advance();
+    BOOST_REQUIRE_EQUAL(logged.size(), 4U); // Start + 25/50/75, no premature completion.
+    progress.Finish();
+    BOOST_REQUIRE_EQUAL(gui.size(), 101U);
+    BOOST_REQUIRE_EQUAL(logged.size(), 5U);
+    for (unsigned i{1}; i <= 4; ++i) {
+        BOOST_CHECK(logged[i].find(strprintf("(%u%%)", i * 25)) != std::string::npos);
+    }
+    BOOST_CHECK(logged[1].find("43 / 170 (25%)") != std::string::npos);
+    BOOST_CHECK(logged[3].find("128 / 170 (75%)") != std::string::npos);
+}
 
 BOOST_AUTO_TEST_SUITE_END()

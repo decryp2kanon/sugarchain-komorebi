@@ -1,0 +1,54 @@
+{
+  "baseline_commit": "c221e78cb51a9f448f558e310690d3d2c9d5ce0f",
+  "candidate_commit": "5293ff3dba51b59998ec88d7dcbddd3754beb387",
+  "metric": "script verification announcement to first UpdateTip log, same real block supplied by offline submitblock",
+  "raw_seconds": {
+    "A": [
+      162.288739,
+      165.09306,
+      159.354923
+    ],
+    "B": [
+      8.775517,
+      9.025513,
+      9.0786
+    ]
+  },
+  "baseline_median_seconds": 162.288739,
+  "candidate_median_seconds": 9.025513,
+  "saved_seconds": 153.263226,
+  "reduction_percent": 94.43860796774077,
+  "six_verifychain_pass": true,
+  "same_tip_chainwork": true,
+  "original_snapshot_metadata_unchanged": true,
+  "operating_node_identity_unchanged": true,
+  "original_network_session_replayed": false,
+  "merge_performed": false,
+  "conditions": {
+    "run_order": [
+      "A",
+      "B",
+      "B",
+      "A",
+      "A",
+      "B"
+    ],
+    "snapshot_index_entries": 44806391,
+    "connected_height": 44805168,
+    "fast_startup": 1,
+    "parpow": 8,
+    "dbcache_mib": 4096,
+    "maxpowcache_mib": 2048,
+    "assumevalid": 0,
+    "checkblocks": 6,
+    "checklevel": 3,
+    "maxtipage_seconds": 31536000,
+    "p2p_enabled": false,
+    "block_delivery": "local submitblock",
+    "initialblockdownload_before_and_after": false
+  },
+  "peak_rss_median_kib": {
+    "A": 9175880,
+    "B": 9175980
+  }
+}

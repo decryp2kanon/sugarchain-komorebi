@@ -17,6 +17,7 @@
 #include <kernel/notifications_interface.h>
 #include <kernel/types.h>
 #include <node/interface_ui.h>
+#include <node/startup_progress.h>
 #include <pow.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
@@ -42,13 +43,21 @@
 #include <util/translation.h>
 #include <validation.h>
 
+#include <boost/sort/spreadsort/integer_sort.hpp>
+
+#include <array>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <compare>
 #include <cstddef>
 #include <cstdio>
+#include <cstdint>
+#include <cstring>
 #include <exception>
+#include <limits>
 #include <map>
+#include <new>
 #include <optional>
 #include <ostream>
 #include <span>
@@ -56,29 +65,15 @@
 #include <string>
 #include <system_error>
 #include <unordered_map>
+#include <utility>
 
 namespace kernel {
 namespace {
-std::string FormatCompactDuration(std::chrono::seconds duration)
+std::string FormatGroupedCount(uint64_t count)
 {
-    uint64_t remaining{duration.count() > 0 ? static_cast<uint64_t>(duration.count()) : 0};
-    std::string result;
-    const auto append = [&](uint64_t unit, std::string_view suffix) {
-        const uint64_t value{remaining / unit};
-        if (value) {
-            result += std::to_string(value);
-            result += suffix;
-        }
-        remaining %= unit;
-    };
-    append(365 * 24 * 60 * 60, "y");
-    append(30 * 24 * 60 * 60, "mo");
-    append(7 * 24 * 60 * 60, "w");
-    append(24 * 60 * 60, "d");
-    append(60 * 60, "h");
-    append(60, "m");
-    append(1, "s");
-    return result.empty() ? "0s" : result;
+    std::string result{std::to_string(count)};
+    for (size_t pos = result.size(); pos > 3; pos -= 3) result.insert(pos - 3, ",");
+    return result;
 }
 } // namespace
 
@@ -144,16 +139,37 @@ bool BlockTreeDB::ReadFlag(const std::string& name, bool& fValue)
     return true;
 }
 
-bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, std::function<CBlockIndex*(const uint256&)> insertBlockIndex, const util::SignalInterrupt& interrupt, int pow_workers)
+bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, std::function<CBlockIndex*(const uint256&)> insertBlockIndex, const util::SignalInterrupt& interrupt, int pow_workers, bool fast_startup, std::function<void(uint64_t)> reserveBlockIndex)
 {
     AssertLockHeld(::cs_main);
+    uint64_t total_entries{0};
+    if (fast_startup) {
+        uiInterface.InitMessage("Counting block index entries...");
+        {
+            std::unique_ptr<CDBIterator> count_cursor(NewIterator());
+            count_cursor->Seek(std::make_pair(DB_BLOCK_INDEX, uint256()));
+            // The same open DB is used for both passes, before networking starts.
+            // Inspect only serialized keys; do not read values or construct indexes.
+            while (count_cursor->Valid() && count_cursor->KeyHasPrefix(DB_BLOCK_INDEX, 1 + uint256::size())) {
+                if (interrupt) return false;
+                ++total_entries;
+                count_cursor->Next();
+            }
+        }
+        LogInfo("Counted %s block index entries", FormatGroupedCount(total_entries));
+        if (reserveBlockIndex) reserveBlockIndex(total_entries);
+    }
     std::unique_ptr<CDBIterator> pcursor(NewIterator());
     pcursor->Seek(std::make_pair(DB_BLOCK_INDEX, uint256()));
 
-    const auto start{SteadyClock::now()};
-    auto previous_time{start};
     uint64_t processed{0};
-    uint64_t previous_processed{0};
+    unsigned next_percent{1};
+    unsigned next_log_percent{25};
+    const auto progress_threshold = [&](unsigned percent) {
+        // Ceil(percent * total / 100) without overflowing uint64_t.
+        return (total_entries / 100) * percent + ((total_entries % 100) * percent + 99) / 100;
+    };
+    uint64_t next_threshold{progress_threshold(next_percent)};
     const bool check_yespower{consensusParams.fYespowerSugar && !EnableFuzzDeterminism()};
     const bool parallel_pow{check_yespower && pow_workers > 1};
     // Keep database iteration and block-index construction in order; only
@@ -166,23 +182,33 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
         pending_headers.reserve(pow_workers);
         pending_indexes.reserve(pow_workers);
     }
-    const auto log_progress = [&] {
-        const auto now{SteadyClock::now()};
-        const auto elapsed_duration{now - start};
-        const double interval{Ticks<SecondsDouble>(now - previous_time)};
-        const auto grouped = [](uint64_t count) {
-            std::string result{std::to_string(count)};
-            for (size_t pos = result.size(); pos > 3; pos -= 3) result.insert(pos - 3, ",");
-            return result;
-        };
-        const auto message{strprintf("Loading block index: %s | %.0f/s | %s",
-                                     grouped(processed),
-                                     interval > 0 ? (processed - previous_processed) / interval : 0.0,
-                                     FormatCompactDuration(std::chrono::duration_cast<std::chrono::seconds>(elapsed_duration)))};
-        previous_processed = processed;
-        previous_time = now;
-        // InitMessage logs in both GUI and daemon, and queues the splash update in Qt.
-        uiInterface.InitMessage(message);
+    const auto log_progress = [&](unsigned percent) {
+        std::string message;
+        bool log{true};
+        if (fast_startup) {
+            message = strprintf("Loading block index: %s / %s (%u%%)",
+                FormatGroupedCount(processed), FormatGroupedCount(total_entries), percent);
+            log = percent >= next_log_percent;
+            while (percent >= next_log_percent) next_log_percent += 25;
+        } else {
+            // Legacy loading still reports at the original 2,000-entry boundaries.
+            message = strprintf("Loading block index: %s", FormatGroupedCount(processed));
+        }
+        uiInterface.InitMessage(message, log);
+    };
+    const auto report_progress = [&] {
+        if (!fast_startup) {
+            if (processed % 2000 == 0) log_progress(0);
+            return;
+        }
+        // Publish 100% only after the iterator has reached the end.
+        if (processed >= total_entries || next_percent >= 100 || processed < next_threshold) return;
+        // Tiny databases can cross several 1% buckets with a single entry.
+        unsigned percent{next_percent};
+        while (percent < 99 && processed >= progress_threshold(percent + 1)) ++percent;
+        next_percent = percent + 1;
+        next_threshold = progress_threshold(next_percent);
+        log_progress(percent);
     };
     // Validate the pending batch before publishing any process-local proof status.
     const auto flush_pow = [&] {
@@ -203,17 +229,21 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
         processed += pending_headers.size();
         pending_headers.clear();
         pending_indexes.clear();
-        if (processed % 2000 == 0) log_progress();
+        report_progress();
         return true;
     };
 
     // Load m_block_index
     while (pcursor->Valid()) {
         if (interrupt) return false;
+        // Keys are a fixed byte prefix plus a uint256. The parsed key hash was
+        // unused; retain the same size/prefix checks without decoding it.
         std::pair<uint8_t, uint256> key;
-        if (pcursor->GetKey(key) && key.first == DB_BLOCK_INDEX) {
+        const bool block_key{fast_startup ? pcursor->KeyHasPrefix(DB_BLOCK_INDEX, 1 + uint256::size()) :
+            (pcursor->GetKey(key) && key.first == DB_BLOCK_INDEX)};
+        if (block_key) {
             CDiskBlockIndex diskindex;
-            if (pcursor->GetValue(diskindex)) {
+            if (pcursor->GetValue(diskindex, /*direct_read=*/fast_startup)) {
                 // Construct block index object
                 CBlockIndex* pindexNew = insertBlockIndex(diskindex.ConstructBlockHash());
                 pindexNew->pprev          = insertBlockIndex(diskindex.hashPrev);
@@ -229,13 +259,26 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
                 pindexNew->nStatus        = diskindex.nStatus;
                 pindexNew->nTx            = diskindex.nTx;
 
-                if (parallel_pow) {
+                // Opt-in: trust only persisted TREE-or-higher entries without
+                // failure flags. This does not establish live proof evidence.
+                const bool trust_disk_pow{fast_startup && check_yespower &&
+                    pindexNew->GetBlockHash() != consensusParams.hashGenesisBlock &&
+                    (pindexNew->nStatus & BLOCK_VALID_MASK) >= BLOCK_VALID_TREE &&
+                    !(pindexNew->nStatus & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD)) &&
+                    DeriveTarget(pindexNew->nBits, consensusParams.powLimit).has_value()};
+                if (trust_disk_pow) {
+                    // Commit earlier unchecked entries before advancing past this one.
+                    if (parallel_pow && !flush_pow()) return false;
+                    ++processed;
+                    report_progress();
+                } else if (parallel_pow) {
                     pending_headers.push_back(pindexNew->GetBlockHeader());
                     pending_indexes.push_back(pindexNew);
-                    // Bound speculative work by -parpow and retain the exact
-                    // 2,000-entry progress cadence, even for non-divisor counts.
+                    // Bound speculative work by -parpow and finish each progress
+                    // bucket before processing entries in the next one.
                     if ((pending_headers.size() == static_cast<size_t>(pow_workers) ||
-                         (processed + pending_headers.size()) % 2000 == 0) && !flush_pow()) return false;
+                         (fast_startup ? processed + pending_headers.size() >= next_threshold :
+                          (processed + pending_headers.size()) % 2000 == 0)) && !flush_pow()) return false;
                 } else {
                     if (!CheckBlockProofOfWork(pindexNew->GetBlockHeader(), consensusParams)) {
                         LogError("%s: CheckProofOfWork failed: %s\n", __func__, pindexNew->ToString());
@@ -244,7 +287,7 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
                     // Recomputed in this process, never restored from disk flags.
                     pindexNew->m_checked_yespower = consensusParams.fYespowerSugar && !EnableFuzzDeterminism();
                     ++processed;
-                    if (processed % 2000 == 0) log_progress();
+                    report_progress();
                 }
                 pcursor->Next();
             } else {
@@ -257,7 +300,12 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
     }
 
     if (parallel_pow && !flush_pow()) return false;
-    if (processed % 2000 != 0) log_progress();
+    if (fast_startup) {
+        if (processed != total_entries) return false;
+        log_progress(100);
+    } else if (processed % 2000 != 0) {
+        log_progress(0);
+    }
     return true;
 }
 
@@ -294,13 +342,71 @@ bool CBlockIndexHeightOnlyComparator::operator()(const CBlockIndex* pa, const CB
     return pa->nHeight < pb->nHeight;
 }
 
-std::vector<CBlockIndex*> BlockManager::GetAllBlockIndices()
+void SortBlockIndicesByHeight(std::vector<CBlockIndex*>& indices)
+{
+    const auto pointer_sort = [&] {
+        boost::sort::spreadsort::integer_sort(
+            indices.begin(), indices.end(),
+            [](const CBlockIndex* index, unsigned shift) { return index->nHeight >> shift; },
+            CBlockIndexHeightOnlyComparator());
+    };
+    if (indices.size() < 4096) {
+        pointer_sort();
+        return;
+    }
+    // Two stable 16-bit radix passes use one pointer-sized scratch array,
+    // instead of caching a height plus a pointer for every index. Flip the
+    // sign bit so negative heights retain the signed comparator's ordering.
+    if (indices.size() > std::numeric_limits<uint32_t>::max()) {
+        pointer_sort();
+        return;
+    }
+    constexpr size_t BUCKETS{1 << 16};
+    std::vector<CBlockIndex*> scratch;
+    std::vector<uint32_t> offsets;
+    try {
+        scratch.resize(indices.size());
+        offsets.resize(2 * BUCKETS);
+    } catch (const std::bad_alloc&) {
+        std::vector<CBlockIndex*>{}.swap(scratch);
+        std::vector<uint32_t>{}.swap(offsets);
+        pointer_sort();
+        return;
+    }
+    const auto key = [](const CBlockIndex* index) {
+        return static_cast<uint32_t>(index->nHeight) ^ uint32_t{0x80000000};
+    };
+    for (const auto* index : indices) {
+        const uint32_t height{key(index)};
+        ++offsets[height & 0xffff];
+        ++offsets[BUCKETS + (height >> 16)];
+    }
+    for (size_t base : {size_t{0}, BUCKETS}) {
+        uint32_t sum{0};
+        for (size_t i = 0; i < BUCKETS; ++i) {
+            const uint32_t count{offsets[base + i]};
+            offsets[base + i] = sum;
+            sum += count;
+        }
+    }
+    for (auto* index : indices) scratch[offsets[key(index) & 0xffff]++] = index;
+    for (auto* index : scratch) indices[offsets[BUCKETS + (key(index) >> 16)]++] = index;
+}
+
+std::vector<CBlockIndex*> BlockManager::GetAllBlockIndices(const char* startup_stage)
 {
     AssertLockHeld(cs_main);
     std::vector<CBlockIndex*> rv;
     rv.reserve(m_block_index.size());
-    for (auto& [_, block_index] : m_block_index) {
-        rv.push_back(&block_index);
+    if (startup_stage) {
+        StartupProgress progress{startup_stage, m_block_index.size()};
+        for (auto& [_, block_index] : m_block_index) {
+            rv.push_back(&block_index);
+            progress.Advance();
+        }
+        progress.Finish();
+    } else {
+        for (auto& [_, block_index] : m_block_index) rv.push_back(&block_index);
     }
     return rv;
 }
@@ -502,7 +608,7 @@ void BlockManager::UpdatePruneLock(const std::string& name, const PruneLockInfo&
     m_prune_locks[name] = lock_info;
 }
 
-CBlockIndex* BlockManager::InsertBlockIndex(const uint256& hash)
+CBlockIndex* BlockManager::InsertBlockIndex(const uint256& hash, std::vector<CBlockIndex*>* inserted_indices)
 {
     AssertLockHeld(cs_main);
 
@@ -514,14 +620,54 @@ CBlockIndex* BlockManager::InsertBlockIndex(const uint256& hash)
     CBlockIndex* pindex = &(*mi).second;
     if (inserted) {
         pindex->phashBlock = &((*mi).first);
+        if (inserted_indices) inserted_indices->push_back(pindex);
     }
     return pindex;
 }
 
-bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockhash)
+bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockhash, std::set<int>& block_files, std::vector<CBlockIndex*>& vSortedByHeight)
 {
-    if (!m_block_tree_db->LoadBlockIndexGuts(
-            GetConsensus(), [this](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) { return this->InsertBlockIndex(hash); }, m_interrupt, m_opts.startup_pow_workers)) {
+    std::vector<CBlockIndex*> loaded_indices;
+    if (m_opts.fast_startup) {
+        // Retain in-memory entries on reload, then append newly inserted indexes
+        // (including parent placeholders) without a second post-load map traversal.
+        loaded_indices = GetAllBlockIndices();
+        if (!m_block_tree_db->LoadBlockIndexGuts(
+                GetConsensus(), [this, &loaded_indices](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) { return this->InsertBlockIndex(hash, &loaded_indices); }, m_interrupt, m_opts.startup_pow_workers, m_opts.fast_startup,
+                [this, &loaded_indices](uint64_t count) EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
+                    loaded_indices.reserve(std::max<uint64_t>(loaded_indices.size(), count));
+                    if (m_block_index.IsCompact()) {
+                        m_block_index.reserve(count);
+                        return;
+                    }
+                    // Counting already inspected this DB. Reserve buckets before
+                    // inserting, without changing keys, objects, or verification.
+                    // Rehash preserves references to existing indexes and map keys.
+                    if (count <= m_block_index.size() || count > m_block_index.max_size()) return;
+                    if (count <= m_block_index.bucket_count() * static_cast<double>(m_block_index.max_load_factor())) return;
+                    // Spare buckets reduce collision chains during the two lookups
+                    // per disk index. This changes capacity only, not verification.
+                    const auto fallback_capacity{count <= m_block_index.max_size() / 2 ? count * 2 : count};
+                    const auto capacity{count <= m_block_index.max_size() / 3 ? count * 3 : fallback_capacity};
+                    uint64_t previous_capacity{0};
+                    for (const uint64_t target : {capacity, fallback_capacity, count}) {
+                        if (target == previous_capacity) continue;
+                        previous_capacity = target;
+                        try {
+                            m_block_index.reserve(static_cast<size_t>(target));
+                            return;
+                        } catch (const std::bad_alloc&) {
+                            // Fall back to the previous spare capacity, then exact count.
+                        }
+                    }
+                    LogWarning("Unable to reserve block index buckets; using incremental growth.");
+                })) {
+            return false;
+        }
+    } else if (!m_block_tree_db->LoadBlockIndexGuts(
+                   GetConsensus(), [this](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
+                       return this->InsertBlockIndex(hash);
+                   }, m_interrupt, m_opts.startup_pow_workers)) {
         return false;
     }
 
@@ -550,19 +696,43 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
     Assert(m_snapshot_height.has_value() == snapshot_blockhash.has_value());
 
     // Calculate nChainWork
-    std::vector<CBlockIndex*> vSortedByHeight{GetAllBlockIndices()};
-    std::sort(vSortedByHeight.begin(), vSortedByHeight.end(),
-              CBlockIndexHeightOnlyComparator());
+    if (m_opts.fast_startup) {
+        vSortedByHeight = std::move(loaded_indices);
+        LogInfo("Prepared block index during loading: %u entries", vSortedByHeight.size());
+    } else {
+        vSortedByHeight = GetAllBlockIndices("Preparing block index");
+    }
+    StartupProgress sorting{"Sorting block index", vSortedByHeight.size()};
+    // Radix passes bound both sorting work and temporary memory.
+    // The same height-only ordering still places every parent before its child.
+    if (m_opts.fast_startup) {
+        SortBlockIndicesByHeight(vSortedByHeight);
+    } else {
+        std::sort(vSortedByHeight.begin(), vSortedByHeight.end(), CBlockIndexHeightOnlyComparator());
+    }
 
+    sorting.FinishSort();
+    StartupProgress linking{"Linking block index", vSortedByHeight.size()};
     CBlockIndex* previous_index{nullptr};
-    for (CBlockIndex* pindex : vSortedByHeight) {
+    for (size_t position = 0; position < vSortedByHeight.size(); ++position) {
+#if defined(__GNUC__) || defined(__clang__)
+        // Hide scattered index-read latency without changing linking order.
+        constexpr size_t PREFETCH_DISTANCE{8};
+        if (m_opts.fast_startup && vSortedByHeight.size() - position > PREFETCH_DISTANCE) {
+            const auto* upcoming{vSortedByHeight[position + PREFETCH_DISTANCE]};
+            __builtin_prefetch(upcoming, 0, 3);
+            __builtin_prefetch(&upcoming->nStatus, 0, 3);
+            __builtin_prefetch(&upcoming->nBits, 0, 3);
+        }
+#endif
+        CBlockIndex* pindex{vSortedByHeight[position]};
         if (m_interrupt) return false;
         if (previous_index && pindex->nHeight > previous_index->nHeight + 1) {
             LogError("%s: block index is non-contiguous, index of height %d missing\n", __func__, previous_index->nHeight + 1);
             return false;
         }
         previous_index = pindex;
-        pindex->nChainWork = (pindex->pprev ? pindex->pprev->nChainWork : 0) + GetBlockProof(*pindex);
+        pindex->nChainWork = (pindex->pprev ? pindex->pprev->nChainWork : 0) + GetBitsProof(pindex->nBits, m_opts.fast_startup);
         pindex->nTimeMax = (pindex->pprev ? std::max(pindex->pprev->nTimeMax, pindex->nTime) : pindex->nTime);
 
         // We can link the chain of blocks for which we've received transactions at some point, or
@@ -600,7 +770,13 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
         if (pindex->pprev) {
             pindex->BuildSkip();
         }
+        // Reuse this all-index traversal for file-presence checks, including
+        // side branches and invalid blocks with data. Metadata reconstruction
+        // above never changes BLOCK_HAVE_DATA or nFile.
+        if (m_opts.fast_startup && (pindex->nStatus & BLOCK_HAVE_DATA)) block_files.insert(pindex->nFile);
+        linking.Advance();
     }
+    linking.Finish();
 
     return true;
 }
@@ -624,11 +800,16 @@ void BlockManager::WriteBlockIndexDB()
     m_block_tree_db->WriteBatchSync(vFiles, max_blockfile, vBlocks);
 }
 
-bool BlockManager::LoadBlockIndexDB(const std::optional<uint256>& snapshot_blockhash)
+bool BlockManager::LoadBlockIndexDB(const std::optional<uint256>& snapshot_blockhash, std::vector<CBlockIndex*>* sorted_indices)
 {
-    if (!LoadBlockIndex(snapshot_blockhash)) {
+    // Per-load output avoids retaining stale references across reload/pruning.
+    std::set<int> setBlkDataFiles;
+    std::vector<CBlockIndex*> loaded_indices;
+    if (!LoadBlockIndex(snapshot_blockhash, setBlkDataFiles, loaded_indices)) {
         return false;
     }
+    // Legacy loading used a local sorting vector, released before file checks.
+    if (!m_opts.fast_startup && !sorted_indices) std::vector<CBlockIndex*>{}.swap(loaded_indices);
     int max_blockfile_num{0};
 
     // Load block file info
@@ -650,18 +831,20 @@ bool BlockManager::LoadBlockIndexDB(const std::optional<uint256>& snapshot_block
 
     // Check presence of blk files
     LogInfo("Checking all blk files are present...");
-    std::set<int> setBlkDataFiles;
-    for (const auto& [_, block_index] : m_block_index) {
-        if (block_index.nStatus & BLOCK_HAVE_DATA) {
-            setBlkDataFiles.insert(block_index.nFile);
+    if (!m_opts.fast_startup) {
+        for (const auto& [_, block_index] : m_block_index) {
+            if (block_index.nStatus & BLOCK_HAVE_DATA) setBlkDataFiles.insert(block_index.nFile);
         }
     }
+    StartupProgress checking{"Checking block files", setBlkDataFiles.size()};
     for (std::set<int>::iterator it = setBlkDataFiles.begin(); it != setBlkDataFiles.end(); it++) {
         FlatFilePos pos(*it, 0);
         if (OpenBlockFile(pos, /*fReadOnly=*/true).IsNull()) {
             return false;
         }
+        checking.Advance();
     }
+    checking.Finish();
 
     {
         // Initialize the blockfile cursors.
@@ -683,6 +866,8 @@ bool BlockManager::LoadBlockIndexDB(const std::optional<uint256>& snapshot_block
     m_block_tree_db->ReadReindexing(fReindexing);
     if (fReindexing) m_blockfiles_indexed = false;
 
+    // Publish only after the file checks succeed. No persistent pointer cache.
+    if (sorted_indices) *sorted_indices = std::move(loaded_indices);
     return true;
 }
 
@@ -1330,9 +1515,12 @@ BlockManager::BlockManager(const util::SignalInterrupt& interrupt, Options opts)
       m_opts{std::move(opts)},
       m_block_file_seq{FlatFileSeq{m_opts.blocks_dir, "blk", m_opts.fast_prune ? 0x4000 /* 16kB */ : BLOCKFILE_CHUNK_SIZE}},
       m_undo_file_seq{FlatFileSeq{m_opts.blocks_dir, "rev", UNDOFILE_CHUNK_SIZE}},
-      m_interrupt{interrupt}
+      m_interrupt{interrupt},
+      m_block_index{m_opts.fast_startup}
 {
-    m_block_tree_db = std::make_unique<BlockTreeDB>(m_opts.block_tree_db_params);
+    auto db_params{m_opts.block_tree_db_params};
+    db_params.reclaim_read_cache = m_opts.fast_startup;
+    m_block_tree_db = std::make_unique<BlockTreeDB>(db_params);
 
     if (m_opts.block_tree_db_params.wipe_data) {
         m_block_tree_db->WriteReindexing(true);

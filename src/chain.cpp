@@ -13,11 +13,15 @@ std::string CBlockIndex::ToString() const
                      pprev, nHeight, hashMerkleRoot.ToString(), GetBlockHash().ToString());
 }
 
-void CChain::SetTip(CBlockIndex& block)
+void CChain::SetTip(CBlockIndex& block, bool fast_startup)
 {
     CBlockIndex* pindex = &block;
     vChain.resize(pindex->nHeight + 1);
     while (pindex && vChain[pindex->nHeight] != pindex) {
+#if defined(__GNUC__) || defined(__clang__)
+        // The skip pointer is only a prefetch hint; pprev still defines the chain.
+        if (fast_startup && pindex->pskip) __builtin_prefetch(pindex->pskip, 0, 3);
+#endif
         vChain[pindex->nHeight] = pindex;
         pindex = pindex->pprev;
     }
@@ -118,7 +122,7 @@ void CBlockIndex::BuildSkip()
         pskip = pprev->GetAncestor(GetSkipHeight(nHeight));
 }
 
-arith_uint256 GetBitsProof(uint32_t bits)
+arith_uint256 GetBitsProof(uint32_t bits, bool fast_startup)
 {
     arith_uint256 bnTarget;
     bool fNegative;
@@ -126,6 +130,18 @@ arith_uint256 GetBitsProof(uint32_t bits)
     bnTarget.SetCompact(bits, &fNegative, &fOverflow);
     if (fNegative || fOverflow || bnTarget == 0)
         return 0;
+    // For compact exponents 28..34, target = mantissa * 2**shift with
+    // shift >= 200. Write 2**(256-shift) = q*mantissa + r. Division by
+    // target+1 leaves remainder r*2**shift-q. Since q < 2**shift, its quotient
+    // is q when r>0, and q-1 otherwise. Thus (2**(256-shift)-1)/mantissa
+    // gives the exact result using a numerator of at most 56 bits.
+    // Keep the same invalid-target checks above and generic arithmetic below.
+    const uint32_t size{bits >> 24};
+    if (fast_startup && size >= 28 && size <= 34) {
+        const uint32_t mantissa{bits & 0x007fffff};
+        const unsigned numerator_bits{8 * (35 - size)};
+        return arith_uint256{((uint64_t{1} << numerator_bits) - 1) / mantissa};
+    }
     // We need to compute 2**256 / (bnTarget+1), but we can't represent 2**256
     // as it's too large for an arith_uint256. However, as 2**256 is at least as large
     // as bnTarget+1, it is equal to ((2**256 - bnTarget - 1) / (bnTarget+1)) + 1,

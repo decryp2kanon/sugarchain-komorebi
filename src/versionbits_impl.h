@@ -36,6 +36,7 @@ protected:
     virtual int MinActivationHeight() const { return 0; }
     virtual int Period() const =0;
     virtual int Threshold() const =0;
+    virtual int CountSignals(const CBlockIndex* pindex) const;
 
 public:
     virtual ~AbstractThresholdConditionChecker() = default;

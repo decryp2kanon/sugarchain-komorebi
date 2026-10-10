@@ -30,6 +30,7 @@
 #include <kernel/warning.h>
 #include <logging/timer.h>
 #include <node/blockstorage.h>
+#include <node/startup_progress.h>
 #include <node/utxo_snapshot.h>
 #include <policy/ephemeral_policy.h>
 #include <policy/policy.h>
@@ -2918,7 +2919,7 @@ void Chainstate::UpdateTip(const CBlockIndex* pindexNew)
 
     std::vector<bilingual_str> warning_messages;
     if (!m_chainman.IsInitialBlockDownload()) {
-        auto bits = m_chainman.m_versionbitscache.CheckUnknownActivations(pindexNew, m_chainman.GetParams());
+        auto bits = m_chainman.m_versionbitscache.CheckUnknownActivations(pindexNew, m_chainman.GetParams(), m_blockman.m_opts.fast_startup);
         for (auto [bit, active] : bits) {
             const bilingual_str warning = strprintf(_("Unknown new rules activated (versionbit %i)"), bit);
             if (active) {
@@ -4627,7 +4628,7 @@ bool Chainstate::LoadChainTip()
     if (!pindex) {
         return false;
     }
-    m_chain.SetTip(*pindex);
+    m_chain.SetTip(*pindex, m_blockman.m_opts.fast_startup);
     m_chainman.UpdateIBDStatus();
     tip = m_chain.Tip();
 
@@ -4641,6 +4642,17 @@ bool Chainstate::LoadChainTip()
     // to maintain a consistent best tip over reboots in case of a tie.
     auto target = tip;
     while (target) {
+#if defined(__GNUC__) || defined(__clang__)
+        // SetTip's array supplies prefetch hints only. Keep the original parent
+        // traversal as the authority for which indexes receive the sequence ID.
+        constexpr int PREFETCH_DISTANCE{8};
+        if (m_blockman.m_opts.fast_startup && target->nHeight >= PREFETCH_DISTANCE) {
+            if (const auto* upcoming{m_chain[target->nHeight - PREFETCH_DISTANCE]}) {
+                __builtin_prefetch(&upcoming->pprev, 0, 3);
+                __builtin_prefetch(&upcoming->nSequenceId, 1, 3);
+            }
+        }
+#endif
         target->nSequenceId = SEQ_ID_BEST_CHAIN_FROM_DISK;
         target = target->pprev;
     }
@@ -4933,6 +4945,17 @@ bool Chainstate::NeedsRedownload() const
     CBlockIndex* block{m_chain.Tip()};
 
     while (block != nullptr && DeploymentActiveAt(*block, m_chainman, Consensus::DEPLOYMENT_SEGWIT)) {
+#if defined(__GNUC__) || defined(__clang__)
+        // Keep every witness check and the original parent traversal. The
+        // already-built active chain supplies only read-ahead hints.
+        constexpr int PREFETCH_DISTANCE{8};
+        if (m_blockman.m_opts.fast_startup && block->nHeight >= PREFETCH_DISTANCE) {
+            if (const auto* upcoming{m_chain[block->nHeight - PREFETCH_DISTANCE]}) {
+                __builtin_prefetch(&upcoming->pprev, 0, 3);
+                __builtin_prefetch(&upcoming->nStatus, 0, 3);
+            }
+        }
+#endif
         if (!(block->nStatus & BLOCK_OPT_WITNESS)) {
             // block is insufficiently validated for a segwit client
             return true;
@@ -4953,7 +4976,7 @@ void Chainstate::PopulateBlockIndexCandidates()
 {
     AssertLockHeld(::cs_main);
 
-    for (CBlockIndex* pindex : m_blockman.GetAllBlockIndices()) {
+    const auto add_candidate = [&](CBlockIndex* pindex) EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
         // With assumeutxo, the snapshot block is a candidate for the tip, but it
         // may not have BLOCK_VALID_TRANSACTIONS (e.g. if we haven't yet downloaded
         // the block), so we special-case it here.
@@ -4962,6 +4985,12 @@ void Chainstate::PopulateBlockIndexCandidates()
                  (pindex->HaveNumChainTxs() || pindex->pprev == nullptr))) {
             TryAddBlockIndexCandidate(pindex);
         }
+    };
+    if (m_blockman.m_opts.fast_startup) {
+        // cs_main keeps the map stable; avoid a temporary full-size pointer list.
+        for (auto& [hash, index] : m_blockman.m_block_index) add_candidate(&index);
+    } else {
+        for (CBlockIndex* pindex : m_blockman.GetAllBlockIndices()) add_candidate(pindex);
     }
 }
 
@@ -4970,23 +4999,41 @@ bool ChainstateManager::LoadBlockIndex()
     AssertLockHeld(cs_main);
     // Load block index from databases
     if (m_blockman.m_blockfiles_indexed) {
-        bool ret{m_blockman.LoadBlockIndexDB(CurrentChainstate().m_from_snapshot_blockhash)};
+        std::vector<CBlockIndex*> vSortedByHeight;
+        bool ret{m_blockman.LoadBlockIndexDB(CurrentChainstate().m_from_snapshot_blockhash,
+            m_blockman.m_opts.fast_startup ? &vSortedByHeight : nullptr)};
         if (!ret) return false;
 
         m_blockman.ScanAndUnlinkAlreadyPrunedFiles();
 
-        std::vector<CBlockIndex*> vSortedByHeight{m_blockman.GetAllBlockIndices()};
-        std::sort(vSortedByHeight.begin(), vSortedByHeight.end(),
-                  CBlockIndexHeightOnlyComparator());
-
-        for (CBlockIndex* pindex : vSortedByHeight) {
+        if (!m_blockman.m_opts.fast_startup) {
+            vSortedByHeight = m_blockman.GetAllBlockIndices("Preparing block headers");
+            node::StartupProgress sorting{"Sorting block headers", vSortedByHeight.size()};
+            std::sort(vSortedByHeight.begin(), vSortedByHeight.end(), node::CBlockIndexHeightOnlyComparator());
+            sorting.FinishSort();
+        }
+        // In fast mode cs_main is held throughout. Pruned-file cleanup changes only files,
+        // so reuse the height ordering already built for index linking.
+        node::StartupProgress selecting{"Selecting best block header", vSortedByHeight.size()};
+        for (size_t position = 0; position < vSortedByHeight.size(); ++position) {
+#if defined(__GNUC__) || defined(__clang__)
+            constexpr size_t PREFETCH_DISTANCE{8};
+            if (m_blockman.m_opts.fast_startup && vSortedByHeight.size() - position > PREFETCH_DISTANCE) {
+                const auto* upcoming{vSortedByHeight[position + PREFETCH_DISTANCE]};
+                __builtin_prefetch(&upcoming->nChainWork, 0, 3);
+                __builtin_prefetch(&upcoming->nStatus, 0, 3);
+            }
+#endif
+            CBlockIndex* pindex{vSortedByHeight[position]};
             if (m_interrupt) return false;
             if (pindex->nStatus & BLOCK_FAILED_VALID && (!m_best_invalid || pindex->nChainWork > m_best_invalid->nChainWork)) {
                 m_best_invalid = pindex;
             }
             if (pindex->IsValid(BLOCK_VALID_TREE) && (m_best_header == nullptr || CBlockIndexWorkComparator()(m_best_header, pindex)))
                 m_best_header = pindex;
+            selecting.Advance();
         }
+        selecting.Finish();
     }
     return true;
 }

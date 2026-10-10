@@ -8,6 +8,10 @@
 #include <QWidget>
 
 #include <memory>
+#include <string>
+
+/** Turn startup init notifications into a fixed-height two-line splash message. */
+std::string FormatBlockIndexSplashMessage(const std::string& message);
 
 class NetworkStyle;
 

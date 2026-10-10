@@ -510,6 +510,7 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
     argsman.AddArg("-loadblock=<file>", "Imports blocks from external file on startup", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-maxmempool=<n>", strprintf("Keep the transaction memory pool below <n> megabytes (default: %u)", DEFAULT_MAX_MEMPOOL_SIZE_MB), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-parpow=<n>", strprintf("Maximum concurrent Yespower header verification tasks (1-%d, default: %d)", MAX_HEADER_POW_WORKERS, DEFAULT_HEADER_POW_WORKERS), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-fast-startup=<0|1>", "Enable optimized startup and trust valid historical block-index entries to skip repeated Yespower hashing (default: 0). With 0, use the original startup algorithms and full historical PoW recheck. Progress display remains available in both modes. New headers are still verified. Reduces detection of local block-index corruption or tampering. Incompatible with -reindex", ArgsManager::ALLOW_ANY | ArgsManager::DISALLOW_NEGATION, OptionsCategory::OPTIONS);
     argsman.AddArg("-maxibdblocksinflight=<n>", strprintf("Maximum outstanding block requests per peer during IBD (%d-%d, default: %d)", DEFAULT_IBD_BLOCK_REQUEST_LIMIT, MAX_IBD_BLOCK_REQUEST_LIMIT, DEFAULT_IBD_BLOCK_REQUEST_LIMIT), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-mempoolexpiry=<n>", strprintf("Do not keep transactions in the mempool longer than <n> hours (default: %u)", DEFAULT_MEMPOOL_EXPIRY_HOURS), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-minimumchainwork=<hex>", strprintf("Minimum work assumed to exist on a valid chain in hex (default: %s, testnet3: %s, testnet4: %s, signet: %s)", defaultChainParams->GetConsensus().nMinimumChainWork.GetHex(), testnetChainParams->GetConsensus().nMinimumChainWork.GetHex(), testnet4ChainParams->GetConsensus().nMinimumChainWork.GetHex(), signetChainParams->GetConsensus().nMinimumChainWork.GetHex()), ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::OPTIONS);
@@ -926,6 +927,14 @@ bool AppInitParameterInteraction(const ArgsManager& args)
     // ********************************************************* Step 2: parameter interactions
 
     // also see: InitParameterInteraction()
+
+    const std::string fast_startup{args.GetArg("-fast-startup", "0")};
+    if (fast_startup != "0" && fast_startup != "1") {
+        return InitError(Untranslated("-fast-startup must be 0 or 1"));
+    }
+    if (fast_startup == "1" && args.GetBoolArg("-reindex", false)) {
+        return InitError(Untranslated("-fast-startup=1 cannot be used with -reindex. Disable -fast-startup or remove -reindex."));
+    }
 
     // We removed checkpoints but keep the option to warn users who still have it in their config.
     if (args.IsArgSet("-checkpoints")) {
@@ -1349,6 +1358,8 @@ static ChainstateLoadResult InitAndLoadChainstate(
         },
     };
     Assert(ApplyArgsManOptions(args, blockman_opts)); // no error can happen, already checked in AppInitParameterInteraction
+    // A GUI recovery retry wipes the old index; it must verify every rebuilt entry.
+    if (do_reindex) blockman_opts.fast_startup = false;
 
     // Creating the chainstate manager internally creates a BlockManager, opens
     // the blocks tree db, and wipes existing block files in case of a reindex.
@@ -1840,8 +1851,13 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
         return InitError(Untranslated("-maxpowcache must be between 1 and 2048 MiB"));
     }
     if (chainparams.GetConsensus().fYespowerSugar) {
-        InitYespowerVerificationCache(size_t(pow_cache_mib) << 20);
-        LogInfo("* Using %i MiB plus metadata for verified Yespower headers", pow_cache_mib);
+        const bool grow_pow_cache{args.GetBoolArg("-fast-startup", false)};
+        InitYespowerVerificationCache(size_t(pow_cache_mib) << 20, grow_pow_cache);
+        if (grow_pow_cache) {
+            LogInfo("* Using up to %i MiB plus metadata for verified Yespower headers (grows on demand)", pow_cache_mib);
+        } else {
+            LogInfo("* Using %i MiB plus metadata for verified Yespower headers", pow_cache_mib);
+        }
     }
     LogInfo("* Using %.1f MiB for block index database", kernel_cache_sizes.block_tree_db * (1.0 / 1024 / 1024));
     if (args.GetBoolArg("-txindex", DEFAULT_TXINDEX)) {

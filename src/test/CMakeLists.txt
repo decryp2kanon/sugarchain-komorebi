@@ -161,6 +161,11 @@ target_raw_data_sources(test_bitcoin NAMESPACE test::data
 
 add_windows_application_manifest(test_bitcoin)
 
+# This regression fixture directly exercises the vendored LevelDB table cache.
+set_property(SOURCE dbwrapper_tests.cpp APPEND PROPERTY INCLUDE_DIRECTORIES
+  "${CMAKE_CURRENT_SOURCE_DIR}/../leveldb/include"
+)
+
 target_link_libraries(test_bitcoin
   core_interface
   test_util

@@ -42,8 +42,10 @@ bool CheckProofOfWorkImpl(uint256 hash, unsigned int nBits, const Consensus::Par
 inline constexpr size_t DEFAULT_YESPOWER_CACHE_BYTES{16 << 20};
 // Also keeps CuckooCache's uint32_t epoch-size arithmetic below overflow.
 inline constexpr size_t MAX_YESPOWER_CACHE_BYTES{size_t{2048} << 20};
-/** Configure process-local proof evidence; resizing discards all old entries. */
-void InitYespowerVerificationCache(size_t bytes);
+/** Configure process-local proof evidence; resizing discards all old entries.
+ * In fast startup, grow the cache within the same budget as proofs accumulate.
+ */
+void InitYespowerVerificationCache(size_t bytes, bool grow_on_demand = false);
 
 /** With cs_main held, restore an evicted proof from a genuinely checked live index. */
 void CacheVerifiedBlockIndexProof(const CBlockIndex& index, const Consensus::Params& params);
