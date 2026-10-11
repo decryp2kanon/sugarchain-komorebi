@@ -36,6 +36,26 @@ using node::SnapshotMetadata;
 
 BOOST_FIXTURE_TEST_SUITE(validation_chainstatemanager_tests, TestingSetup)
 
+BOOST_FIXTURE_TEST_CASE(reimport_genesis_with_height_zero_deployments, ChainTestingSetup)
+{
+    auto& manager{*m_node.chainman};
+    const auto genesis{std::make_shared<const CBlock>(manager.GetParams().GenesisBlock())};
+    LOCK(::cs_main);
+    auto& chainstate{manager.InitializeChainstate(m_node.mempool.get())};
+    chainstate.InitCoinsDB(1 << 20, true, false);
+    chainstate.InitCoinsCache(1 << 20);
+    BlockValidationState state;
+    CBlockIndex* index{nullptr};
+    bool new_block{false};
+    BOOST_REQUIRE(manager.AcceptBlock(genesis, state, &index, true, nullptr, &new_block, true));
+    BOOST_REQUIRE(index);
+    BOOST_CHECK(new_block);
+    BOOST_CHECK(index->pprev == nullptr);
+    BOOST_CHECK(index->nStatus & BLOCK_HAVE_DATA);
+    BOOST_CHECK_EQUAL(index->GetBlockHash(), manager.GetConsensus().hashGenesisBlock);
+}
+
+
 //! Basic tests for ChainstateManager.
 //!
 //! First create a legacy (IBD) chainstate, then create a snapshot chainstate.
