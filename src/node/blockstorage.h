@@ -109,7 +109,8 @@ public:
     bool HasYespowerEvidence(const CBlockHeader& header, const Consensus::Params& consensus) const;
     /** Bounded background DB scan; caller keeps this DB alive until joined. */
     std::optional<std::string> VerifyHistoricalPoW(const Consensus::Params& consensus,
-        const util::SignalInterrupt& interrupt, HistoricalPoWStats& stats, unsigned pause_ms);
+        const util::SignalInterrupt& interrupt, HistoricalPoWStats& stats, unsigned pause_ms,
+        const std::function<bool(const CBlockHeader&)>& live_verified = {});
     bool ReadBlockFileInfo(int nFile, CBlockFileInfo& info);
     bool ReadLastBlockFile(int& nFile);
     void WriteReindexing(bool fReindexing);
@@ -327,6 +328,7 @@ public:
 
     const util::SignalInterrupt& m_interrupt;
     kernel::HistoricalPoWStats m_historical_pow;
+    bool UsesHistoricalPoWTrust() const { return m_opts.fast_startup; }
     std::atomic<bool> m_importing{false};
 
     /**

@@ -143,7 +143,8 @@ bool BlockTreeDB::HasYespowerEvidence(const CBlockHeader& header, const Consensu
 }
 
 std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Params& consensus,
-    const util::SignalInterrupt& interrupt, HistoricalPoWStats& stats, unsigned pause_ms)
+    const util::SignalInterrupt& interrupt, HistoricalPoWStats& stats, unsigned pause_ms,
+    const std::function<bool(const CBlockHeader&)>& live_verified)
 {
     stats.state = HistoricalPoWStats::RUNNING;
     std::optional<uint256> last;
@@ -192,7 +193,8 @@ std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Par
             } else {
                 // RAM cache hits are also genuine completed verification; a
                 // trusted disk status never populates that cache.
-                if (!CheckBlockProofOfWork(header, consensus)) {
+                const bool live{live_verified && live_verified(header)};
+                if (!live && !CheckBlockProofOfWork(header, consensus)) {
                     if (dirty) WriteBatch(batch, true);
                     stats.state = HistoricalPoWStats::FAILED;
                     return strprintf("Historical Yespower verification failed at height %d, hash %s. Shutting down. Back up data and recover with -fast-startup=0 -reindex. Reindexing cannot repair invalid PoW or damaged block files.", disk.nHeight, hash.ToString());
@@ -204,7 +206,7 @@ std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Par
                 }
                 ++stats.verified;
                 // One worker; sleep only on expensive misses, not warm hits.
-                for (unsigned elapsed{0}; elapsed < pause_ms && !interrupt; ++elapsed) {
+                for (unsigned elapsed{0}; !live && elapsed < pause_ms && !interrupt; ++elapsed) {
                     std::this_thread::sleep_for(std::chrono::milliseconds{1});
                 }
             }
