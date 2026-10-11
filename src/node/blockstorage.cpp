@@ -692,6 +692,16 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
 
     CBlockIndex* previous_index{nullptr};
     for (size_t position = 0; position < vSortedByHeight.size(); ++position) {
+#if defined(__GNUC__) || defined(__clang__)
+        // Hide scattered index-read latency without changing linking order.
+        constexpr size_t PREFETCH_DISTANCE{8};
+        if (m_opts.startup_optimizations && vSortedByHeight.size() - position > PREFETCH_DISTANCE) {
+            const auto* upcoming{vSortedByHeight[position + PREFETCH_DISTANCE]};
+            __builtin_prefetch(upcoming, 0, 3);
+            __builtin_prefetch(&upcoming->nStatus, 0, 3);
+            __builtin_prefetch(&upcoming->nBits, 0, 3);
+        }
+#endif
         CBlockIndex* pindex{vSortedByHeight[position]};
         if (m_interrupt) return false;
         if (previous_index && pindex->nHeight > previous_index->nHeight + 1) {
