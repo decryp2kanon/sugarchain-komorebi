@@ -111,7 +111,7 @@ bool BlockTreeDB::ReadLastBlockFile(int& nFile)
     return Read(DB_LAST_BLOCK, nFile);
 }
 
-void BlockTreeDB::WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, const std::vector<const CBlockIndex*>& blockinfo)
+void BlockTreeDB::WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, const std::vector<const CBlockIndex*>& blockinfo, const Consensus::Params* consensus)
 {
     CDBBatch batch(*this);
     for (const auto& [file, info] : fileInfo) {
@@ -120,8 +120,25 @@ void BlockTreeDB::WriteBatchSync(const std::vector<std::pair<int, const CBlockFi
     batch.Write(DB_LAST_BLOCK, nLastFile);
     for (const CBlockIndex* bi : blockinfo) {
         batch.Write(std::make_pair(DB_BLOCK_INDEX, bi->GetBlockHash()), CDiskBlockIndex{bi});
+        if (consensus && consensus->fYespowerSugar && !EnableFuzzDeterminism()) {
+            AssertLockHeld(::cs_main);
+            if (!bi->m_checked_yespower) continue;
+            const auto header{bi->GetBlockHeader()};
+            if (header.GetHash() == bi->GetBlockHash() && DeriveTarget(header.nBits, consensus->powLimit)) {
+                batch.Write(std::make_pair(uint8_t{'y'}, header.GetHash()),
+                    std::make_pair(uint8_t{2}, GetYespowerEvidenceDigest(header, *consensus)));
+            }
+        }
     }
     WriteBatch(batch, true);
+}
+
+bool BlockTreeDB::HasYespowerEvidence(const CBlockHeader& header, const Consensus::Params& consensus) const
+{
+    if (!consensus.fYespowerSugar || EnableFuzzDeterminism() || !DeriveTarget(header.nBits, consensus.powLimit)) return false;
+    std::pair<uint8_t, uint256> evidence;
+    return Read(std::make_pair(uint8_t{'y'}, header.GetHash()), evidence) &&
+        evidence.first == 2 && evidence.second == GetYespowerEvidenceDigest(header, consensus);
 }
 
 void BlockTreeDB::WriteFlag(const std::string& name, bool fValue)
@@ -784,7 +801,7 @@ void BlockManager::WriteBlockIndexDB()
         m_dirty_blockindex.erase(it++);
     }
     int max_blockfile = WITH_LOCK(cs_LastBlockFile, return this->MaxBlockfileNum());
-    m_block_tree_db->WriteBatchSync(vFiles, max_blockfile, vBlocks);
+    m_block_tree_db->WriteBatchSync(vFiles, max_blockfile, vBlocks, &GetConsensus());
 }
 
 bool BlockManager::LoadBlockIndexDB(const std::optional<uint256>& snapshot_blockhash, std::vector<CBlockIndex*>* sorted_indices)

@@ -38,6 +38,9 @@ unsigned int CalculateSugarShieldWorkRequired(const arith_uint256& target_sum, i
 bool CheckBlockProofOfWork(const CBlockHeader& header, const Consensus::Params& params);
 bool CheckProofOfWork(uint256 hash, unsigned int nBits, const Consensus::Params&);
 bool CheckProofOfWorkImpl(uint256 hash, unsigned int nBits, const Consensus::Params&);
+/** Domain of local persisted results; not a cryptographic proof of execution. */
+uint256 GetYespowerEvidenceRulesHash(const Consensus::Params& params);
+uint256 GetYespowerEvidenceDigest(const CBlockHeader& header, const Consensus::Params& params);
 
 inline constexpr size_t DEFAULT_YESPOWER_CACHE_BYTES{16 << 20};
 // Also keeps CuckooCache's uint32_t epoch-size arithmetic below overflow.
