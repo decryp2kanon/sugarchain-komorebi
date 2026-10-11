@@ -1402,7 +1402,9 @@ BlockManager::BlockManager(const util::SignalInterrupt& interrupt, Options opts)
       m_interrupt{interrupt},
       m_block_index{m_opts.startup_optimizations}
 {
-    m_block_tree_db = std::make_unique<BlockTreeDB>(m_opts.block_tree_db_params);
+    auto db_params{m_opts.block_tree_db_params};
+    db_params.reclaim_read_cache = m_opts.startup_optimizations;
+    m_block_tree_db = std::make_unique<BlockTreeDB>(db_params);
 
     if (m_opts.block_tree_db_params.wipe_data) {
         m_block_tree_db->WriteReindexing(true);

@@ -9,6 +9,9 @@
 #include <uint256.h>
 #include <util/string.h>
 
+#include <leveldb/db.h>
+#include <leveldb/options.h>
+
 #include <memory>
 #include <ranges>
 
@@ -17,6 +20,94 @@
 using util::ToString;
 
 BOOST_FIXTURE_TEST_SUITE(dbwrapper_tests, BasicTestingSetup)
+
+
+BOOST_AUTO_TEST_CASE(small_table_cache_preserves_reads_across_eviction)
+{
+    const std::string path{fs::PathToString(m_args.GetDataDirBase() / "small-table-cache")};
+    constexpr uint32_t ROWS{4096};
+    auto key = [](uint32_t i) { return strprintf("%08u", i); };
+    auto value = [&key](uint32_t i) { return key(i) + std::string(8192, char(i % 251)); };
+    leveldb::Options options;
+    options.create_if_missing = true;
+    options.small_table_cache = true;
+    options.max_open_files = 10; // Opt-in zero retained tables; live iterators keep their references.
+    options.write_buffer_size = 64 * 1024;
+    options.max_file_size = 1024 * 1024;
+    options.compression = leveldb::kNoCompression;
+    {
+        leveldb::DB* raw{nullptr};
+        BOOST_REQUIRE(leveldb::DB::Open(options, path, &raw).ok());
+        const std::unique_ptr<leveldb::DB> db{raw};
+        for (uint32_t i = 0; i < ROWS; ++i) {
+            BOOST_REQUIRE(db->Put(leveldb::WriteOptions{}, key(i), value(i)).ok());
+        }
+        db->CompactRange(nullptr, nullptr);
+        size_t tables{0};
+        for (int level = 0; level < 7; ++level) {
+            std::string count;
+            BOOST_REQUIRE(db->GetProperty(strprintf("leveldb.num-files-at-level%d", level), &count));
+            tables += std::stoul(count);
+        }
+        BOOST_REQUIRE_GT(tables, 16U); // Force reads across more tables than the cache can retain.
+    }
+    for (const bool small : {false, true}) {
+        options.small_table_cache = small;
+        leveldb::DB* raw{nullptr};
+        BOOST_REQUIRE(leveldb::DB::Open(options, path, &raw).ok());
+        const std::unique_ptr<leveldb::DB> db{raw};
+        for (uint32_t i = 0; i < ROWS; ++i) {
+            for (const uint32_t row : {i, ROWS - 1 - i}) {
+                std::string actual;
+                BOOST_REQUIRE(db->Get(leveldb::ReadOptions{}, key(row), &actual).ok());
+                BOOST_CHECK_EQUAL(actual, value(row));
+            }
+        }
+        const std::unique_ptr<leveldb::Iterator> cursor{db->NewIterator(leveldb::ReadOptions{})};
+        uint32_t row{0};
+        for (cursor->SeekToFirst(); cursor->Valid(); cursor->Next(), ++row) {
+            BOOST_REQUIRE_LT(row, ROWS);
+            BOOST_CHECK_EQUAL(cursor->key().ToString(), key(row));
+            BOOST_CHECK_EQUAL(cursor->value().ToString(), value(row));
+        }
+        BOOST_CHECK(cursor->status().ok());
+        BOOST_CHECK_EQUAL(row, ROWS);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(read_cache_reclamation_preserves_db_contents)
+{
+    const fs::path path{m_args.GetDataDirBase() / "read-cache-reclaim"};
+    for (const bool obfuscate : {false, true}) {
+        {
+            CDBWrapper db{{.path = path, .cache_bytes = 1_MiB, .wipe_data = true, .obfuscate = obfuscate,
+                           .reclaim_read_cache = true}};
+            CDBBatch batch{db};
+            for (uint32_t i = 0; i < 4096; ++i) batch.Write(i, uint64_t{i} * 17);
+            db.WriteBatch(batch, true);
+            db.CompactFull();
+        }
+        for (const bool reclaim : {false, true}) {
+            CDBWrapper db{{.path = path, .cache_bytes = 1_MiB, .reclaim_read_cache = reclaim}};
+            for (uint32_t i = 0; i < 4096; ++i) {
+                uint64_t value{0};
+                BOOST_REQUIRE(db.Read(i, value));
+                BOOST_CHECK_EQUAL(value, uint64_t{i} * 17);
+            }
+            const std::unique_ptr<CDBIterator> cursor{db.NewIterator()};
+            size_t count{0};
+            for (cursor->SeekToFirst(); cursor->Valid(); cursor->Next()) {
+                uint32_t key{0};
+                if (!cursor->GetKey(key) || key >= 4096) continue; // Internal obfuscation metadata.
+                uint64_t value{0};
+                BOOST_REQUIRE(cursor->GetValue(value));
+                BOOST_CHECK_EQUAL(value, uint64_t{key} * 17);
+                ++count;
+            }
+            BOOST_CHECK_EQUAL(count, 4096U);
+        }
+    }
+}
 
 BOOST_AUTO_TEST_CASE(dbwrapper)
 {
