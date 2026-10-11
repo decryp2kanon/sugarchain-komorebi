@@ -297,22 +297,26 @@ BOOST_AUTO_TEST_CASE(dbwrapper_iterator)
         // Be sure to seek past the obfuscation key (if it exists)
         it->Seek(key);
 
-        uint8_t key_res;
-        uint256 val_res;
-
-        BOOST_REQUIRE(it->GetKey(key_res));
-        BOOST_REQUIRE(it->GetValue(val_res));
-        BOOST_CHECK_EQUAL(key_res, key);
-        BOOST_CHECK_EQUAL(val_res.ToString(), in.ToString());
-
-        it->Next();
-
-        BOOST_REQUIRE(it->GetKey(key_res));
-        BOOST_REQUIRE(it->GetValue(val_res));
-        BOOST_CHECK_EQUAL(key_res, key2);
-        BOOST_CHECK_EQUAL(val_res.ToString(), in2.ToString());
-
-        it->Next();
+        for (const auto& [expected_key, expected_value] : {std::pair{key, in}, std::pair{key2, in2}}) {
+            // Both iterator readers must survive failed deserialization, retain
+            // their position and return the full value on subsequent reads.
+            for (const bool direct_read : {false, true}) {
+                for (int repeat = 0; repeat < 2; ++repeat) {
+                    std::pair<uint8_t, uint256> oversized_key;
+                    std::pair<uint256, uint8_t> oversized_value;
+                    BOOST_CHECK(!it->GetKey(oversized_key, direct_read));
+                    BOOST_CHECK(!it->GetValue(oversized_value, direct_read));
+                    uint8_t key_res{0};
+                    uint256 val_res;
+                    BOOST_REQUIRE(it->Valid());
+                    BOOST_REQUIRE(it->GetKey(key_res, direct_read));
+                    BOOST_REQUIRE(it->GetValue(val_res, direct_read));
+                    BOOST_CHECK_EQUAL(key_res, expected_key);
+                    BOOST_CHECK(val_res == expected_value);
+                }
+            }
+            it->Next();
+        }
         BOOST_CHECK_EQUAL(it->Valid(), false);
     }
 }
