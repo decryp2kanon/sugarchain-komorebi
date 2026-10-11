@@ -30,6 +30,7 @@
 #include <kernel/warning.h>
 #include <logging/timer.h>
 #include <node/blockstorage.h>
+#include <node/startup_progress.h>
 #include <node/utxo_snapshot.h>
 #include <policy/ephemeral_policy.h>
 #include <policy/policy.h>
@@ -5006,14 +5007,14 @@ bool ChainstateManager::LoadBlockIndex()
         m_blockman.ScanAndUnlinkAlreadyPrunedFiles();
 
         if (!m_blockman.m_opts.startup_optimizations) {
-            vSortedByHeight = m_blockman.GetAllBlockIndices();
-
+            vSortedByHeight = m_blockman.GetAllBlockIndices("Preparing block headers");
+            node::StartupProgress sorting{"Sorting block headers", vSortedByHeight.size(), false};
             std::sort(vSortedByHeight.begin(), vSortedByHeight.end(), node::CBlockIndexHeightOnlyComparator());
-
+            sorting.FinishSort();
         }
         // In fast mode cs_main is held throughout. Pruned-file cleanup changes only files,
         // so reuse the height ordering already built for index linking.
-
+        node::StartupProgress selecting{"Selecting best block header", vSortedByHeight.size()};
         for (size_t position = 0; position < vSortedByHeight.size(); ++position) {
 #if defined(__GNUC__) || defined(__clang__)
             constexpr size_t PREFETCH_DISTANCE{8};
@@ -5030,9 +5031,9 @@ bool ChainstateManager::LoadBlockIndex()
             }
             if (pindex->IsValid(BLOCK_VALID_TREE) && (m_best_header == nullptr || CBlockIndexWorkComparator()(m_best_header, pindex)))
                 m_best_header = pindex;
-
+            selecting.Advance();
         }
-
+        selecting.Finish();
     }
     return true;
 }

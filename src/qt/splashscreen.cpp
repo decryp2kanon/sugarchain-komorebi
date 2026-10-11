@@ -170,6 +170,34 @@ static void InitMessage(SplashScreen *splash, const std::string &message)
     assert(invoked);
 }
 
+std::string FormatBlockIndexSplashMessage(const std::string& message)
+{
+    if (message == "Counting block index entries...") {
+        return message + "\n ";
+    }
+    static const std::string prefix{"Loading block index: "};
+    if (message.compare(0, prefix.size(), prefix) != 0) {
+        // Keep progress details in the core log; the splash uses two lines only.
+        const std::string stages[]{"Preparing block index", "Sorting block index", "Linking block index",
+            "Collecting block file references", "Checking block files", "Preparing block headers",
+            "Sorting block headers", "Selecting best block header"};
+        for (const auto& stage : stages) {
+            if (message.compare(0, stage.size(), stage) != 0) continue;
+            const size_t body{message.find(": ")};
+            const size_t separator{message.find(" | ")};
+            const size_t end{separator == std::string::npos ? message.size() : separator};
+            const bool counted{body != std::string::npos && body < end};
+            const bool progress{counted && message.substr(body + 2, end - body - 2).find(" / ") != std::string::npos};
+            return stage + (message.compare(stage.size(), 10, " completed") == 0 ? " completed.\n" : "...\n") +
+                (progress ? message.substr(body + 2, end - body - 2) : " ");
+        }
+        return message.find('\n') == std::string::npos ? message + "\n " : message;
+    }
+    const std::string body{message.substr(prefix.size())};
+    const size_t rate_pos{body.find(" | ")};
+    return "Loading block index...\n" + body.substr(0, rate_pos);
+}
+
 static void ShowProgress(SplashScreen *splash, const std::string &title, int nProgress, bool resume_possible)
 {
     InitMessage(splash, title + std::string("\n") +
@@ -182,12 +210,7 @@ void SplashScreen::subscribeToCoreSignals()
 {
     // Connect signals to client
     m_handler_init_message = m_node->handleInitMessage([this](const std::string& message) {
-        static const std::string prefix{"Loading block index: "};
-        if (message.compare(0, prefix.size(), prefix) == 0) {
-            InitMessage(this, "Loading block index...\n" + message.substr(prefix.size()));
-        } else {
-            InitMessage(this, message);
-        }
+        InitMessage(this, FormatBlockIndexSplashMessage(message));
     });
     m_handler_show_progress = m_node->handleShowProgress([this](const std::string& title, int nProgress, bool resume_possible) {
         ShowProgress(this, title, nProgress, resume_possible);
@@ -234,7 +257,13 @@ void SplashScreen::paintEvent(QPaintEvent *event)
     painter.drawPixmap(0, 0, pixmap);
     QRect r = rect().adjusted(5, 5, -5, -5);
     painter.setPen(curColor);
-    painter.drawText(r, curAlignment, curMessage);
+    int alignment{curAlignment};
+    if ((alignment & Qt::AlignBottom) && curMessage.count('\n') <= 1) {
+        // Anchor the title to the same first row even when the second row is empty.
+        r.setTop(r.bottom() - 2 * painter.fontMetrics().lineSpacing() + 1);
+        alignment = (alignment & ~Qt::AlignBottom) | Qt::AlignTop;
+    }
+    painter.drawText(r, alignment, curMessage);
 }
 
 void SplashScreen::closeEvent(QCloseEvent *event)

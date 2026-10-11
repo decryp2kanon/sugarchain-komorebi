@@ -1,0 +1,201 @@
+{
+  "scope": "All retained optimizations 1-19 enabled in both startup modes; historical disk trust remains fast-only. Baseline is the previous 13-item mode-zero policy. Timed workloads separate whole small-node readiness from a bounded large-index verification helper.",
+  "baseline_commit": "7d4a5207f09edd8f4d3bc6dbecb719e169096957",
+  "sample_blocks": 6000,
+  "sample_runs_per_variant": 5,
+  "sample_options": [
+    "-fast-startup=0",
+    "-parpow=8",
+    "-assumevalid=0",
+    "-dbcache=450",
+    "-maxpowcache=2048",
+    "network and wallets disabled"
+  ],
+  "sample_summary": {
+    "baseline": {
+      "ready_seconds": 2.851478094002232,
+      "peak_rss_kib": 136964
+    },
+    "candidate": {
+      "ready_seconds": 2.840680374065414,
+      "peak_rss_kib": 137076
+    }
+  },
+  "sample_runs": [
+    {
+      "version": "baseline",
+      "run": 1,
+      "ready_seconds": 2.8918294738978148,
+      "peak_rss_kib": 136732,
+      "blocks": 6000,
+      "bestblockhash": "e7a04205f70e5b6e99d83a8f720748fee559a382701b39ff9891e391e6cf81d9",
+      "chainwork": "0000000000000000000000000000000000000000000000000000000003dccfa2",
+      "verifychain": true
+    },
+    {
+      "version": "candidate",
+      "run": 1,
+      "ready_seconds": 2.8368272490333766,
+      "peak_rss_kib": 137076,
+      "blocks": 6000,
+      "bestblockhash": "e7a04205f70e5b6e99d83a8f720748fee559a382701b39ff9891e391e6cf81d9",
+      "chainwork": "0000000000000000000000000000000000000000000000000000000003dccfa2",
+      "verifychain": true
+    },
+    {
+      "version": "candidate",
+      "run": 2,
+      "ready_seconds": 2.987520447000861,
+      "peak_rss_kib": 136520,
+      "blocks": 6000,
+      "bestblockhash": "e7a04205f70e5b6e99d83a8f720748fee559a382701b39ff9891e391e6cf81d9",
+      "chainwork": "0000000000000000000000000000000000000000000000000000000003dccfa2",
+      "verifychain": true
+    },
+    {
+      "version": "baseline",
+      "run": 2,
+      "ready_seconds": 2.8759851141367108,
+      "peak_rss_kib": 136488,
+      "blocks": 6000,
+      "bestblockhash": "e7a04205f70e5b6e99d83a8f720748fee559a382701b39ff9891e391e6cf81d9",
+      "chainwork": "0000000000000000000000000000000000000000000000000000000003dccfa2",
+      "verifychain": true
+    },
+    {
+      "version": "baseline",
+      "run": 3,
+      "ready_seconds": 2.8490986600518227,
+      "peak_rss_kib": 137224,
+      "blocks": 6000,
+      "bestblockhash": "e7a04205f70e5b6e99d83a8f720748fee559a382701b39ff9891e391e6cf81d9",
+      "chainwork": "0000000000000000000000000000000000000000000000000000000003dccfa2",
+      "verifychain": true
+    },
+    {
+      "version": "candidate",
+      "run": 3,
+      "ready_seconds": 2.8429601499810815,
+      "peak_rss_kib": 136424,
+      "blocks": 6000,
+      "bestblockhash": "e7a04205f70e5b6e99d83a8f720748fee559a382701b39ff9891e391e6cf81d9",
+      "chainwork": "0000000000000000000000000000000000000000000000000000000003dccfa2",
+      "verifychain": true
+    },
+    {
+      "version": "candidate",
+      "run": 4,
+      "ready_seconds": 2.840680374065414,
+      "peak_rss_kib": 137112,
+      "blocks": 6000,
+      "bestblockhash": "e7a04205f70e5b6e99d83a8f720748fee559a382701b39ff9891e391e6cf81d9",
+      "chainwork": "0000000000000000000000000000000000000000000000000000000003dccfa2",
+      "verifychain": true
+    },
+    {
+      "version": "baseline",
+      "run": 4,
+      "ready_seconds": 2.8150289109908044,
+      "peak_rss_kib": 136964,
+      "blocks": 6000,
+      "bestblockhash": "e7a04205f70e5b6e99d83a8f720748fee559a382701b39ff9891e391e6cf81d9",
+      "chainwork": "0000000000000000000000000000000000000000000000000000000003dccfa2",
+      "verifychain": true
+    },
+    {
+      "version": "baseline",
+      "run": 5,
+      "ready_seconds": 2.851478094002232,
+      "peak_rss_kib": 137020,
+      "blocks": 6000,
+      "bestblockhash": "e7a04205f70e5b6e99d83a8f720748fee559a382701b39ff9891e391e6cf81d9",
+      "chainwork": "0000000000000000000000000000000000000000000000000000000003dccfa2",
+      "verifychain": true
+    },
+    {
+      "version": "candidate",
+      "run": 5,
+      "ready_seconds": 2.825312800006941,
+      "peak_rss_kib": 137216,
+      "blocks": 6000,
+      "bestblockhash": "e7a04205f70e5b6e99d83a8f720748fee559a382701b39ff9891e391e6cf81d9",
+      "chainwork": "0000000000000000000000000000000000000000000000000000000003dccfa2",
+      "verifychain": true
+    }
+  ],
+  "large_prefix_scope": "Actual LoadBlockIndexGuts on a private copy of the 44,806,391-entry index. Full key pre-count, then intentionally cancel after 50000 headers, with exactly 50000 genuine Yespower calls. Compare DB read-cache policy only, same pooled map and growth budget. No chainstate/linking/full node startup; helper reserves for the prefix, not all historical entries. Two runs per policy in ABBA order. Cold-file advice only on private copied SST files.",
+  "large_prefix_summary": {
+    "0": {
+      "seconds": 28.9163,
+      "peak_rss_kib": 7363928.0,
+      "verified": 50000.0
+    },
+    "1": {
+      "seconds": 31.21115,
+      "peak_rss_kib": 135190.0,
+      "verified": 50000.0
+    }
+  },
+  "large_prefix_runs": [
+    {
+      "cache_reclamation": 0,
+      "entries": 50000,
+      "verified": 50000,
+      "seconds": 29.3022,
+      "peak_rss_kib": 7363452,
+      "checksum": 2779632869579436032,
+      "bounded_cancellation": true,
+      "run": 0
+    },
+    {
+      "cache_reclamation": 1,
+      "entries": 50000,
+      "verified": 50000,
+      "seconds": 30.7668,
+      "peak_rss_kib": 134980,
+      "checksum": 2779632869579436032,
+      "bounded_cancellation": true,
+      "run": 1
+    },
+    {
+      "cache_reclamation": 1,
+      "entries": 50000,
+      "verified": 50000,
+      "seconds": 31.6555,
+      "peak_rss_kib": 135400,
+      "checksum": 2779632869579436032,
+      "bounded_cancellation": true,
+      "run": 2
+    },
+    {
+      "cache_reclamation": 0,
+      "entries": 50000,
+      "verified": 50000,
+      "seconds": 28.5304,
+      "peak_rss_kib": 7364404,
+      "checksum": 2779632869579436032,
+      "bounded_cancellation": true,
+      "run": 3
+    }
+  ],
+  "prefetch_scope": "Actual CChain::SetTip on one million contiguous or shuffled index objects, five runs each. Separate metadata screening, no PoW or whole-node performance claim. Every chain pointer checked.",
+  "prefetch_median_seconds": {
+    "0": {
+      "0": 0.0104754,
+      "1": 0.0158284
+    },
+    "1": {
+      "0": 0.111883,
+      "1": 0.0731165
+    }
+  },
+  "validation": {
+    "release_unit_default": 69,
+    "release_unit_fast": 69,
+    "asan_ubsan_unit": 69,
+    "release_startup_functional": "PASS",
+    "release_invalidate_functional": "PASS",
+    "asan_ubsan_invalidate_functional": "PASS",
+    "daemon_unit_qt_builds": "PASS"
+  }
+}

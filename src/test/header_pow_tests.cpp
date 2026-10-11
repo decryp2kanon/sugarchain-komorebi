@@ -5,6 +5,7 @@
 #include <consensus/validation.h>
 #include <node/blockstorage.h>
 #include <node/interface_ui.h>
+#include <node/startup_progress.h>
 #include <kernel/chainparams.h>
 #include <pow.h>
 #include <primitives/block.h>
@@ -492,9 +493,28 @@ BOOST_AUTO_TEST_CASE(startup_checks_each_header_with_configured_workers)
 BOOST_AUTO_TEST_CASE(startup_block_index_load_checks_every_header)
 {
     const auto valid{Headers(302, 2001)};
-    BOOST_CHECK(LoadStartupHeaders(valid, 1));
-    BOOST_CHECK(LoadStartupHeaders(valid, 3));
-    BOOST_CHECK(LoadStartupHeaders(valid, 8));
+    for (const bool optimized : {false, true}) {
+        for (const int workers : {1, 3, 8}) {
+            std::vector<std::string> messages;
+            boost::signals2::scoped_connection capture{uiInterface.InitMessage_connect(
+                [&](const std::string& message) { messages.push_back(message); })};
+            CacheBudget budget{1 << 20};
+            Observation observation;
+            BOOST_REQUIRE(LoadStartupHeaders(valid, workers, false, false, BLOCK_VALID_TREE, false, {}, optimized));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+            BOOST_CHECK_EQUAL(calls.load(), valid.size());
+#endif
+            if (optimized) {
+                BOOST_REQUIRE_EQUAL(messages.size(), 102U);
+                BOOST_CHECK(messages[1].find("(0%)") != std::string::npos);
+                BOOST_CHECK(messages.back().find("2,001 / 2,001 (100%)") != std::string::npos);
+            } else {
+                BOOST_REQUIRE_EQUAL(messages.size(), 2U);
+                BOOST_CHECK_EQUAL(messages[0], "Loading block index: 2,000");
+                BOOST_CHECK_EQUAL(messages[1], "Loading block index: 2,001");
+            }
+        }
+    }
     BOOST_CHECK(!LoadStartupHeaders(valid, 8, true));
 
     auto invalid{Headers(303, 17)};
@@ -612,7 +632,64 @@ BOOST_AUTO_TEST_CASE(fast_startup_still_checks_genesis)
 #endif
 }
 
+BOOST_AUTO_TEST_CASE(startup_progress_counts_entries_and_reports_one_percent_buckets)
+{
+    const auto headers{Headers(309, 101)};
+    for (const bool fast_startup : {false, true}) {
+        std::vector<std::string> messages;
+        std::vector<std::string> logged;
+        boost::signals2::scoped_connection capture{uiInterface.InitMessageWithLog_connect(
+            [&](const std::string& message, bool log) { messages.push_back(message); if (log) logged.push_back(message); })};
+        CacheBudget budget{1 << 20};
+        Observation observation;
+        BOOST_CHECK(LoadStartupHeaders(headers, 8, false, fast_startup, BLOCK_VALID_TREE));
+        BOOST_REQUIRE_EQUAL(messages.size(), 102U);
+        BOOST_CHECK_EQUAL(messages.front(), "Counting block index entries...");
+        for (unsigned percent{1}; percent <= 100; ++percent) {
+            const auto& message{messages[percent + 1]};
+            BOOST_CHECK(message.find("Loading block index: ") == 0);
+            BOOST_CHECK(message.find(" / 101 (") != std::string::npos);
+            BOOST_CHECK(message.find(strprintf("(%u%%)", percent)) != std::string::npos);
+            BOOST_CHECK(message.find("/s") == std::string::npos);
+            BOOST_CHECK(message.find("elapsed") == std::string::npos);
+            BOOST_CHECK(message.find("ETA") == std::string::npos);
+        }
+        BOOST_CHECK(messages.back().find("101 / 101 (100%)") != std::string::npos);
+        BOOST_REQUIRE_EQUAL(logged.size(), 6U); // Counting plus 0/25/50/75/100.
+        for (unsigned i{0}; i <= 4; ++i) BOOST_CHECK_EQUAL(logged[i + 1], messages[i * 25 + 1]);
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), fast_startup ? 0U : headers.size());
+#endif
+    }
+}
 
+BOOST_AUTO_TEST_CASE(startup_progress_handles_empty_small_and_interrupted_indexes)
+{
+    std::vector<std::string> messages;
+    boost::signals2::scoped_connection capture{uiInterface.InitMessage_connect(
+        [&](const std::string& message) { messages.push_back(message); })};
+    BOOST_CHECK(LoadStartupHeaders({}, 1, false, true));
+    BOOST_REQUIRE_EQUAL(messages.size(), 3U);
+    BOOST_CHECK(messages.back().find("0 / 0 (100%)") != std::string::npos);
+    BOOST_CHECK(messages.back().find("ETA") == std::string::npos);
+
+    messages.clear();
+    BOOST_CHECK(LoadStartupHeaders(Headers(310, 3), 8, false, true));
+    BOOST_REQUIRE_EQUAL(messages.size(), 5U);
+    BOOST_CHECK(messages[2].find("(33%)") != std::string::npos);
+    BOOST_CHECK(messages[3].find("(66%)") != std::string::npos);
+    BOOST_CHECK(messages[4].find("3 / 3 (100%)") != std::string::npos);
+
+    messages.clear();
+    const auto interrupted_headers{Headers(311, 3)};
+    Observation observation;
+    BOOST_CHECK(!LoadStartupHeaders(interrupted_headers, 8, true, true));
+    BOOST_REQUIRE_EQUAL(messages.size(), 1U);
+    BOOST_CHECK_EQUAL(messages.front(), "Counting block index entries...");
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+    BOOST_CHECK_EQUAL(calls.load(), 0U);
+#endif
+}
 
 BOOST_AUTO_TEST_CASE(invalid_first_and_later_proofs_have_bounded_speculation)
 {
@@ -990,6 +1067,75 @@ BOOST_AUTO_TEST_CASE(local_worker_failure_reaches_caller_without_poisoning_queue
 }
 #endif
 
+BOOST_AUTO_TEST_CASE(startup_phase_progress_reports_real_work_and_opaque_sort)
+{
+    std::vector<std::string> messages;
+    std::vector<std::string> logged;
+    boost::signals2::scoped_connection connection{uiInterface.InitMessageWithLog_connect(
+        [&](const std::string& message, bool log) { messages.push_back(message); if (log) logged.push_back(message); })};
+    {
+        node::StartupProgress progress{"Linking block index", 10000};
+        for (unsigned i = 0; i < 10000; ++i) progress.Advance();
+        BOOST_REQUIRE_EQUAL(messages.size(), 100U); // Start plus 1..99, not premature 100.
+        progress.Finish();
+    }
+    BOOST_REQUIRE_EQUAL(messages.size(), 101U);
+    for (unsigned percent = 1; percent <= 100; ++percent) {
+        BOOST_CHECK(messages[percent].find(strprintf("(%u%%)", percent)) != std::string::npos);
+    }
+    BOOST_CHECK(messages.back().find("10,000 / 10,000 (100%)") != std::string::npos);
+    BOOST_REQUIRE_EQUAL(logged.size(), 5U);
+    BOOST_CHECK(logged.front().find("(0%)") != std::string::npos);
+    for (unsigned i{1}; i <= 4; ++i) BOOST_CHECK_EQUAL(logged[i], messages[i * 25]);
+    for (const auto& message : messages) BOOST_CHECK(message.find("elapsed") == std::string::npos);
+    messages.clear();
+    {
+        node::StartupProgress progress{"Checking block files", 3};
+        progress.Advance();
+        progress.Finish(); // Incomplete work cannot publish 100.
+    }
+    BOOST_REQUIRE_EQUAL(messages.size(), 2U);
+    BOOST_CHECK(messages.back().find("(33%)") != std::string::npos);
+    messages.clear();
+    {
+        node::StartupProgress sorting{"Sorting block headers", 44782474, false};
+        sorting.FinishSort();
+    }
+    BOOST_REQUIRE_EQUAL(messages.size(), 2U);
+    BOOST_CHECK_EQUAL(messages.front(), "Sorting block headers...");
+    BOOST_CHECK_EQUAL(messages.back(), "Sorting block headers completed.");
+    for (const auto& message : messages) {
+        BOOST_CHECK(message.find('%') == std::string::npos);
+        BOOST_CHECK(message.find("ETA") == std::string::npos);
+    }
+    messages.clear();
+    node::StartupProgress empty{"Linking block index", 0};
+    empty.Finish();
+    BOOST_CHECK(messages.back().find("0 / 0 (100%)") != std::string::npos);
+}
 
+BOOST_AUTO_TEST_CASE(startup_progress_gui_updates_are_not_all_logged)
+{
+    std::vector<std::string> logged;
+    DebugLogHelper log_capture{"init message: Checking block files", [&](const std::string* line) {
+        if (line) logged.push_back(*line);
+        return false; // Collect every matching line, including the start notification.
+    }};
+    std::vector<std::string> gui;
+    boost::signals2::scoped_connection connection{uiInterface.InitMessage_connect(
+        [&](const std::string& message) { gui.push_back(message); })};
+    node::StartupProgress progress{"Checking block files", 170};
+    for (unsigned i{0}; i < 170; ++i) progress.Advance();
+    BOOST_REQUIRE_EQUAL(logged.size(), 4U); // Start + 25/50/75, no premature completion.
+    progress.Finish();
+    BOOST_REQUIRE_EQUAL(gui.size(), 101U);
+    BOOST_REQUIRE_EQUAL(logged.size(), 5U);
+    BOOST_CHECK(logged.front().find("(0%)") != std::string::npos);
+    for (unsigned i{1}; i <= 4; ++i) {
+        BOOST_CHECK(logged[i].find(strprintf("(%u%%)", i * 25)) != std::string::npos);
+    }
+    BOOST_CHECK(logged[1].find("43 / 170 (25%)") != std::string::npos);
+    BOOST_CHECK(logged[3].find("128 / 170 (75%)") != std::string::npos);
+}
 
 BOOST_AUTO_TEST_SUITE_END()
