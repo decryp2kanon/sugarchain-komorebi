@@ -4953,7 +4953,7 @@ void Chainstate::PopulateBlockIndexCandidates()
 {
     AssertLockHeld(::cs_main);
 
-    for (CBlockIndex* pindex : m_blockman.GetAllBlockIndices()) {
+    const auto add_candidate = [&](CBlockIndex* pindex) EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
         // With assumeutxo, the snapshot block is a candidate for the tip, but it
         // may not have BLOCK_VALID_TRANSACTIONS (e.g. if we haven't yet downloaded
         // the block), so we special-case it here.
@@ -4962,6 +4962,12 @@ void Chainstate::PopulateBlockIndexCandidates()
                  (pindex->HaveNumChainTxs() || pindex->pprev == nullptr))) {
             TryAddBlockIndexCandidate(pindex);
         }
+    };
+    if (m_blockman.m_opts.startup_optimizations) {
+        // cs_main keeps the map stable; avoid a temporary full-size pointer list.
+        for (auto& [hash, index] : m_blockman.m_block_index) add_candidate(&index);
+    } else {
+        for (CBlockIndex* pindex : m_blockman.GetAllBlockIndices()) add_candidate(pindex);
     }
 }
 
