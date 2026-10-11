@@ -237,7 +237,7 @@ std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Par
         const auto total{std::max(stats.total.load(), stats.processed.load())};
         const unsigned percent{total ? unsigned(100 * stats.processed.load() / total) : 0};
         if (percent >= next_percent) {
-            LogInfo("Historical PoW verification: %u/%u checked, %u verified, %u reused (historical trust remains until completion)\n",
+            LogInfo("Historical PoW verification: %u/%u checked, %u verified, %u reused\n",
                 stats.processed.load(), total, stats.verified.load(), stats.reused.load());
             next_percent = percent + 1;
         }
