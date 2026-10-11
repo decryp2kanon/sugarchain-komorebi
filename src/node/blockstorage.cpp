@@ -149,6 +149,7 @@ std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Par
     stats.state = HistoricalPoWStats::RUNNING;
     std::optional<uint256> last;
     LogInfo("Lazy PoW validation started: %u entries\n", stats.total.load());
+    LogInfo("Lazy PoW validation: 0/%u checked, 0 verified, 0 reused\n", stats.total.load());
     // Short-lived DB snapshots avoid pinning obsolete table files for hours.
     // Keys are block identities, not heights; forks are checked independently.
     while (!interrupt) {
