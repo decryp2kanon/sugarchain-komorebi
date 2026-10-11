@@ -185,6 +185,86 @@ public:
 
 BOOST_FIXTURE_TEST_SUITE(versionbits_tests, BasicTestingSetup)
 
+BOOST_AUTO_TEST_CASE(unknown_warning_shared_counts)
+{
+    const auto params = CreateChainParams(m_args, ChainType::MAIN);
+    constexpr int period{2016};
+    constexpr int count{period * 5};
+    auto blocks = std::make_unique<CBlockIndex[]>(count);
+    auto fork = std::make_unique<CBlockIndex[]>(period * 3);
+    for (int i = 0; i < count; ++i) {
+        auto& block = blocks[i];
+        block.nHeight = i;
+        block.nTime = 1560000000 + i;
+        // One bit exactly reaches the threshold; another misses by one.
+        block.nVersion = VERSIONBITS_TOP_BITS;
+        if (i % period < 1815) block.nVersion |= 1;
+        if (i % period < 1814) block.nVersion |= 2;
+        if (i % 2) block.nVersion |= (1 << 28);
+        block.pprev = i ? &blocks[i-1] : nullptr;
+        block.BuildSkip();
+    }
+    for (int i = 0; i < period * 3; ++i) {
+        auto& block = fork[i];
+        block.nHeight = period + i;
+        block.nTime = 1560000000 + block.nHeight;
+        // Invalid top bits must not count even with every low bit set.
+        block.nVersion = i % period < 1814 ? VERSIONBITS_TOP_BITS | 4 : 0x7fffffff;
+        block.pprev = i ? &fork[i-1] : &blocks[period-1];
+        block.BuildSkip();
+    }
+    VersionBitsCache original, shared;
+    const auto compare = [&](const CBlockIndex* tip) {
+        BOOST_CHECK(original.CheckUnknownActivations(tip, *params) == shared.CheckUnknownActivations(tip, *params, true));
+    };
+    compare(nullptr);
+    for (int height : {period-2, period-1, 2*period-2, 2*period-1, 3*period-1, 4*period, count-1}) compare(&blocks[height]);
+    const auto active = shared.CheckUnknownActivations(&blocks[count-1], *params, true);
+    BOOST_REQUIRE_EQUAL(active.size(), 1U);
+    BOOST_CHECK_EQUAL(active[0].first, 0);
+    BOOST_CHECK(active[0].second);
+    compare(&fork[period*3-1]);
+    compare(&blocks[count-1]);
+    original.Clear();
+    shared.Clear();
+    compare(&fork[period*3-1]);
+    compare(&blocks[count-1]);
+    // A cold call must compute every historical period correctly too.
+    original.Clear();
+    shared.Clear();
+    compare(&blocks[count-1]);
+
+    class KnownDeploymentParams : public CChainParams {
+    public:
+        explicit KnownDeploymentParams(const Consensus::Params& base)
+        {
+            consensus = base;
+            m_chain_type = ChainType::MAIN;
+            auto& dep = consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY];
+            dep.bit = 1;
+            dep.nStartTime = 0;
+            dep.nTimeout = Consensus::BIP9Deployment::NO_TIMEOUT;
+            dep.period = period;
+            dep.threshold = 1815;
+        }
+    } known_params{params->GetConsensus()};
+    for (int i = 0; i < count; ++i) blocks[i].nVersion |= 2;
+    original.Clear();
+    shared.Clear();
+    const auto expected = original.CheckUnknownActivations(&blocks[3*period-1], known_params);
+    BOOST_CHECK(expected == shared.CheckUnknownActivations(&blocks[3*period-1], known_params, true));
+    BOOST_REQUIRE_EQUAL(expected.size(), 1U);
+    BOOST_CHECK_EQUAL(expected[0].first, 0);
+    for (const auto chain_type : {ChainType::REGTEST, ChainType::TESTNET}) {
+        const auto other_params = CreateChainParams(m_args, chain_type);
+        original.Clear();
+        shared.Clear();
+        for (const auto* tip : {&blocks[period-1], &blocks[count-1], &fork[period*3-1]}) {
+            BOOST_CHECK(original.CheckUnknownActivations(tip, *other_params) == shared.CheckUnknownActivations(tip, *other_params, true));
+        }
+    }
+}
+
 BOOST_AUTO_TEST_CASE(versionbits_test)
 {
     for (int i = 0; i < 64; i++) {
