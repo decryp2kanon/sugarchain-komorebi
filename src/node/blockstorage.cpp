@@ -734,6 +734,10 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
         if (pindex->pprev) {
             pindex->BuildSkip();
         }
+        // Reuse this all-index traversal for file-presence checks, including
+        // side branches and invalid blocks with data. Metadata reconstruction
+        // above never changes BLOCK_HAVE_DATA or nFile.
+        if (m_opts.startup_optimizations && (pindex->nStatus & BLOCK_HAVE_DATA)) block_files.insert(pindex->nFile);
 
     }
 
@@ -791,7 +795,7 @@ bool BlockManager::LoadBlockIndexDB(const std::optional<uint256>& snapshot_block
 
     // Check presence of blk files
     LogInfo("Checking all blk files are present...");
-    {
+    if (!m_opts.startup_optimizations) {
         for (const auto& [_, block_index] : m_block_index) {
             if (block_index.nStatus & BLOCK_HAVE_DATA) setBlkDataFiles.insert(block_index.nFile);
         }
