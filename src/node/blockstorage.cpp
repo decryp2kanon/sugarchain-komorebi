@@ -42,13 +42,21 @@
 #include <util/translation.h>
 #include <validation.h>
 
+#include <boost/sort/spreadsort/integer_sort.hpp>
+
+#include <array>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <compare>
 #include <cstddef>
 #include <cstdio>
+#include <cstdint>
+#include <cstring>
 #include <exception>
+#include <limits>
 #include <map>
+#include <new>
 #include <optional>
 #include <ostream>
 #include <span>
@@ -56,6 +64,7 @@
 #include <string>
 #include <system_error>
 #include <unordered_map>
+#include <utility>
 
 namespace kernel {
 namespace {
@@ -79,6 +88,13 @@ std::string FormatCompactDuration(std::chrono::seconds duration)
     append(60, "m");
     append(1, "s");
     return result.empty() ? "0s" : result;
+}
+
+std::string FormatGroupedCount(uint64_t count)
+{
+    std::string result{std::to_string(count)};
+    for (size_t pos = result.size(); pos > 3; pos -= 3) result.insert(pos - 3, ",");
+    return result;
 }
 } // namespace
 
@@ -144,7 +160,7 @@ bool BlockTreeDB::ReadFlag(const std::string& name, bool& fValue)
     return true;
 }
 
-bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, std::function<CBlockIndex*(const uint256&)> insertBlockIndex, const util::SignalInterrupt& interrupt, int pow_workers)
+bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, std::function<CBlockIndex*(const uint256&)> insertBlockIndex, const util::SignalInterrupt& interrupt, int pow_workers, bool fast_startup, std::function<void(uint64_t)> reserveBlockIndex, bool startup_optimizations)
 {
     AssertLockHeld(::cs_main);
     std::unique_ptr<CDBIterator> pcursor(NewIterator());
@@ -229,7 +245,19 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
                 pindexNew->nStatus        = diskindex.nStatus;
                 pindexNew->nTx            = diskindex.nTx;
 
-                if (parallel_pow) {
+                // Opt-in: trust only persisted TREE-or-higher entries without
+                // failure flags. This does not establish live proof evidence.
+                const bool trust_disk_pow{fast_startup && check_yespower &&
+                    pindexNew->GetBlockHash() != consensusParams.hashGenesisBlock &&
+                    (pindexNew->nStatus & BLOCK_VALID_MASK) >= BLOCK_VALID_TREE &&
+                    !(pindexNew->nStatus & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD)) &&
+                    DeriveTarget(pindexNew->nBits, consensusParams.powLimit).has_value()};
+                if (trust_disk_pow) {
+                    // Commit earlier unchecked entries before advancing past this one.
+                    if (parallel_pow && !flush_pow()) return false;
+                    ++processed;
+                    if (processed % 2000 == 0) log_progress();
+                } else if (parallel_pow) {
                     pending_headers.push_back(pindexNew->GetBlockHeader());
                     pending_indexes.push_back(pindexNew);
                     // Bound speculative work by -parpow and retain the exact
@@ -502,7 +530,7 @@ void BlockManager::UpdatePruneLock(const std::string& name, const PruneLockInfo&
     m_prune_locks[name] = lock_info;
 }
 
-CBlockIndex* BlockManager::InsertBlockIndex(const uint256& hash)
+CBlockIndex* BlockManager::InsertBlockIndex(const uint256& hash, std::vector<CBlockIndex*>* inserted_indices)
 {
     AssertLockHeld(cs_main);
 
@@ -518,10 +546,11 @@ CBlockIndex* BlockManager::InsertBlockIndex(const uint256& hash)
     return pindex;
 }
 
-bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockhash)
+bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockhash, std::set<int>& block_files, std::vector<CBlockIndex*>& vSortedByHeight)
 {
     if (!m_block_tree_db->LoadBlockIndexGuts(
-            GetConsensus(), [this](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) { return this->InsertBlockIndex(hash); }, m_interrupt, m_opts.startup_pow_workers)) {
+            GetConsensus(), [this](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) { return this->InsertBlockIndex(hash); },
+            m_interrupt, m_opts.startup_pow_workers, m_opts.fast_startup, {}, m_opts.startup_optimizations)) {
         return false;
     }
 
@@ -550,12 +579,12 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
     Assert(m_snapshot_height.has_value() == snapshot_blockhash.has_value());
 
     // Calculate nChainWork
-    std::vector<CBlockIndex*> vSortedByHeight{GetAllBlockIndices()};
-    std::sort(vSortedByHeight.begin(), vSortedByHeight.end(),
-              CBlockIndexHeightOnlyComparator());
+    vSortedByHeight = GetAllBlockIndices();
+    std::sort(vSortedByHeight.begin(), vSortedByHeight.end(), CBlockIndexHeightOnlyComparator());
 
     CBlockIndex* previous_index{nullptr};
-    for (CBlockIndex* pindex : vSortedByHeight) {
+    for (size_t position = 0; position < vSortedByHeight.size(); ++position) {
+        CBlockIndex* pindex{vSortedByHeight[position]};
         if (m_interrupt) return false;
         if (previous_index && pindex->nHeight > previous_index->nHeight + 1) {
             LogError("%s: block index is non-contiguous, index of height %d missing\n", __func__, previous_index->nHeight + 1);
@@ -600,7 +629,9 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
         if (pindex->pprev) {
             pindex->BuildSkip();
         }
+
     }
+
 
     return true;
 }
@@ -624,11 +655,16 @@ void BlockManager::WriteBlockIndexDB()
     m_block_tree_db->WriteBatchSync(vFiles, max_blockfile, vBlocks);
 }
 
-bool BlockManager::LoadBlockIndexDB(const std::optional<uint256>& snapshot_blockhash)
+bool BlockManager::LoadBlockIndexDB(const std::optional<uint256>& snapshot_blockhash, std::vector<CBlockIndex*>* sorted_indices)
 {
-    if (!LoadBlockIndex(snapshot_blockhash)) {
+    // Per-load output avoids retaining stale references across reload/pruning.
+    std::set<int> setBlkDataFiles;
+    std::vector<CBlockIndex*> loaded_indices;
+    if (!LoadBlockIndex(snapshot_blockhash, setBlkDataFiles, loaded_indices)) {
         return false;
     }
+    // Legacy loading used a local sorting vector, released before file checks.
+    if (!m_opts.startup_optimizations && !sorted_indices) std::vector<CBlockIndex*>{}.swap(loaded_indices);
     int max_blockfile_num{0};
 
     // Load block file info
@@ -650,10 +686,9 @@ bool BlockManager::LoadBlockIndexDB(const std::optional<uint256>& snapshot_block
 
     // Check presence of blk files
     LogInfo("Checking all blk files are present...");
-    std::set<int> setBlkDataFiles;
-    for (const auto& [_, block_index] : m_block_index) {
-        if (block_index.nStatus & BLOCK_HAVE_DATA) {
-            setBlkDataFiles.insert(block_index.nFile);
+    {
+        for (const auto& [_, block_index] : m_block_index) {
+            if (block_index.nStatus & BLOCK_HAVE_DATA) setBlkDataFiles.insert(block_index.nFile);
         }
     }
     for (std::set<int>::iterator it = setBlkDataFiles.begin(); it != setBlkDataFiles.end(); it++) {
@@ -661,7 +696,9 @@ bool BlockManager::LoadBlockIndexDB(const std::optional<uint256>& snapshot_block
         if (OpenBlockFile(pos, /*fReadOnly=*/true).IsNull()) {
             return false;
         }
+
     }
+
 
     {
         // Initialize the blockfile cursors.
@@ -683,6 +720,8 @@ bool BlockManager::LoadBlockIndexDB(const std::optional<uint256>& snapshot_block
     m_block_tree_db->ReadReindexing(fReindexing);
     if (fReindexing) m_blockfiles_indexed = false;
 
+    // Publish only after the file checks succeed. No persistent pointer cache.
+    if (sorted_indices) *sorted_indices = std::move(loaded_indices);
     return true;
 }
 

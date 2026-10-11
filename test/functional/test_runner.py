@@ -331,6 +331,7 @@ BASE_SCRIPTS = [
     'wallet_coinbase_category.py',
     'feature_filelock.py',
     'feature_loadblock.py',
+    'feature_fast_startup.py',
     'wallet_assumeutxo.py',
     'p2p_add_connections.py',
     'feature_bind_port_discover.py',
