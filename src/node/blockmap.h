@@ -19,7 +19,7 @@ namespace node {
 // Same hash value as BlockHasher. Keep the node-layout optimization local
 // instead of changing the global cached-hash policy.
 struct FastBlockHasher {
-    size_t operator()(const uint256& hash) const { return ReadLE64(hash.begin()); }
+    size_t operator()(const uint256& hash) const noexcept { return ReadLE64(hash.begin()); }
 };
 using FastBlockMap = std::unordered_map<uint256, CBlockIndex, FastBlockHasher,
     std::equal_to<uint256>, PoolAllocator<std::pair<const uint256, CBlockIndex>, 512, 8>>;

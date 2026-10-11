@@ -42,6 +42,7 @@ BOOST_AUTO_TEST_CASE(blockmap_keeps_addresses_and_keys_across_growth)
     // exercise our adapter rather than retesting standard-library buckets.
     static_assert(std::is_same_v<node::BlockMap::Legacy, std::unordered_map<uint256, CBlockIndex, BlockHasher>>);
     static_assert(!std::is_nothrow_invocable_v<BlockHasher, const uint256&>);
+    static_assert(std::is_nothrow_invocable_v<node::FastBlockHasher, const uint256&>);
     for (bool fast : {false, true}) {
         node::BlockMap map{fast};
         BOOST_CHECK_EQUAL(map.IsFast(), fast);
