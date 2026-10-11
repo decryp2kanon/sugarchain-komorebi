@@ -497,10 +497,13 @@ bool HeaderPoWVerifier::CheckEach(std::span<const CBlockHeader> headers, const C
         return std::ranges::all_of(headers, [&](const auto& header) { return CheckBlockProofOfWork(header, params); });
     }
     std::unique_lock call_lock{m_impl->caller_mutex};
+    // Keep workers fed across variable proof durations, with bounded queue
+    // storage. Startup callers supplying one worker-sized group are unchanged.
+    const size_t queue_batch_size{size_t(m_impl->workers) * 64};
     while (!headers.empty()) {
         std::vector<HeaderPoWCheck> batch;
-        batch.reserve(m_impl->workers);
-        while (!headers.empty() && batch.size() < size_t(m_impl->workers)) {
+        batch.reserve(std::min(headers.size(), queue_batch_size));
+        while (!headers.empty() && batch.size() < queue_batch_size) {
             batch.push_back({&headers.front(), &params});
             headers = headers.subspan(1);
         }
