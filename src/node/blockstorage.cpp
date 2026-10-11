@@ -560,15 +560,22 @@ CBlockIndex* BlockManager::InsertBlockIndex(const uint256& hash, std::vector<CBl
     CBlockIndex* pindex = &(*mi).second;
     if (inserted) {
         pindex->phashBlock = &((*mi).first);
+        if (inserted_indices) inserted_indices->push_back(pindex);
     }
     return pindex;
 }
 
 bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockhash, std::set<int>& block_files, std::vector<CBlockIndex*>& vSortedByHeight)
 {
-    if (!m_block_tree_db->LoadBlockIndexGuts(
-            GetConsensus(), [this](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) { return this->InsertBlockIndex(hash); },
-            m_interrupt, m_opts.startup_pow_workers, m_opts.fast_startup, [this](uint64_t count) EXCLUSIVE_LOCKS_REQUIRED(cs_main) EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
+    std::vector<CBlockIndex*> loaded_indices;
+    if (m_opts.startup_optimizations) {
+        // Retain in-memory entries on reload, then append newly inserted indexes
+        // (including parent placeholders) without a second post-load map traversal.
+        loaded_indices = GetAllBlockIndices();
+        if (!m_block_tree_db->LoadBlockIndexGuts(
+                GetConsensus(), [this, &loaded_indices](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) { return this->InsertBlockIndex(hash, &loaded_indices); }, m_interrupt, m_opts.startup_pow_workers, m_opts.fast_startup,
+                [this, &loaded_indices](uint64_t count) EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
+                    loaded_indices.reserve(std::max<uint64_t>(loaded_indices.size(), count));
                     // Reserve modest lookup headroom: 1.5x balanced startup time
                     // and bucket memory in repeated snapshot measurements.
                     // References survive rehash; later entries grow normally.
@@ -581,6 +588,12 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
                         LogWarning("Unable to reserve block index buckets; using incremental growth.");
                     }
                 }, m_opts.startup_optimizations)) {
+            return false;
+        }
+    } else if (!m_block_tree_db->LoadBlockIndexGuts(
+                   GetConsensus(), [this](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
+                       return this->InsertBlockIndex(hash);
+                   }, m_interrupt, m_opts.startup_pow_workers, m_opts.fast_startup, {}, false)) {
         return false;
     }
 
@@ -609,7 +622,12 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
     Assert(m_snapshot_height.has_value() == snapshot_blockhash.has_value());
 
     // Calculate nChainWork
-    vSortedByHeight = GetAllBlockIndices();
+    if (m_opts.startup_optimizations) {
+        vSortedByHeight = std::move(loaded_indices);
+        LogInfo("Prepared block index during loading: %u entries", vSortedByHeight.size());
+    } else {
+        vSortedByHeight = GetAllBlockIndices();
+    }
     std::sort(vSortedByHeight.begin(), vSortedByHeight.end(), CBlockIndexHeightOnlyComparator());
 
     CBlockIndex* previous_index{nullptr};
