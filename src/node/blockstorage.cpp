@@ -171,8 +171,7 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
             count_cursor->Seek(std::make_pair(DB_BLOCK_INDEX, uint256()));
             // The same open DB is used for both passes, before networking starts.
             // Inspect only serialized keys; do not read values or construct indexes.
-            std::pair<uint8_t, uint256> count_key;
-            while (count_cursor->Valid() && count_cursor->GetKey(count_key) && count_key.first == DB_BLOCK_INDEX) {
+            while (count_cursor->Valid() && count_cursor->KeyHasPrefix(DB_BLOCK_INDEX, 1 + uint256::size())) {
                 if (interrupt) return false;
                 ++total_entries;
                 count_cursor->Next();
@@ -244,8 +243,12 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
     // Load m_block_index
     while (pcursor->Valid()) {
         if (interrupt) return false;
+        // Keys are a fixed byte prefix plus a uint256. The parsed key hash was
+        // unused; retain the same size/prefix checks without decoding it.
         std::pair<uint8_t, uint256> key;
-        if (pcursor->GetKey(key) && key.first == DB_BLOCK_INDEX) {
+        const bool block_key{startup_optimizations ? pcursor->KeyHasPrefix(DB_BLOCK_INDEX, 1 + uint256::size()) :
+            (pcursor->GetKey(key) && key.first == DB_BLOCK_INDEX)};
+        if (block_key) {
             CDiskBlockIndex diskindex;
             if (pcursor->GetValue(diskindex, /*direct_read=*/startup_optimizations)) {
                 // Construct block index object

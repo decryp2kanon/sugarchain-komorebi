@@ -143,6 +143,9 @@ public:
 
     bool Valid() const;
 
+    /** Inspect a serialized key without copying or deserializing it. */
+    bool KeyHasPrefix(uint8_t prefix, size_t min_size = 1) const;
+
     void SeekToFirst();
 
     template<typename K> void Seek(const K& key) {
