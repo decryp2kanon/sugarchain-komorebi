@@ -1200,13 +1200,10 @@ BOOST_AUTO_TEST_CASE(persistent_historical_evidence_migration_and_restart)
     BOOST_CHECK(!db.VerifyHistoricalPoW(params, stop, repaired, 0));
     BOOST_CHECK_EQUAL(repaired.verified.load(), 1U);
     BOOST_CHECK(db.HasYespowerEvidence(headers.front(), params));
-    // Mode zero ignores both saved evidence and a populated live RAM cache.
-    for (const auto& header : headers) BOOST_REQUIRE(CheckBlockProofOfWork(header, params));
-    kernel::HistoricalPoWStats full_stats;
+    // Mode zero ignores saved evidence and must compute all headers again.
+    InitYespowerVerificationCache(1 << 20);
     Observation full;
-    BOOST_CHECK(!db.VerifyHistoricalPoW(params, stop, full_stats, 0, [](const CBlockHeader&) { return true; }, false));
-    BOOST_CHECK_EQUAL(full_stats.verified.load(), headers.size());
-    BOOST_CHECK_EQUAL(full_stats.reused.load(), 0U);
+    BOOST_CHECK(LoadStartupHeaders(headers, 1, false, false, BLOCK_VALID_TREE));
 #ifdef ENABLE_YESPOWER_TEST_WRAP
     BOOST_CHECK_EQUAL(calls.load(), headers.size());
 #endif
@@ -1252,16 +1249,6 @@ BOOST_AUTO_TEST_CASE(background_historical_failure_and_interruption)
     BOOST_CHECK(error->find(bad_hash.ToString()) != std::string::npos);
     BOOST_CHECK(!db.HasYespowerEvidence(bad, params));
     BOOST_CHECK(failed.state == kernel::HistoricalPoWStats::FAILED);
-    // Even a forged matching disk digest and live callback cannot bypass mode zero.
-    db.Write(std::make_pair(uint8_t{'y'}, bad_hash),
-        std::make_pair(uint8_t{2}, GetYespowerEvidenceDigest(bad, params)), true);
-    kernel::HistoricalPoWStats forced;
-    auto forced_error{db.VerifyHistoricalPoW(params, resume, forced, 0,
-        [](const CBlockHeader&) { return true; }, false)};
-    BOOST_REQUIRE(forced_error);
-    BOOST_CHECK(forced.state == kernel::HistoricalPoWStats::FAILED);
-    BOOST_CHECK_EQUAL(forced.reused.load(), 0U);
-
 }
 
 BOOST_AUTO_TEST_CASE(historical_evidence_durable_reopen_and_reindex)

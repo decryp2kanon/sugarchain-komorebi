@@ -144,7 +144,7 @@ bool BlockTreeDB::HasYespowerEvidence(const CBlockHeader& header, const Consensu
 
 std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Params& consensus,
     const util::SignalInterrupt& interrupt, HistoricalPoWStats& stats, unsigned pause_ms,
-    const std::function<bool(const CBlockHeader&)>& live_verified, bool reuse_evidence)
+    const std::function<bool(const CBlockHeader&)>& live_verified)
 {
     stats.state = HistoricalPoWStats::RUNNING;
     std::optional<uint256> last;
@@ -181,7 +181,7 @@ std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Par
         // one short-lived iterator per batch instead of reopening table files
         // for every point lookup. No snapshot remains alive during hashing.
         std::vector<std::pair<uint8_t, uint256>> evidence(entries.size());
-        if (reuse_evidence) {
+        {
             std::unique_ptr<CDBIterator> proofs{NewIterator()};
             for (size_t i{0}; i < entries.size(); ++i) {
                 const auto expected{std::make_pair(uint8_t{'y'}, entries[i].first)};
@@ -206,18 +206,15 @@ std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Par
                 return strprintf("Historical PoW verification: block-index identity mismatch at height %d, hash %s. Back up data and recover with -fast-startup=0 -reindex.", disk.nHeight, hash.ToString());
             }
             const auto& saved{evidence[position++]};
-            if (reuse_evidence && consensus.fYespowerSugar && !EnableFuzzDeterminism() &&
+            if (consensus.fYespowerSugar && !EnableFuzzDeterminism() &&
                 DeriveTarget(header.nBits, consensus.powLimit) && saved.first == 2 &&
                 saved.second == GetYespowerEvidenceDigest(header, consensus)) {
                 ++stats.reused;
             } else {
                 // RAM cache hits are also genuine completed verification; a
                 // trusted disk status never populates that cache.
-                const bool live{reuse_evidence && live_verified && live_verified(header)};
-                // Mode zero must actually recompute, even if RAM or disk has a result.
-                const bool valid{live || (reuse_evidence ? CheckBlockProofOfWork(header, consensus) :
-                    CheckProofOfWork(consensus.fYespowerSugar ? header.GetPoWHash() : header.GetHash(), header.nBits, consensus))};
-                if (!valid) {
+                const bool live{live_verified && live_verified(header)};
+                if (!live && !CheckBlockProofOfWork(header, consensus)) {
                     if (dirty) WriteBatch(batch, true);
                     stats.state = HistoricalPoWStats::FAILED;
                     return strprintf("Historical Yespower verification failed at height %d, hash %s. Shutting down. Back up data and recover with -fast-startup=0 -reindex. Reindexing cannot repair invalid PoW or damaged block files.", disk.nHeight, hash.ToString());
@@ -760,7 +757,7 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
         // (including parent placeholders) without a second post-load map traversal.
         loaded_indices = GetAllBlockIndices();
         if (!m_block_tree_db->LoadBlockIndexGuts(
-                GetConsensus(), [this, &loaded_indices](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) { return this->InsertBlockIndex(hash, &loaded_indices); }, m_interrupt, m_opts.startup_pow_workers, m_opts.defer_historical_pow,
+                GetConsensus(), [this, &loaded_indices](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) { return this->InsertBlockIndex(hash, &loaded_indices); }, m_interrupt, m_opts.startup_pow_workers, m_opts.fast_startup,
                 [this, &loaded_indices](uint64_t count) EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
                     loaded_indices.reserve(std::max<uint64_t>(loaded_indices.size(), count));
                     // Reserve modest lookup headroom: 1.5x balanced startup time
@@ -780,7 +777,7 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
     } else if (!m_block_tree_db->LoadBlockIndexGuts(
                    GetConsensus(), [this](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
                        return this->InsertBlockIndex(hash);
-                   }, m_interrupt, m_opts.startup_pow_workers, m_opts.defer_historical_pow, {}, false)) {
+                   }, m_interrupt, m_opts.startup_pow_workers, m_opts.fast_startup, {}, false)) {
         return false;
     }
 

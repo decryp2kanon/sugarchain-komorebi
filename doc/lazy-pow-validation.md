@@ -7,16 +7,12 @@ trust into proof and does not change validation of new network or imported heade
 
 ## Modes and defaults
 
-* Both modes temporarily trust eligible stored historical indexes at startup and
-  audit them after readiness. Until completion, **both modes have a historical
-  trust window**; mode zero no longer means verification before operation.
-* `-fast-startup=0` remains the default. The background worker recomputes every
-  historical PoW, ignoring persistent evidence, current-process flags and RAM
-  proof-cache hits. Successful results are persisted for later mode-one runs.
-* `-fast-startup=1` reuses matching persistent evidence and actually verifies
-  missing or mismatched results in the background.
-* Recovery with `-fast-startup=0 -reindex` does not defer block-file import
-  validation. Mode one remains incompatible with `-reindex`.
+* `-fast-startup=0` remains the default. Startup checks every historical header's
+  PoW as before. Saved evidence does not skip that check. After startup, the worker
+  can persist current-process verified results without calculating them again.
+* `-fast-startup=1` preserves the fast startup path. A background worker checks
+  headers without matching evidence; matching evidence is reused on later runs.
+  There is a historical-trust window until the scan completes.
 * `-background-pow-pause=10` adds 10 milliseconds between newly checked headers.
   The accepted range is 0–1000. One worker performs verification; it is independent
   of `-parpow`. Setting zero increases background CPU and I/O pressure.
@@ -103,32 +99,11 @@ when policy changes. Ordinary whole-datadir backups include evidence.
 Regression coverage extends the existing `header_pow_tests` and
 `feature_fast_startup.py`: cold migration, warm reuse, rules/header mismatch,
 unknown/truncated records, interruption/resume, invalid proof rejection, durable
-DB reopen, reindex removal, full-mode background recomputation, startup mode boundaries and
+DB reopen, reindex removal, full-mode revalidation, startup mode boundaries and
 option validation. Mainnet-scale completion and real-time node resource impact
 are outside these fixtures and must not be inferred from them.
 
-## Both-mode background revision
-
-After moving mode zero to the background, a new private 6,001-header process
-fixture with saved evidence and `-background-pow-pause=0` gave:
-
-| Run | RPC readiness | Audit completion from launch | Verified / reused |
-|---|---:|---:|---:|
-| Mode 0 | 0.256 s | 20.088 s | 6,001 / 0 |
-| Mode 1 | 0.256 s | 0.256 s | 0 / 6,001 |
-| Mode 0 again | 0.204 s | 19.187 s | 6,001 / 0 |
-
-Both mode-zero starts reported a running audit and pending historical trust when
-RPC became ready. Completion cleared that trust flag. These single small-fixture
-runs were also under concurrent compilation and are not full-mainnet predictions.
-Unit coverage additionally populates the RAM cache and supplies a live-success
-callback: mode zero still recomputes all proofs, and rejects invalid PoW even with
-a forged matching persisted digest. Mode one retains its evidence-reuse policy.
-
 ## Recorded fixture results
-
-The table below records the previous implementation, before mode zero was moved
-to the background. Its mode-zero readiness time is not a current-mode measurement.
 
 Release build, GCC 11.4, no peer connections, public mainnet heights 1–6000 plus
 production genesis, `-background-pow-pause=0`. The pre-change PR #10 local build (`9cf2dc5b5b45`) seeded
