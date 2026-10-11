@@ -340,6 +340,57 @@ bool CBlockIndexHeightOnlyComparator::operator()(const CBlockIndex* pa, const CB
     return pa->nHeight < pb->nHeight;
 }
 
+void SortBlockIndicesByHeight(std::vector<CBlockIndex*>& indices)
+{
+    const auto pointer_sort = [&] {
+        boost::sort::spreadsort::integer_sort(
+            indices.begin(), indices.end(),
+            [](const CBlockIndex* index, unsigned shift) { return index->nHeight >> shift; },
+            CBlockIndexHeightOnlyComparator());
+    };
+    if (indices.size() < 4096) {
+        pointer_sort();
+        return;
+    }
+    // Two stable 16-bit radix passes use one pointer-sized scratch array,
+    // instead of caching a height plus a pointer for every index. Flip the
+    // sign bit so negative heights retain the signed comparator's ordering.
+    if (indices.size() > std::numeric_limits<uint32_t>::max()) {
+        pointer_sort();
+        return;
+    }
+    constexpr size_t BUCKETS{1 << 16};
+    std::vector<CBlockIndex*> scratch;
+    std::vector<uint32_t> offsets;
+    try {
+        scratch.resize(indices.size());
+        offsets.resize(2 * BUCKETS);
+    } catch (const std::bad_alloc&) {
+        std::vector<CBlockIndex*>{}.swap(scratch);
+        std::vector<uint32_t>{}.swap(offsets);
+        pointer_sort();
+        return;
+    }
+    const auto key = [](const CBlockIndex* index) {
+        return static_cast<uint32_t>(index->nHeight) ^ uint32_t{0x80000000};
+    };
+    for (const auto* index : indices) {
+        const uint32_t height{key(index)};
+        ++offsets[height & 0xffff];
+        ++offsets[BUCKETS + (height >> 16)];
+    }
+    for (size_t base : {size_t{0}, BUCKETS}) {
+        uint32_t sum{0};
+        for (size_t i = 0; i < BUCKETS; ++i) {
+            const uint32_t count{offsets[base + i]};
+            offsets[base + i] = sum;
+            sum += count;
+        }
+    }
+    for (auto* index : indices) scratch[offsets[key(index) & 0xffff]++] = index;
+    for (auto* index : scratch) indices[offsets[BUCKETS + (key(index) >> 16)]++] = index;
+}
+
 std::vector<CBlockIndex*> BlockManager::GetAllBlockIndices()
 {
     AssertLockHeld(cs_main);
@@ -628,7 +679,13 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
     } else {
         vSortedByHeight = GetAllBlockIndices();
     }
-    std::sort(vSortedByHeight.begin(), vSortedByHeight.end(), CBlockIndexHeightOnlyComparator());
+    // Radix passes bound both sorting work and temporary memory.
+    // The same height-only ordering still places every parent before its child.
+    if (m_opts.startup_optimizations) {
+        SortBlockIndicesByHeight(vSortedByHeight);
+    } else {
+        std::sort(vSortedByHeight.begin(), vSortedByHeight.end(), CBlockIndexHeightOnlyComparator());
+    }
 
     CBlockIndex* previous_index{nullptr};
     for (size_t position = 0; position < vSortedByHeight.size(); ++position) {
