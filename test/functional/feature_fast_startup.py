@@ -52,6 +52,10 @@ class FastStartupTest(BitcoinTestFramework):
             ["-fast-startup=1", "-reindex=1"],
             "-fast-startup=1 cannot be used with -reindex", match=ErrorMatch.PARTIAL_REGEX)
 
+        for workers in [0, 9, -1]:
+            node.assert_start_raises_init_error(
+                [f"-background-pow-workers={workers}"], "-background-pow-workers must be between 1 and 8", match=ErrorMatch.PARTIAL_REGEX)
+
         for pause in [-1, 1001]:
             node.assert_start_raises_init_error(
                 [f"-background-pow-pause={pause}"], "-background-pow-pause must be between 0 and 1000", match=ErrorMatch.PARTIAL_REGEX)
