@@ -123,7 +123,7 @@ struct HeaderPoWSetup : BasicTestingSetup {
             loaded.reserve(count);
         };
         const bool valid{WITH_LOCK(cs_main, return db.LoadBlockIndexGuts(params, insert, interrupt, workers, fast_startup, reserve, startup_optimizations))};
-        BOOST_CHECK_EQUAL(reserve_calls, 0U);
+        BOOST_CHECK_EQUAL(reserve_calls, cancel_before || !startup_optimizations ? 0U : 1U);
         if (valid) {
             BOOST_CHECK_EQUAL(loaded.size(), headers.size());
             for (auto& [hash, index] : loaded) {

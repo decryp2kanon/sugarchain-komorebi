@@ -163,6 +163,24 @@ bool BlockTreeDB::ReadFlag(const std::string& name, bool& fValue)
 bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, std::function<CBlockIndex*(const uint256&)> insertBlockIndex, const util::SignalInterrupt& interrupt, int pow_workers, bool fast_startup, std::function<void(uint64_t)> reserveBlockIndex, bool startup_optimizations)
 {
     AssertLockHeld(::cs_main);
+    uint64_t total_entries{0};
+    if (startup_optimizations) {
+        uiInterface.InitMessage("Counting block index entries...");
+        {
+            std::unique_ptr<CDBIterator> count_cursor(NewIterator());
+            count_cursor->Seek(std::make_pair(DB_BLOCK_INDEX, uint256()));
+            // The same open DB is used for both passes, before networking starts.
+            // Inspect only serialized keys; do not read values or construct indexes.
+            std::pair<uint8_t, uint256> count_key;
+            while (count_cursor->Valid() && count_cursor->GetKey(count_key) && count_key.first == DB_BLOCK_INDEX) {
+                if (interrupt) return false;
+                ++total_entries;
+                count_cursor->Next();
+            }
+        }
+        LogInfo("Counted %s block index entries", FormatGroupedCount(total_entries));
+        if (reserveBlockIndex) reserveBlockIndex(total_entries);
+    }
     std::unique_ptr<CDBIterator> pcursor(NewIterator());
     pcursor->Seek(std::make_pair(DB_BLOCK_INDEX, uint256()));
 
@@ -550,7 +568,19 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
 {
     if (!m_block_tree_db->LoadBlockIndexGuts(
             GetConsensus(), [this](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) { return this->InsertBlockIndex(hash); },
-            m_interrupt, m_opts.startup_pow_workers, m_opts.fast_startup, {}, m_opts.startup_optimizations)) {
+            m_interrupt, m_opts.startup_pow_workers, m_opts.fast_startup, [this](uint64_t count) EXCLUSIVE_LOCKS_REQUIRED(cs_main) EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
+                    // Reserve modest lookup headroom: 1.5x balanced startup time
+                    // and bucket memory in repeated snapshot measurements.
+                    // References survive rehash; later entries grow normally.
+                    if (count <= m_block_index.size() || count > m_block_index.max_size()) return;
+                    if (count <= m_block_index.bucket_count() * static_cast<double>(m_block_index.max_load_factor())) return;
+                    const uint64_t capacity = count <= m_block_index.max_size() - count / 2 ? count + count / 2 : count;
+                    try {
+                        m_block_index.reserve(static_cast<size_t>(capacity));
+                    } catch (const std::bad_alloc&) {
+                        LogWarning("Unable to reserve block index buckets; using incremental growth.");
+                    }
+                }, m_opts.startup_optimizations)) {
         return false;
     }
 
