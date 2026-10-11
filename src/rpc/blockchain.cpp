@@ -1386,7 +1386,7 @@ RPCHelpMan getblockchaininfo()
                     {RPCResult::Type::NUM, "verified", "Entries with genuine current-process verification, possibly before this scan"},
                     {RPCResult::Type::NUM, "reused", "Entries with matching local persisted evidence"},
                     {RPCResult::Type::NUM, "remaining", "Estimated entries remaining"},
-                    {RPCResult::Type::BOOL, "historical_trust", "Fast mode is trusting historical indexes while this scan is unfinished"},
+                    {RPCResult::Type::BOOL, "historical_trust", "Startup temporarily trusts historical indexes while this scan is unfinished (both modes)"},
                 }},
                 {RPCResult::Type::BOOL, "initialblockdownload", "(debug information) estimate of whether this node is in Initial Block Download mode"},
                 {RPCResult::Type::STR_HEX, "chainwork", "total amount of work in active chain, in hexadecimal"},

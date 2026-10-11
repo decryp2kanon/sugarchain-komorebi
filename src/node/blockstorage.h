@@ -110,7 +110,7 @@ public:
     /** Bounded background DB scan; caller keeps this DB alive until joined. */
     std::optional<std::string> VerifyHistoricalPoW(const Consensus::Params& consensus,
         const util::SignalInterrupt& interrupt, HistoricalPoWStats& stats, unsigned pause_ms,
-        const std::function<bool(const CBlockHeader&)>& live_verified = {});
+        const std::function<bool(const CBlockHeader&)>& live_verified = {}, bool reuse_evidence = true);
     bool ReadBlockFileInfo(int nFile, CBlockFileInfo& info);
     bool ReadLastBlockFile(int& nFile);
     void WriteReindexing(bool fReindexing);
@@ -328,7 +328,7 @@ public:
 
     const util::SignalInterrupt& m_interrupt;
     kernel::HistoricalPoWStats m_historical_pow;
-    bool UsesHistoricalPoWTrust() const { return m_opts.fast_startup; }
+    bool UsesHistoricalPoWTrust() const { return m_opts.defer_historical_pow; }
     std::atomic<bool> m_importing{false};
 
     /**
