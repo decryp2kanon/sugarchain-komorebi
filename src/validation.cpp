@@ -4970,23 +4970,33 @@ bool ChainstateManager::LoadBlockIndex()
     AssertLockHeld(cs_main);
     // Load block index from databases
     if (m_blockman.m_blockfiles_indexed) {
-        bool ret{m_blockman.LoadBlockIndexDB(CurrentChainstate().m_from_snapshot_blockhash)};
+        std::vector<CBlockIndex*> vSortedByHeight;
+        bool ret{m_blockman.LoadBlockIndexDB(CurrentChainstate().m_from_snapshot_blockhash,
+            m_blockman.m_opts.startup_optimizations ? &vSortedByHeight : nullptr)};
         if (!ret) return false;
 
         m_blockman.ScanAndUnlinkAlreadyPrunedFiles();
 
-        std::vector<CBlockIndex*> vSortedByHeight{m_blockman.GetAllBlockIndices()};
-        std::sort(vSortedByHeight.begin(), vSortedByHeight.end(),
-                  CBlockIndexHeightOnlyComparator());
+        if (!m_blockman.m_opts.startup_optimizations) {
+            vSortedByHeight = m_blockman.GetAllBlockIndices();
 
-        for (CBlockIndex* pindex : vSortedByHeight) {
+            std::sort(vSortedByHeight.begin(), vSortedByHeight.end(), node::CBlockIndexHeightOnlyComparator());
+
+        }
+        // In fast mode cs_main is held throughout. Pruned-file cleanup changes only files,
+        // so reuse the height ordering already built for index linking.
+
+        for (size_t position = 0; position < vSortedByHeight.size(); ++position) {
+            CBlockIndex* pindex{vSortedByHeight[position]};
             if (m_interrupt) return false;
             if (pindex->nStatus & BLOCK_FAILED_VALID && (!m_best_invalid || pindex->nChainWork > m_best_invalid->nChainWork)) {
                 m_best_invalid = pindex;
             }
             if (pindex->IsValid(BLOCK_VALID_TREE) && (m_best_header == nullptr || CBlockIndexWorkComparator()(m_best_header, pindex)))
                 m_best_header = pindex;
+
         }
+
     }
     return true;
 }
