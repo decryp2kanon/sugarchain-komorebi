@@ -452,7 +452,8 @@ public:
     }
 
     /** Set/initialize a chain with a given tip. */
-    void SetTip(CBlockIndex& block);
+    /** Optional startup read-ahead; ordinary chain updates use the original traversal. */
+    void SetTip(CBlockIndex& block, bool fast_startup = false);
 
     /** Find the last common block between this chain and a block index entry. */
     const CBlockIndex* FindFork(const CBlockIndex* pindex) const;

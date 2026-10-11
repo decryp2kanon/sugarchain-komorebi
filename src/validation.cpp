@@ -4627,7 +4627,7 @@ bool Chainstate::LoadChainTip()
     if (!pindex) {
         return false;
     }
-    m_chain.SetTip(*pindex);
+    m_chain.SetTip(*pindex, m_blockman.m_opts.startup_optimizations);
     m_chainman.UpdateIBDStatus();
     tip = m_chain.Tip();
 
@@ -4641,6 +4641,17 @@ bool Chainstate::LoadChainTip()
     // to maintain a consistent best tip over reboots in case of a tie.
     auto target = tip;
     while (target) {
+#if defined(__GNUC__) || defined(__clang__)
+        // SetTip's array supplies prefetch hints only. Keep the original parent
+        // traversal as the authority for which indexes receive the sequence ID.
+        constexpr int PREFETCH_DISTANCE{8};
+        if (m_blockman.m_opts.startup_optimizations && target->nHeight >= PREFETCH_DISTANCE) {
+            if (const auto* upcoming{m_chain[target->nHeight - PREFETCH_DISTANCE]}) {
+                __builtin_prefetch(&upcoming->pprev, 0, 3);
+                __builtin_prefetch(&upcoming->nSequenceId, 1, 3);
+            }
+        }
+#endif
         target->nSequenceId = SEQ_ID_BEST_CHAIN_FROM_DISK;
         target = target->pprev;
     }

@@ -13,11 +13,15 @@ std::string CBlockIndex::ToString() const
                      pprev, nHeight, hashMerkleRoot.ToString(), GetBlockHash().ToString());
 }
 
-void CChain::SetTip(CBlockIndex& block)
+void CChain::SetTip(CBlockIndex& block, bool fast_startup)
 {
     CBlockIndex* pindex = &block;
     vChain.resize(pindex->nHeight + 1);
     while (pindex && vChain[pindex->nHeight] != pindex) {
+#if defined(__GNUC__) || defined(__clang__)
+        // The skip pointer is only a prefetch hint; pprev still defines the chain.
+        if (fast_startup && pindex->pskip) __builtin_prefetch(pindex->pskip, 0, 3);
+#endif
         vChain[pindex->nHeight] = pindex;
         pindex = pindex->pprev;
     }
