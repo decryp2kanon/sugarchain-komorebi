@@ -513,7 +513,8 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
     argsman.AddArg("-maxmempool=<n>", strprintf("Keep the transaction memory pool below <n> megabytes (default: %u)", DEFAULT_MAX_MEMPOOL_SIZE_MB), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-parpow=<n>", strprintf("Maximum concurrent Yespower header verification tasks (1-%d, default: %d)", MAX_HEADER_POW_WORKERS, DEFAULT_HEADER_POW_WORKERS), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-fast-startup=<0|1>", "Start by trusting eligible historical indexes, then verify missing local Yespower evidence in the background (default: 0). Both modes use shared startup optimizations. With 0, perform the full historical PoW recheck, ignoring disk evidence. New headers are still verified. Historical trust remains until background verification completes. Incompatible with -reindex", ArgsManager::ALLOW_ANY | ArgsManager::DISALLOW_NEGATION, OptionsCategory::OPTIONS);
-    argsman.AddArg("-background-pow-pause=<ms>", "Sleep between newly verified historical headers in the single background worker (0-1000, default: 10). Does not affect warm evidence hits or foreground verification", ArgsManager::ALLOW_ANY | ArgsManager::DISALLOW_NEGATION, OptionsCategory::OPTIONS);
+    argsman.AddArg("-background-pow-pause=<ms>", "Pause between computed historical DB batches of at most 512 entries (0-1000 ms, default: 0). Previously this pause applied per header. Does not delay warm evidence reuse or foreground verification", ArgsManager::ALLOW_ANY | ArgsManager::DISALLOW_NEGATION, OptionsCategory::OPTIONS);
+    argsman.AddArg("-background-pow-workers=<n>", "Historical Yespower worker count (1-8, default: -parpow). Uses a separate background pool; lower this to leave CPU capacity for foreground validation", ArgsManager::ALLOW_ANY | ArgsManager::DISALLOW_NEGATION, OptionsCategory::OPTIONS);
     argsman.AddArg("-maxibdblocksinflight=<n>", strprintf("Maximum outstanding block requests per peer during IBD (%d-%d, default: %d)", DEFAULT_IBD_BLOCK_REQUEST_LIMIT, MAX_IBD_BLOCK_REQUEST_LIMIT, DEFAULT_IBD_BLOCK_REQUEST_LIMIT), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-mempoolexpiry=<n>", strprintf("Do not keep transactions in the mempool longer than <n> hours (default: %u)", DEFAULT_MEMPOOL_EXPIRY_HOURS), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-minimumchainwork=<hex>", strprintf("Minimum work assumed to exist on a valid chain in hex (default: %s, testnet3: %s, testnet4: %s, signet: %s)", defaultChainParams->GetConsensus().nMinimumChainWork.GetHex(), testnetChainParams->GetConsensus().nMinimumChainWork.GetHex(), testnet4ChainParams->GetConsensus().nMinimumChainWork.GetHex(), signetChainParams->GetConsensus().nMinimumChainWork.GetHex()), ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::OPTIONS);
@@ -932,7 +933,10 @@ bool AppInitParameterInteraction(const ArgsManager& args)
     // also see: InitParameterInteraction()
 
     const std::string fast_startup{args.GetArg("-fast-startup", "0")};
-    if (args.GetIntArg("-background-pow-pause", 10) < 0 || args.GetIntArg("-background-pow-pause", 10) > 1000) {
+    if (args.IsArgSet("-background-pow-workers") && (args.GetIntArg("-background-pow-workers", 0) < 1 || args.GetIntArg("-background-pow-workers", 0) > MAX_HEADER_POW_WORKERS)) {
+        return InitError(Untranslated("-background-pow-workers must be between 1 and 8"));
+    }
+    if (args.GetIntArg("-background-pow-pause", 0) < 0 || args.GetIntArg("-background-pow-pause", 0) > 1000) {
         return InitError(Untranslated("-background-pow-pause must be between 0 and 1000 milliseconds"));
     }
     if (fast_startup != "0" && fast_startup != "1") {
@@ -2336,17 +2340,18 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
             chainman.m_blockman.m_historical_pow.total = chainman.m_blockman.m_block_index.size();
             chainman.m_blockman.m_historical_pow.state = kernel::HistoricalPoWStats::RUNNING;
         }
-        const unsigned pause_ms{static_cast<unsigned>(args.GetIntArg("-background-pow-pause", 10))};
+        const unsigned pause_ms{static_cast<unsigned>(args.GetIntArg("-background-pow-pause", 0))};
+        const int pow_workers{static_cast<int>(std::clamp<int64_t>(args.GetIntArg("-background-pow-workers", args.GetIntArg("-parpow", DEFAULT_HEADER_POW_WORKERS)), 1, MAX_HEADER_POW_WORKERS))};
         LogInfo("Lazy PoW scheduled after startup (historical trust policy: %s)\n",
             chainman.m_blockman.UsesHistoricalPoWTrust() ? "enabled until background verification completes" : "disabled; startup fully reverified PoW");
-        node.historical_pow_thread = std::thread(&util::TraceThread, "historicalpow", [&node, &chainman, db, pause_ms] {
+        node.historical_pow_thread = std::thread(&util::TraceThread, "historicalpow", [&node, &chainman, db, pause_ms, pow_workers] {
             try {
                 if (auto error = db->VerifyHistoricalPoW(chainman.GetConsensus(), chainman.m_interrupt,
                         chainman.m_blockman.m_historical_pow, pause_ms, [&chainman](const CBlockHeader& header) {
                             LOCK(cs_main);
                             const auto* index{chainman.m_blockman.LookupBlockIndex(header.GetHash())};
                             return index && index->HasCurrentProcessYespowerEvidence() && index->GetBlockHeader().GetHash() == header.GetHash();
-                        })) {
+                        }, pow_workers)) {
                     node::AbortNode(node.shutdown_request, node.exit_status, Untranslated(*error), node.warnings.get());
                 }
             } catch (const std::exception& e) {
