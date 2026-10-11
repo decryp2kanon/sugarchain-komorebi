@@ -710,7 +710,58 @@ BOOST_AUTO_TEST_CASE(cache_budget_eviction_and_reset_only_trigger_reverification
     }
 }
 
+BOOST_AUTO_TEST_CASE(growing_cache_retains_verified_proofs_and_rejects_invalid_headers)
+{
+    const auto headers{Headers(190, 25)};
+    CacheBudget budget{2048};
+    InitYespowerVerificationCache(2048, /*grow_on_demand=*/true);
+    for (const auto& header : headers) BOOST_REQUIRE(CheckBlockProofOfWork(header, params));
+    auto invalid{headers.front()};
+    Invalidate(invalid);
+    BOOST_CHECK(!CheckBlockProofOfWork(invalid, params));
+    {
+        Observation observation;
+        // Check every old and recent proof after growth, not just the first
+        // tier's entry. Intermediate tiers must not silently lose evidence.
+        for (auto it = headers.rbegin(); it != headers.rend(); ++it) {
+            BOOST_REQUIRE(CheckBlockProofOfWork(*it, params));
+        }
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 0U);
+#endif
+    }
+    for (int repeat = 0; repeat < 2; ++repeat) {
+        Observation observation;
+        BOOST_CHECK(!CheckBlockProofOfWork(invalid, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 1U); // Failed proofs must never become cache hits.
+#endif
+    }
+}
 
+BOOST_AUTO_TEST_CASE(cache_backend_mode_changes_reset_evidence_and_keep_rejection)
+{
+    CacheBudget budget{128 << 10};
+    const auto header{Headers(191, 1).front()};
+    auto invalid{header};
+    Invalidate(invalid);
+    for (bool growing : {false, true, false, true}) {
+        InitYespowerVerificationCache(128 << 10, growing);
+        Observation observation;
+        BOOST_REQUIRE(CheckBlockProofOfWork(header, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 1U);
+#endif
+        BOOST_REQUIRE(CheckBlockProofOfWork(header, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 1U); // Warm proof survives in either backend.
+#endif
+        BOOST_CHECK(!CheckBlockProofOfWork(invalid, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 2U); // A genuine invalid proof is never cached.
+#endif
+    }
+}
 
 BOOST_AUTO_TEST_CASE(cache_reset_is_safe_during_verification)
 {
