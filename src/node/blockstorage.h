@@ -54,6 +54,11 @@ class SignalInterrupt;
 } // namespace util
 
 namespace kernel {
+struct HistoricalPoWStats {
+    enum State { DISABLED, RUNNING, COMPLETE, INTERRUPTED, FAILED };
+    std::atomic<State> state{DISABLED};
+    std::atomic<uint64_t> total{0}, processed{0}, verified{0}, reused{0};
+};
 class CBlockFileInfo
 {
 public:
@@ -102,6 +107,9 @@ public:
     using CDBWrapper::CDBWrapper;
     void WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, const std::vector<const CBlockIndex*>& blockinfo, const Consensus::Params* consensus = nullptr);
     bool HasYespowerEvidence(const CBlockHeader& header, const Consensus::Params& consensus) const;
+    /** Bounded background DB scan; caller keeps this DB alive until joined. */
+    std::optional<std::string> VerifyHistoricalPoW(const Consensus::Params& consensus,
+        const util::SignalInterrupt& interrupt, HistoricalPoWStats& stats, unsigned pause_ms);
     bool ReadBlockFileInfo(int nFile, CBlockFileInfo& info);
     bool ReadLastBlockFile(int& nFile);
     void WriteReindexing(bool fReindexing);
@@ -318,6 +326,7 @@ public:
     explicit BlockManager(const util::SignalInterrupt& interrupt, Options opts);
 
     const util::SignalInterrupt& m_interrupt;
+    kernel::HistoricalPoWStats m_historical_pow;
     std::atomic<bool> m_importing{false};
 
     /**

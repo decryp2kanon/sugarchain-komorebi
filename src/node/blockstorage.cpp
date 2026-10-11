@@ -48,6 +48,7 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <thread>
 #include <cmath>
 #include <compare>
 #include <cstddef>
@@ -139,6 +140,89 @@ bool BlockTreeDB::HasYespowerEvidence(const CBlockHeader& header, const Consensu
     std::pair<uint8_t, uint256> evidence;
     return Read(std::make_pair(uint8_t{'y'}, header.GetHash()), evidence) &&
         evidence.first == 2 && evidence.second == GetYespowerEvidenceDigest(header, consensus);
+}
+
+std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Params& consensus,
+    const util::SignalInterrupt& interrupt, HistoricalPoWStats& stats, unsigned pause_ms)
+{
+    stats.state = HistoricalPoWStats::RUNNING;
+    std::optional<uint256> last;
+    unsigned next_percent{0};
+    // Short-lived DB snapshots avoid pinning obsolete table files for hours.
+    // Keys are block identities, not heights; forks are checked independently.
+    while (!interrupt) {
+        std::vector<std::pair<uint256, CDiskBlockIndex>> entries;
+        entries.reserve(512);
+        {
+            std::unique_ptr<CDBIterator> cursor{NewIterator()};
+            cursor->Seek(std::make_pair(DB_BLOCK_INDEX, last.value_or(uint256{})));
+            while (cursor->Valid() && cursor->KeyHasPrefix(DB_BLOCK_INDEX)) {
+                std::pair<uint8_t, uint256> key;
+                CDiskBlockIndex disk;
+                if (!cursor->GetKey(key) || !cursor->GetValue(disk, true)) {
+                    stats.state = HistoricalPoWStats::FAILED;
+                    return "Historical PoW verification: unreadable block-index entry (not a PoW failure).";
+                }
+                if (!last || key.second != *last) entries.emplace_back(key.second, std::move(disk));
+                cursor->Next();
+                if (entries.size() == 512) break;
+            }
+            cursor->CheckStatus();
+        }
+        if (entries.empty()) {
+            stats.total = stats.processed.load();
+            stats.state = HistoricalPoWStats::COMPLETE;
+            LogInfo("Historical PoW verification complete: %u entries, %u verified, %u reused\n",
+                stats.processed.load(), stats.verified.load(), stats.reused.load());
+            return std::nullopt;
+        }
+        CDBBatch batch{*this};
+        bool dirty{false};
+        for (const auto& [hash, disk] : entries) {
+            if (interrupt) break;
+            auto header{disk.GetBlockHeader()};
+            header.hashPrevBlock = disk.hashPrev;
+            if (header.GetHash() != hash) {
+                if (dirty) WriteBatch(batch, true);
+                stats.state = HistoricalPoWStats::FAILED;
+                return strprintf("Historical PoW verification: block-index identity mismatch at height %d, hash %s. Back up data and recover with -fast-startup=0 -reindex.", disk.nHeight, hash.ToString());
+            }
+            if (HasYespowerEvidence(header, consensus)) {
+                ++stats.reused;
+            } else {
+                // RAM cache hits are also genuine completed verification; a
+                // trusted disk status never populates that cache.
+                if (!CheckBlockProofOfWork(header, consensus)) {
+                    if (dirty) WriteBatch(batch, true);
+                    stats.state = HistoricalPoWStats::FAILED;
+                    return strprintf("Historical Yespower verification failed at height %d, hash %s. Shutting down. Back up data and recover with -fast-startup=0 -reindex. Reindexing cannot repair invalid PoW or damaged block files.", disk.nHeight, hash.ToString());
+                }
+                if (consensus.fYespowerSugar && !EnableFuzzDeterminism()) {
+                    batch.Write(std::make_pair(uint8_t{'y'}, hash),
+                        std::make_pair(uint8_t{2}, GetYespowerEvidenceDigest(header, consensus)));
+                    dirty = true;
+                }
+                ++stats.verified;
+                // One worker; sleep only on expensive misses, not warm hits.
+                for (unsigned elapsed{0}; elapsed < pause_ms && !interrupt; ++elapsed) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                }
+            }
+            ++stats.processed;
+            last = hash;
+        }
+        if (dirty) WriteBatch(batch, true);
+        const auto total{std::max(stats.total.load(), stats.processed.load())};
+        const unsigned percent{total ? unsigned(100 * stats.processed.load() / total) : 0};
+        if (percent >= next_percent) {
+            LogInfo("Historical PoW verification: %u/%u checked, %u verified, %u reused (historical trust remains until completion)\n",
+                stats.processed.load(), total, stats.verified.load(), stats.reused.load());
+            next_percent = percent + 1;
+        }
+    }
+    stats.state = HistoricalPoWStats::INTERRUPTED;
+    LogInfo("Historical PoW verification interrupted; committed evidence retained\n");
+    return std::nullopt;
 }
 
 void BlockTreeDB::WriteFlag(const std::string& name, bool fValue)
