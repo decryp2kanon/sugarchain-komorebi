@@ -68,7 +68,9 @@ checks. `-fast-startup=0` is the way to force historical PoW recomputation.
 
 Counters are concurrent snapshots. New headers continue through normal validation;
 the scan covers stored historical entries, including forks. Progress also appears
-in `debug.log`. SHA256d networks such as regtest do not run this worker.
+in `debug.log` as `Lazy PoW validation`: start/completion/interruption/errors are
+reported separately, and progress is logged at exactly every 1,000 checked entries
+(including reused evidence), independent of percentage or the 512-entry DB batches. SHA256d networks such as regtest do not run this worker.
 
 If actual historical Yespower validation fails, the node reports the height/hash
 and requests mandatory shutdown. Storage or

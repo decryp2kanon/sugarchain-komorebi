@@ -148,7 +148,7 @@ std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Par
 {
     stats.state = HistoricalPoWStats::RUNNING;
     std::optional<uint256> last;
-    unsigned next_percent{0};
+    LogInfo("Lazy PoW validation started: %u entries\n", stats.total.load());
     // Short-lived DB snapshots avoid pinning obsolete table files for hours.
     // Keys are block identities, not heights; forks are checked independently.
     while (!interrupt) {
@@ -162,7 +162,7 @@ std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Par
                 CDiskBlockIndex disk;
                 if (!cursor->GetKey(key) || !cursor->GetValue(disk, true)) {
                     stats.state = HistoricalPoWStats::FAILED;
-                    return "Historical PoW verification: unreadable block-index entry (not a PoW failure).";
+                    return "Lazy PoW validation: unreadable block-index entry (not a PoW failure).";
                 }
                 if (!last || key.second != *last) entries.emplace_back(key.second, std::move(disk));
                 cursor->Next();
@@ -173,7 +173,7 @@ std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Par
         if (entries.empty()) {
             stats.total = stats.processed.load();
             stats.state = HistoricalPoWStats::COMPLETE;
-            LogInfo("Historical PoW verification complete: %u entries, %u verified, %u reused\n",
+            LogInfo("Lazy PoW validation complete: %u entries, %u verified, %u reused\n",
                 stats.processed.load(), stats.verified.load(), stats.reused.load());
             return std::nullopt;
         }
@@ -203,7 +203,7 @@ std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Par
             if (header.GetHash() != hash) {
                 if (dirty) WriteBatch(batch, true);
                 stats.state = HistoricalPoWStats::FAILED;
-                return strprintf("Historical PoW verification: block-index identity mismatch at height %d, hash %s. Back up data and recover with -fast-startup=0 -reindex.", disk.nHeight, hash.ToString());
+                return strprintf("Lazy PoW validation: block-index identity mismatch at height %d, hash %s. Back up data and recover with -fast-startup=0 -reindex.", disk.nHeight, hash.ToString());
             }
             const auto& saved{evidence[position++]};
             if (consensus.fYespowerSugar && !EnableFuzzDeterminism() &&
@@ -217,7 +217,7 @@ std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Par
                 if (!live && !CheckBlockProofOfWork(header, consensus)) {
                     if (dirty) WriteBatch(batch, true);
                     stats.state = HistoricalPoWStats::FAILED;
-                    return strprintf("Historical Yespower verification failed at height %d, hash %s. Shutting down. Back up data and recover with -fast-startup=0 -reindex. Reindexing cannot repair invalid PoW or damaged block files.", disk.nHeight, hash.ToString());
+                    return strprintf("Lazy PoW validation failed at height %d, hash %s. Shutting down. Back up data and recover with -fast-startup=0 -reindex. Reindexing cannot repair invalid PoW or damaged block files.", disk.nHeight, hash.ToString());
                 }
                 if (consensus.fYespowerSugar && !EnableFuzzDeterminism()) {
                     batch.Write(std::make_pair(uint8_t{'y'}, hash),
@@ -232,18 +232,16 @@ std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Par
             }
             ++stats.processed;
             last = hash;
+            const auto processed{stats.processed.load()};
+            if (processed % 1000 == 0) {
+                LogInfo("Lazy PoW validation: %u/%u checked, %u verified, %u reused\n",
+                    processed, std::max(stats.total.load(), processed), stats.verified.load(), stats.reused.load());
+            }
         }
         if (dirty) WriteBatch(batch, true);
-        const auto total{std::max(stats.total.load(), stats.processed.load())};
-        const unsigned percent{total ? unsigned(100 * stats.processed.load() / total) : 0};
-        if (percent >= next_percent) {
-            LogInfo("Historical PoW verification: %u/%u checked, %u verified, %u reused\n",
-                stats.processed.load(), total, stats.verified.load(), stats.reused.load());
-            next_percent = percent + 1;
-        }
     }
     stats.state = HistoricalPoWStats::INTERRUPTED;
-    LogInfo("Historical PoW verification interrupted; committed evidence retained\n");
+    LogInfo("Lazy PoW validation interrupted; committed evidence retained\n");
     return std::nullopt;
 }
 

@@ -2337,7 +2337,7 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
             chainman.m_blockman.m_historical_pow.state = kernel::HistoricalPoWStats::RUNNING;
         }
         const unsigned pause_ms{static_cast<unsigned>(args.GetIntArg("-background-pow-pause", 10))};
-        LogInfo("Historical PoW evidence scan scheduled after startup (historical trust policy: %s)\n",
+        LogInfo("Lazy PoW validation scheduled after startup (historical trust policy: %s)\n",
             chainman.m_blockman.UsesHistoricalPoWTrust() ? "enabled until background verification completes" : "disabled; startup fully reverified PoW");
         node.historical_pow_thread = std::thread(&util::TraceThread, "historicalpow", [&node, &chainman, db, pause_ms] {
             try {
@@ -2352,7 +2352,7 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
             } catch (const std::exception& e) {
                 chainman.m_blockman.m_historical_pow.state = kernel::HistoricalPoWStats::FAILED;
                 node::AbortNode(node.shutdown_request, node.exit_status,
-                    Untranslated(strprintf("Historical PoW verification stopped due to storage/resource error (not proven invalid PoW): %s", e.what())), node.warnings.get());
+                    Untranslated(strprintf("Lazy PoW validation stopped due to storage/resource error (not proven invalid PoW): %s", e.what())), node.warnings.get());
             }
         });
     }
