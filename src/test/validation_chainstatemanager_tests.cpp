@@ -5,6 +5,7 @@
 #include <chainparams.h>
 #include <consensus/validation.h>
 #include <kernel/disconnected_transactions.h>
+#include <node/blockstorage.h>
 #include <node/chainstatemanager_args.h>
 #include <node/kernel_notifications.h>
 #include <node/utxo_snapshot.h>
@@ -497,7 +498,8 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_loadblockindex, TestChain100Setup)
             cs->ClearBlockIndexCandidates();
             BOOST_CHECK(cs->setBlockIndexCandidates.empty());
         }
-        chainman.LoadBlockIndex();
+        BOOST_REQUIRE(chainman.LoadBlockIndex());
+        BOOST_CHECK(chainman.m_best_header == assumed_tip);
         for (const auto& cs : chainman.m_chainstates) {
             cs->PopulateBlockIndexCandidates();
         }
@@ -598,6 +600,40 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_loadblockindex, TestChain100Setup)
     BOOST_CHECK_EQUAL(cs2.setBlockIndexCandidates.count(assumed_tip), 1);
     // Check that 11 blocks total are present.
     BOOST_CHECK_EQUAL(cs2.setBlockIndexCandidates.size(), num_indexes - last_assumed_valid_idx + 1);
+}
+
+// Exercise the large-index integer-sort path with competing equal-work tips
+// and a longer invalid branch. These synthetic headers stay in the test fixture.
+BOOST_FIXTURE_TEST_CASE(loadblockindex_large_fork_selection, TestChain100Setup)
+{
+    auto& chainman{*Assert(m_node.chainman)};
+    LOCK(chainman.GetMutex());
+    CBlockIndex* valid_tips[2]{};
+    CBlockIndex* invalid_tip{nullptr};
+    CBlockIndex* ignored_best{nullptr};
+    const auto* base{chainman.ActiveChain().Tip()};
+    for (int branch = 0; branch < 3; ++branch) {
+        const CBlockIndex* parent{base};
+        const int length{branch == 2 ? 1600 : 1500};
+        for (int i = 0; i < length; ++i) {
+            CBlockHeader header{chainman.GetParams().GenesisBlock()};
+            header.hashPrevBlock = parent->GetBlockHash();
+            header.nNonce = branch * 2000 + i + 1;
+            auto* index{chainman.m_blockman.AddToBlockIndex(header, ignored_best)};
+            if (branch == 2 && i == 0) index->nStatus |= BLOCK_FAILED_VALID;
+            parent = index;
+            if (i == length - 1) {
+                if (branch < 2) valid_tips[branch] = index;
+                else invalid_tip = index;
+            }
+        }
+    }
+    const auto* expected{node::CBlockIndexWorkComparator()(valid_tips[0], valid_tips[1]) ? valid_tips[1] : valid_tips[0]};
+    chainman.m_best_header = nullptr;
+    BOOST_REQUIRE(chainman.LoadBlockIndex());
+    BOOST_CHECK(chainman.m_best_header == expected);
+    BOOST_CHECK(invalid_tip->nStatus & BLOCK_FAILED_VALID);
+    BOOST_CHECK_EQUAL(chainman.ActiveChain().Height(), 100);
 }
 
 BOOST_FIXTURE_TEST_CASE(loadblockindex_invalid_descendants, TestChain100Setup)

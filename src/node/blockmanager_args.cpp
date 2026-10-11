@@ -38,6 +38,7 @@ util::Result<void> ApplyArgsManOptions(const ArgsManager& args, BlockManager::Op
     if (auto value{args.GetBoolArg("-fastprune")}) opts.fast_prune = *value;
 
     opts.startup_pow_workers = std::clamp<int64_t>(args.GetIntArg("-parpow", DEFAULT_HEADER_POW_WORKERS), 1, MAX_HEADER_POW_WORKERS);
+    opts.fast_startup = args.GetBoolArg("-fast-startup", false);
 
     ReadDatabaseArgs(args, opts.block_tree_db_params.options);
 

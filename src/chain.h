@@ -312,7 +312,8 @@ protected:
 };
 
 /** Compute how much work an nBits value corresponds to. */
-arith_uint256 GetBitsProof(uint32_t bits);
+/** Original work arithmetic by default; optimized exact arithmetic is startup-only opt-in. */
+arith_uint256 GetBitsProof(uint32_t bits, bool fast_startup = false);
 
 /** Compute how much work a block index entry corresponds to. */
 inline arith_uint256 GetBlockProof(const CBlockIndex& block) { return GetBitsProof(block.nBits); }
@@ -451,7 +452,8 @@ public:
     }
 
     /** Set/initialize a chain with a given tip. */
-    void SetTip(CBlockIndex& block);
+    /** Optional startup read-ahead; ordinary chain updates use the original traversal. */
+    void SetTip(CBlockIndex& block, bool fast_startup = false);
 
     /** Find the last common block between this chain and a block index entry. */
     const CBlockIndex* FindFork(const CBlockIndex* pindex) const;

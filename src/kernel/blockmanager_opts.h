@@ -27,6 +27,10 @@ struct BlockManagerOpts {
     uint64_t prune_target{0};
     bool fast_prune{false};
     int startup_pow_workers{1};
+    /** Opt in to trusting historical disk PoW; never establishes live proof evidence. */
+    bool fast_startup{false};
+    /** Shared semantics-preserving algorithms, independent of disk PoW trust. */
+    bool startup_optimizations{true};
     const fs::path blocks_dir;
     Notifications& notifications;
     DBParams block_tree_db_params;

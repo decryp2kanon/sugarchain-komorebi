@@ -33,6 +33,57 @@
 #include <memory>
 #include <optional>
 #include <utility>
+#ifdef __linux__
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
+#ifdef __linux__
+namespace {
+// Last-reference destruction ends the mapping's lifetime before asking the
+// kernel to reclaim its clean file cache. Reads and checksum policy are unchanged.
+class ReclaimingReadFile final : public leveldb::RandomAccessFile
+{
+    std::unique_ptr<leveldb::RandomAccessFile> m_file;
+    const std::string m_name;
+public:
+    ReclaimingReadFile(std::unique_ptr<leveldb::RandomAccessFile> file, std::string name)
+        : m_file{std::move(file)}, m_name{std::move(name)} {}
+    ~ReclaimingReadFile() override
+    {
+        m_file.reset();
+        const int fd{::open(m_name.c_str(), O_RDONLY | O_CLOEXEC)};
+        if (fd >= 0) {
+            // Advisory only: failure must never change DB correctness.
+            static_cast<void>(::posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED));
+            ::close(fd);
+        }
+    }
+    leveldb::Status Read(uint64_t offset, size_t size, leveldb::Slice* result, char* scratch) const override
+    {
+        return m_file->Read(offset, size, result, scratch);
+    }
+    std::string GetName() const override { return m_name; }
+};
+
+class ReclaimingReadEnv final : public leveldb::EnvWrapper
+{
+public:
+    ReclaimingReadEnv() : leveldb::EnvWrapper{leveldb::Env::Default()} {}
+    leveldb::Status NewRandomAccessFile(const std::string& name, leveldb::RandomAccessFile** result) override
+    {
+        *result = nullptr;
+        leveldb::RandomAccessFile* raw{nullptr};
+        auto status{target()->NewRandomAccessFile(name, &raw)};
+        if (status.ok()) {
+            std::unique_ptr<leveldb::RandomAccessFile> file{raw};
+            *result = new ReclaimingReadFile{std::move(file), name};
+        }
+        return status;
+    }
+};
+} // namespace
+#endif
 
 static auto CharCast(const std::byte* data) { return reinterpret_cast<const char*>(data); }
 
@@ -224,6 +275,16 @@ CDBWrapper::CDBWrapper(const DBParams& params)
     DBContext().syncoptions.sync = true;
     DBContext().options = GetOptions(params.cache_bytes);
     DBContext().options.create_if_missing = true;
+#ifdef __linux__
+    if (params.reclaim_read_cache && !params.memory_only) {
+        // Bound retained table mappings; keep the caller's block/write cache budgets.
+        DBContext().options.small_table_cache = true;
+        DBContext().options.max_open_files = std::min(DBContext().options.max_open_files, 10);
+        DBContext().penv = new ReclaimingReadEnv;
+        DBContext().options.env = DBContext().penv;
+        LogDebug(BCLog::LEVELDB, "LevelDB inactive read-cache reclamation enabled (table_cache=0).\n");
+    }
+#endif
     if (params.memory_only) {
         DBContext().penv = leveldb::NewMemEnv(leveldb::Env::Default());
         DBContext().options.env = DBContext().penv;
@@ -387,6 +448,11 @@ std::span<const std::byte> CDBIterator::GetValueImpl() const
 
 CDBIterator::~CDBIterator() = default;
 bool CDBIterator::Valid() const { return m_impl_iter->iter->Valid(); }
+bool CDBIterator::KeyHasPrefix(uint8_t prefix, size_t min_size) const
+{
+    const auto key{GetKeyImpl()};
+    return key.size() >= min_size && std::to_integer<uint8_t>(key.front()) == prefix;
+}
 void CDBIterator::SeekToFirst() { m_impl_iter->iter->SeekToFirst(); }
 void CDBIterator::Next() { m_impl_iter->iter->Next(); }
 

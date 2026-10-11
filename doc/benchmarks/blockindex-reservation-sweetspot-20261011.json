@@ -1,0 +1,279 @@
+{
+  "scope": "Twelve sequential isolated mainnet-snapshot startups; same source and build configuration, only requested map reservation differs. Three runs per setting in mixed order. Process RSS, not constrained-cgroup accounting or IBD throughput.",
+  "source_commit": "aa2ff0883d69d5fdef353df5312e3293e81984fd",
+  "entries": 44806391,
+  "order": [
+    "3x",
+    "1x",
+    "15x",
+    "2x",
+    "2x",
+    "15x",
+    "1x",
+    "3x",
+    "15x",
+    "3x",
+    "2x",
+    "1x"
+  ],
+  "selected": "15x",
+  "selection_reason": "1.5x retains most bucket savings with 1.092 seconds (1.46%) median startup overhead versus 3x; 2x adds about 193MiB for only 0.848 seconds median improvement; 1x takes 4.810 seconds longer than 1.5x.",
+  "options": [
+    "-fast-startup=1",
+    "-parpow=8",
+    "-dbcache=4096",
+    "-maxpowcache=2048",
+    "-assumevalid=0",
+    "-checkblocks=6",
+    "-checklevel=3",
+    "wallets disabled",
+    "P2P disabled"
+  ],
+  "preparation": "Private mutable index and chainstate databases reset from the same snapshot for each run; cache reclamation advice only on private copied files. Copy/reset time excluded from startup. No global cache drop.",
+  "summary": {
+    "1x": {
+      "startup_seconds": 80.53351736068726,
+      "peak_rss_kib": 9542596,
+      "ready_rss_kib": 9196304,
+      "startup_runs_seconds": [
+        79.17631077766418,
+        80.93974494934082,
+        80.53351736068726
+      ],
+      "startup_range_seconds": [
+        79.17631077766418,
+        80.93974494934082
+      ],
+      "binary_sha256": "55363063f3c7113ff6419abe9736a655f892a84624e30098043e81cd52abf35d",
+      "peak_rss_saved_vs_3x_mib": 708.41796875
+    },
+    "15x": {
+      "startup_seconds": 75.7232027053833,
+      "peak_rss_kib": 9716788,
+      "ready_rss_kib": 9370628,
+      "startup_runs_seconds": [
+        75.7232027053833,
+        75.48775672912598,
+        75.79354357719421
+      ],
+      "startup_range_seconds": [
+        75.48775672912598,
+        75.79354357719421
+      ],
+      "binary_sha256": "462c8594e5267e6a24d9468ea0ce7ddad8d14cf5a12a1bd436074b802f82cb0b",
+      "peak_rss_saved_vs_3x_mib": 538.30859375
+    },
+    "2x": {
+      "startup_seconds": 74.87550902366638,
+      "peak_rss_kib": 9914604,
+      "ready_rss_kib": 9567948,
+      "startup_runs_seconds": [
+        72.86818504333496,
+        74.96186590194702,
+        74.87550902366638
+      ],
+      "startup_range_seconds": [
+        72.86818504333496,
+        74.96186590194702
+      ],
+      "binary_sha256": "604876e5d6b2b8cff8ed7675c138b4e8d1a7aa8d6f19ee0bf192922add3128cf",
+      "peak_rss_saved_vs_3x_mib": 345.12890625
+    },
+    "3x": {
+      "startup_seconds": 74.63141107559204,
+      "peak_rss_kib": 10268016,
+      "ready_rss_kib": 9921448,
+      "startup_runs_seconds": [
+        72.3290627002716,
+        74.63141107559204,
+        74.9400703907013
+      ],
+      "startup_range_seconds": [
+        72.3290627002716,
+        74.9400703907013
+      ],
+      "binary_sha256": "555a3e60cf75979cb920289c1a2fac7a38769777e8544d42e3f694966914d33c",
+      "peak_rss_saved_vs_3x_mib": 0.0
+    }
+  },
+  "runs": [
+    {
+      "label": "run-01-3x",
+      "mode": "3x",
+      "startup_seconds": 72.3290627002716,
+      "peak_rss_kib": 10268016,
+      "ready_rss_kib": 9921496,
+      "host_load_start": [
+        "2.29",
+        "1.87",
+        "2.45"
+      ],
+      "verification": "PASS"
+    },
+    {
+      "label": "run-02-1x",
+      "mode": "1x",
+      "startup_seconds": 79.17631077766418,
+      "peak_rss_kib": 9542672,
+      "ready_rss_kib": 9196412,
+      "host_load_start": [
+        "1.99",
+        "1.86",
+        "2.39"
+      ],
+      "verification": "PASS"
+    },
+    {
+      "label": "run-03-15x",
+      "mode": "15x",
+      "startup_seconds": 75.7232027053833,
+      "peak_rss_kib": 9717616,
+      "ready_rss_kib": 9371084,
+      "host_load_start": [
+        "1.65",
+        "1.77",
+        "2.30"
+      ],
+      "verification": "PASS"
+    },
+    {
+      "label": "run-04-2x",
+      "mode": "2x",
+      "startup_seconds": 72.86818504333496,
+      "peak_rss_kib": 9915128,
+      "ready_rss_kib": 9569084,
+      "host_load_start": [
+        "2.05",
+        "1.83",
+        "2.27"
+      ],
+      "verification": "PASS"
+    },
+    {
+      "label": "run-05-2x",
+      "mode": "2x",
+      "startup_seconds": 74.96186590194702,
+      "peak_rss_kib": 9914016,
+      "ready_rss_kib": 9567596,
+      "host_load_start": [
+        "2.10",
+        "1.88",
+        "2.24"
+      ],
+      "verification": "PASS"
+    },
+    {
+      "label": "run-06-15x",
+      "mode": "15x",
+      "startup_seconds": 75.48775672912598,
+      "peak_rss_kib": 9716788,
+      "ready_rss_kib": 9370628,
+      "host_load_start": [
+        "2.45",
+        "2.03",
+        "2.26"
+      ],
+      "verification": "PASS"
+    },
+    {
+      "label": "run-07-1x",
+      "mode": "1x",
+      "startup_seconds": 80.93974494934082,
+      "peak_rss_kib": 9541544,
+      "ready_rss_kib": 9194720,
+      "host_load_start": [
+        "1.98",
+        "2.02",
+        "2.24"
+      ],
+      "verification": "PASS"
+    },
+    {
+      "label": "run-08-3x",
+      "mode": "3x",
+      "startup_seconds": 74.63141107559204,
+      "peak_rss_kib": 10267512,
+      "ready_rss_kib": 9921012,
+      "host_load_start": [
+        "3.09",
+        "2.49",
+        "2.39"
+      ],
+      "verification": "PASS"
+    },
+    {
+      "label": "run-09-15x",
+      "mode": "15x",
+      "startup_seconds": 75.79354357719421,
+      "peak_rss_kib": 9715960,
+      "ready_rss_kib": 9369660,
+      "host_load_start": [
+        "2.13",
+        "2.37",
+        "2.36"
+      ],
+      "verification": "PASS"
+    },
+    {
+      "label": "run-10-3x",
+      "mode": "3x",
+      "startup_seconds": 74.9400703907013,
+      "peak_rss_kib": 10268528,
+      "ready_rss_kib": 9921448,
+      "host_load_start": [
+        "2.42",
+        "2.36",
+        "2.35"
+      ],
+      "verification": "PASS"
+    },
+    {
+      "label": "run-11-2x",
+      "mode": "2x",
+      "startup_seconds": 74.87550902366638,
+      "peak_rss_kib": 9914604,
+      "ready_rss_kib": 9567948,
+      "host_load_start": [
+        "2.29",
+        "2.28",
+        "2.32"
+      ],
+      "verification": "PASS"
+    },
+    {
+      "label": "run-12-1x",
+      "mode": "1x",
+      "startup_seconds": 80.53351736068726,
+      "peak_rss_kib": 9542596,
+      "ready_rss_kib": 9196304,
+      "host_load_start": [
+        "2.10",
+        "2.20",
+        "2.28"
+      ],
+      "verification": "PASS"
+    }
+  ],
+  "all_12_verification": {
+    "state": {
+      "blocks": 44805167,
+      "headers": 44805167,
+      "bestblockhash": "81cd73fe6c0f383d1564de4a3a8f466091e31cc080537748f5aeffaa515a8e6d",
+      "chainwork": "000000000000000000000000000000000000000000000000000141ad31c579f4"
+    },
+    "header_digests": {
+      "recent_0": "ead5cdec819917c9a1027a7ffadf4e4701694cbcda98e3df70439cebe65572f8",
+      "recent_1": "ead5cdec819917c9a1027a7ffadf4e4701694cbcda98e3df70439cebe65572f8",
+      "historical_0": "7a12f8b603d78762c86e4d6826931773a6646e42fc1be4ae6fd6af837a816d01",
+      "historical_1": "7a12f8b603d78762c86e4d6826931773a6646e42fc1be4ae6fd6af837a816d01"
+    },
+    "verifychain_3_100": true,
+    "clean_exit": true,
+    "sampled_process_swap_kib": 0
+  },
+  "limitations": [
+    "Host load and filesystem caching remain possible influences; three runs are not a statistical guarantee.",
+    "Host swap is in use; zero sampled process swap does not mean host swap is zero.",
+    "No operating node restart, low-memory VPS test, default-mode startup benchmark or mainnet IBD throughput measurement."
+  ]
+}

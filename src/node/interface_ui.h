@@ -80,7 +80,12 @@ public:
     ADD_SIGNALS_DECL_WRAPPER(ThreadSafeQuestion, bool, const bilingual_str& message, const std::string& noninteractive_message, unsigned int style);
 
     /** Progress message during initialization. */
-    ADD_SIGNALS_DECL_WRAPPER(InitMessage, void, const std::string& message);
+    void InitMessage(const std::string& message, bool log = true);
+    using InitMessageSig = void(const std::string& message);
+    boost::signals2::connection InitMessage_connect(std::function<InitMessageSig> fn);
+    /** Logging subscribers receive the per-message logging policy; GUI/RPC subscribers receive every update. */
+    using InitMessageWithLogSig = void(const std::string& message, bool log);
+    boost::signals2::connection InitMessageWithLog_connect(std::function<InitMessageWithLogSig> fn);
 
     /** Wallet loader created. */
     ADD_SIGNALS_DECL_WRAPPER(InitWallet, void, );

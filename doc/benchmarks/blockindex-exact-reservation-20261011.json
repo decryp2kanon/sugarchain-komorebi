@@ -1,0 +1,60 @@
+{
+  "scope": "One cold private copied-snapshot run per version; timing is not a repeated median or IBD measurement. The control is an earlier commit and differs in other PR changes. Component screening independently isolates reservation size.",
+  "control_commit": "8943f1f3f79840591841cb4ed0d6fbd2823dc432",
+  "candidate_parent": "eeb644e8b77d9a3a6c94703d1afb1a6eb1388796",
+  "entries": 44806391,
+  "options": [
+    "-fast-startup=1",
+    "-parpow=8",
+    "-dbcache=4096",
+    "-maxpowcache=2048",
+    "-assumevalid=0",
+    "-checkblocks=6",
+    "-checklevel=3",
+    "wallets disabled",
+    "P2P disabled"
+  ],
+  "control_pooled_3x": {
+    "binary_sha256": "2e1361033377a5379eea717a4c308670d69e2c5d6f779af6714a0f0d11966d07",
+    "startup_seconds": 77.5971429347992,
+    "peak_rss_kib": 10267584,
+    "ready_rss_kib": 9920956,
+    "verifychain": true,
+    "clean_exit": true,
+    "sampled_process_swap_kib": 0,
+    "state": {
+      "blocks": 44805167,
+      "headers": 44805167,
+      "bestblockhash": "81cd73fe6c0f383d1564de4a3a8f466091e31cc080537748f5aeffaa515a8e6d",
+      "chainwork": "000000000000000000000000000000000000000000000000000141ad31c579f4"
+    },
+    "header_digests": {
+      "recent_0": "ead5cdec819917c9a1027a7ffadf4e4701694cbcda98e3df70439cebe65572f8",
+      "recent_1": "ead5cdec819917c9a1027a7ffadf4e4701694cbcda98e3df70439cebe65572f8",
+      "historical_0": "7a12f8b603d78762c86e4d6826931773a6646e42fc1be4ae6fd6af837a816d01",
+      "historical_1": "7a12f8b603d78762c86e4d6826931773a6646e42fc1be4ae6fd6af837a816d01"
+    }
+  },
+  "candidate_pooled_1x": {
+    "binary_sha256": "55363063f3c7113ff6419abe9736a655f892a84624e30098043e81cd52abf35d",
+    "startup_seconds": 85.07007670402527,
+    "peak_rss_kib": 9541804,
+    "ready_rss_kib": 9195116,
+    "verifychain": true,
+    "clean_exit": true,
+    "sampled_process_swap_kib": 0,
+    "state": {
+      "blocks": 44805167,
+      "headers": 44805167,
+      "bestblockhash": "81cd73fe6c0f383d1564de4a3a8f466091e31cc080537748f5aeffaa515a8e6d",
+      "chainwork": "000000000000000000000000000000000000000000000000000141ad31c579f4"
+    },
+    "header_digests": {
+      "recent_0": "ead5cdec819917c9a1027a7ffadf4e4701694cbcda98e3df70439cebe65572f8",
+      "recent_1": "ead5cdec819917c9a1027a7ffadf4e4701694cbcda98e3df70439cebe65572f8",
+      "historical_0": "7a12f8b603d78762c86e4d6826931773a6646e42fc1be4ae6fd6af837a816d01",
+      "historical_1": "7a12f8b603d78762c86e4d6826931773a6646e42fc1be4ae6fd6af837a816d01"
+    }
+  },
+  "peak_rss_saved_mib": 708.76953125
+}

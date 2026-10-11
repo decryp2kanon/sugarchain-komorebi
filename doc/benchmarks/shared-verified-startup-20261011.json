@@ -1,0 +1,200 @@
+{
+  "scope": "Bounded full-verification mode-zero screening, not a 44-million-entry startup or per-item whole-node speed guarantee. Three mixed-order runs per variant. No concurrent build/test jobs during timed samples.",
+  "baseline_commit": "2ecf31fff7086ca0af81d70c7aa308c6242b005b",
+  "sample_blocks": 6000,
+  "sample_options": [
+    "-fast-startup=0",
+    "-parpow=8",
+    "-assumevalid=0",
+    "-dbcache=450",
+    "-maxpowcache=2048",
+    "wallets disabled",
+    "network disabled"
+  ],
+  "sample_summary": {
+    "baseline": {
+      "ready_seconds": 3.766845337115228,
+      "peak_rss_kib": 2231340
+    },
+    "candidate": {
+      "ready_seconds": 3.0005595821421593,
+      "peak_rss_kib": 137156
+    }
+  },
+  "sample_runs": [
+    {
+      "version": "baseline",
+      "run": 1,
+      "ready_seconds": 3.813064763089642,
+      "peak_rss_kib": 2231340,
+      "blocks": 6000,
+      "bestblockhash": "e7a04205f70e5b6e99d83a8f720748fee559a382701b39ff9891e391e6cf81d9",
+      "chainwork": "0000000000000000000000000000000000000000000000000000000003dccfa2",
+      "verifychain": true
+    },
+    {
+      "version": "candidate",
+      "run": 1,
+      "ready_seconds": 2.9484882911201566,
+      "peak_rss_kib": 137376,
+      "blocks": 6000,
+      "bestblockhash": "e7a04205f70e5b6e99d83a8f720748fee559a382701b39ff9891e391e6cf81d9",
+      "chainwork": "0000000000000000000000000000000000000000000000000000000003dccfa2",
+      "verifychain": true
+    },
+    {
+      "version": "candidate",
+      "run": 2,
+      "ready_seconds": 3.0005595821421593,
+      "peak_rss_kib": 135984,
+      "blocks": 6000,
+      "bestblockhash": "e7a04205f70e5b6e99d83a8f720748fee559a382701b39ff9891e391e6cf81d9",
+      "chainwork": "0000000000000000000000000000000000000000000000000000000003dccfa2",
+      "verifychain": true
+    },
+    {
+      "version": "baseline",
+      "run": 2,
+      "ready_seconds": 3.720374542986974,
+      "peak_rss_kib": 2231376,
+      "blocks": 6000,
+      "bestblockhash": "e7a04205f70e5b6e99d83a8f720748fee559a382701b39ff9891e391e6cf81d9",
+      "chainwork": "0000000000000000000000000000000000000000000000000000000003dccfa2",
+      "verifychain": true
+    },
+    {
+      "version": "baseline",
+      "run": 3,
+      "ready_seconds": 3.766845337115228,
+      "peak_rss_kib": 2231024,
+      "blocks": 6000,
+      "bestblockhash": "e7a04205f70e5b6e99d83a8f720748fee559a382701b39ff9891e391e6cf81d9",
+      "chainwork": "0000000000000000000000000000000000000000000000000000000003dccfa2",
+      "verifychain": true
+    },
+    {
+      "version": "candidate",
+      "run": 3,
+      "ready_seconds": 3.030614288058132,
+      "peak_rss_kib": 137156,
+      "blocks": 6000,
+      "bestblockhash": "e7a04205f70e5b6e99d83a8f720748fee559a382701b39ff9891e391e6cf81d9",
+      "chainwork": "0000000000000000000000000000000000000000000000000000000003dccfa2",
+      "verifychain": true
+    }
+  ],
+  "map_entries": 1000000,
+  "map_summary": {
+    "baseline": {
+      "reserve_seconds": 8.98726e-08,
+      "insert_seconds": 0.370904,
+      "million_hits_seconds": 0.17783,
+      "million_misses_seconds": 0.137487,
+      "peak_rss_kib": 217208
+    },
+    "reserve": {
+      "reserve_seconds": 0.00601333,
+      "insert_seconds": 0.222539,
+      "million_hits_seconds": 0.151063,
+      "million_misses_seconds": 0.0957358,
+      "peak_rss_kib": 218368
+    },
+    "pool": {
+      "reserve_seconds": 1.00117e-07,
+      "insert_seconds": 0.301241,
+      "million_hits_seconds": 0.0947847,
+      "million_misses_seconds": 0.0720576,
+      "peak_rss_kib": 209696
+    },
+    "nohash": {
+      "reserve_seconds": 7.98609e-08,
+      "insert_seconds": 0.387763,
+      "million_hits_seconds": 0.091764,
+      "million_misses_seconds": 0.0651671,
+      "peak_rss_kib": 217128
+    },
+    "optimized": {
+      "reserve_seconds": 0.00618313,
+      "insert_seconds": 0.197498,
+      "million_hits_seconds": 0.147977,
+      "million_misses_seconds": 0.0951332,
+      "peak_rss_kib": 202752
+    }
+  },
+  "component_median_seconds": {
+    "chain_settip": {
+      "0": 0.00966797,
+      "1": 0.0154239
+    },
+    "versionbits": {
+      "0": 0.270445,
+      "1": 0.0156653
+    },
+    "work_formula": {
+      "0": 0.247082,
+      "1": 0.0165288
+    },
+    "key_decode": {
+      "0": 0.0115932,
+      "1": 0.00689466
+    },
+    "value_decode": {
+      "0": 0.0214747,
+      "1": 0.0145685
+    },
+    "height_sort": {
+      "0": 0.172289,
+      "1": 0.0392657
+    }
+  },
+  "component_scope": "One million contiguous index objects for sort/work/SetTip/versionbits; 200000 decode operations against 10000 in-memory disk index values. Actual production helper functions, reference versus optimized selection; valid decoding checksums and sorted/chain results asserted. Metadata measurements do not perform PoW and do not replace the cold genuine-PoW safety tests.",
+  "mode_zero_shared_numbers": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    19
+  ],
+  "mode_zero_excluded_numbers": [
+    6,
+    7,
+    8,
+    16,
+    17,
+    18
+  ],
+  "validation": {
+    "release_cases_per_mode": 69,
+    "sanitized_cases": 69,
+    "sanitizers": [
+      "address",
+      "undefined",
+      "leak detection"
+    ],
+    "functional": [
+      "startup mode switching",
+      "invalidate/reconsider",
+      "sanitized invalidate/reconsider"
+    ],
+    "builds": [
+      "release daemon",
+      "release Qt",
+      "release unit tests",
+      "sanitized daemon",
+      "sanitized unit tests"
+    ],
+    "limitations": [
+      "No 44-million-header full-verification startup",
+      "No sustained mainnet IBD benchmark",
+      "No full test-suite or fuzz claim"
+    ]
+  }
+}

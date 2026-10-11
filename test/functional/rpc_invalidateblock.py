@@ -20,9 +20,22 @@ class InvalidateTest(BitcoinTestFramework):
     def set_test_params(self):
         self.setup_clean_chain = True
         self.num_nodes = 3
+        self.extra_args = [["-fast-startup=1"], ["-fast-startup=0"], ["-fast-startup=1"]]
 
     def setup_network(self):
         self.setup_nodes()
+
+    def check_restart_modes(self):
+        node = self.nodes[0]
+        expected = node.getblockchaininfo()
+        expected_hashes = [node.getblockhash(h) for h in range(expected["blocks"] + 1)]
+        for mode in ["0", "1"]:
+            self.restart_node(0, [f"-fast-startup={mode}"])
+            actual = node.getblockchaininfo()
+            for key in ["blocks", "headers", "bestblockhash", "chainwork"]:
+                assert_equal(actual[key], expected[key])
+            assert_equal([node.getblockhash(h) for h in range(actual["blocks"] + 1)], expected_hashes)
+            assert node.verifychain(3, actual["blocks"])
 
     def run_test(self):
         self.log.info("Make sure we repopulate setBlockIndexCandidates after InvalidateBlock:")
@@ -67,6 +80,10 @@ class InvalidateTest(BitcoinTestFramework):
         assert_equal(self.nodes[0].getbestblockhash(), besthash_n0)
         assert_equal(self.nodes[0].getblockchaininfo()["headers"], self.nodes[0].getblockchaininfo()["blocks"])
 
+        # Persisted invalid branches must remain rejected in either startup mode.
+        self.disconnect_nodes(0, 1)
+        self.check_restart_modes()
+
         self.log.info("Make sure we won't reorg to a lower work chain:")
         self.connect_nodes(1, 2)
         self.log.info("Sync node 2 to node 1 so both have 6 blocks")
@@ -109,6 +126,10 @@ class InvalidateTest(BitcoinTestFramework):
         assert_equal(self.nodes[0].getbestblockhash(), blockhash_6)
         assert_equal(self.nodes[0].getblockchaininfo()['blocks'], 6)
         assert_equal(self.nodes[0].getblockchaininfo()['headers'], 7)
+
+        # Also preserve the reconsidered branch and header-only best header.
+        self.check_restart_modes()
+        assert_equal(self.nodes[0].getblockheader(block.hash_hex)["height"], 7)
 
         self.log.info("Verify that we reconsider all ancestors as well")
         blocks = self.generatetodescriptor(self.nodes[1], 10, ADDRESS_BCRT1_UNSPENDABLE_DESCRIPTOR, sync_fun=self.no_op)
