@@ -177,8 +177,25 @@ std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Par
                 stats.processed.load(), stats.verified.load(), stats.reused.load());
             return std::nullopt;
         }
+        // The fast-mode DB has no retained table cache. Read evidence through
+        // one short-lived iterator per batch instead of reopening table files
+        // for every point lookup. No snapshot remains alive during hashing.
+        std::vector<std::pair<uint8_t, uint256>> evidence(entries.size());
+        {
+            std::unique_ptr<CDBIterator> proofs{NewIterator()};
+            for (size_t i{0}; i < entries.size(); ++i) {
+                const auto expected{std::make_pair(uint8_t{'y'}, entries[i].first)};
+                proofs->Seek(expected);
+                std::pair<uint8_t, uint256> key;
+                if (proofs->Valid() && proofs->GetKey(key) && key == expected) {
+                    if (!proofs->GetValue(evidence[i])) evidence[i] = {};
+                }
+            }
+            proofs->CheckStatus();
+        }
         CDBBatch batch{*this};
         bool dirty{false};
+        size_t position{0};
         for (const auto& [hash, disk] : entries) {
             if (interrupt) break;
             auto header{disk.GetBlockHeader()};
@@ -188,7 +205,10 @@ std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Par
                 stats.state = HistoricalPoWStats::FAILED;
                 return strprintf("Historical PoW verification: block-index identity mismatch at height %d, hash %s. Back up data and recover with -fast-startup=0 -reindex.", disk.nHeight, hash.ToString());
             }
-            if (HasYespowerEvidence(header, consensus)) {
+            const auto& saved{evidence[position++]};
+            if (consensus.fYespowerSugar && !EnableFuzzDeterminism() &&
+                DeriveTarget(header.nBits, consensus.powLimit) && saved.first == 2 &&
+                saved.second == GetYespowerEvidenceDigest(header, consensus)) {
                 ++stats.reused;
             } else {
                 // RAM cache hits are also genuine completed verification; a
