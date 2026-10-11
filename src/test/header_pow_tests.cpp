@@ -105,7 +105,7 @@ struct HeaderPoWSetup : BasicTestingSetup {
             entries.push_back(indexes.back().get());
         }
         db.WriteBatchSync({}, 0, entries);
-        node::BlockMap loaded;
+        node::BlockMap loaded{startup_optimizations};
         const auto insert = [&](const uint256& hash) -> CBlockIndex* {
             if (hash.IsNull()) return nullptr;
             auto [it, inserted] = loaded.try_emplace(hash);

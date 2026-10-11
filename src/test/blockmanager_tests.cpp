@@ -8,10 +8,19 @@
 #include <node/blockstorage.h>
 #include <node/context.h>
 #include <node/kernel_notifications.h>
+#include <pow.h>
 #include <script/solver.h>
 #include <primitives/block.h>
 #include <util/chaintype.h>
+#include <util/fs.h>
 #include <validation.h>
+
+#include <algorithm>
+#include <array>
+#include <limits>
+#include <memory>
+#include <set>
+#include <vector>
 
 #include <boost/test/unit_test.hpp>
 #include <test/util/common.h>
@@ -26,6 +35,88 @@ using node::MAX_BLOCKFILE_SIZE;
 
 // use BasicTestingSetup here for the data directory configuration, setup, and cleanup
 BOOST_FIXTURE_TEST_SUITE(blockmanager_tests, BasicTestingSetup)
+
+BOOST_AUTO_TEST_CASE(blockmap_keeps_addresses_and_keys_across_growth)
+{
+    // Retain the reference backend for differential tests; runtime assertions
+    // exercise our adapter rather than retesting standard-library buckets.
+    static_assert(std::is_same_v<node::BlockMap::Legacy, std::unordered_map<uint256, CBlockIndex, BlockHasher>>);
+    static_assert(!std::is_nothrow_invocable_v<BlockHasher, const uint256&>);
+    for (bool fast : {false, true}) {
+        node::BlockMap map{fast};
+        BOOST_CHECK_EQUAL(map.IsFast(), fast);
+        std::vector<std::pair<const uint256*, CBlockIndex*>> original;
+        for (uint64_t id = 1; id <= 20000; ++id) {
+            // Identical low words also exercise full-key hashing/equality.
+            const auto hash{ArithToUint256(arith_uint256{id} << 64)};
+            auto [it, inserted]{map.try_emplace(hash)};
+            BOOST_REQUIRE(inserted);
+            it->second.phashBlock = &it->first;
+            it->second.nHeight = id;
+            if (!original.empty()) it->second.pprev = original.back().second;
+            original.emplace_back(&it->first, &it->second);
+            auto [duplicate, changed]{map.try_emplace(hash)};
+            BOOST_CHECK(!changed);
+            BOOST_CHECK(&duplicate->second == &it->second);
+        }
+        map.reserve(100000);
+        BOOST_CHECK_EQUAL(map.size(), original.size());
+        size_t visited{0};
+        for (const auto& [key, index] : map) {
+            BOOST_CHECK(index.GetBlockHash() == key);
+            BOOST_CHECK(original[index.nHeight - 1].first == &key);
+            BOOST_CHECK(original[index.nHeight - 1].second == &index);
+            if (index.nHeight > 1) BOOST_CHECK(index.pprev == original[index.nHeight - 2].second);
+            ++visited;
+        }
+        BOOST_CHECK_EQUAL(visited, map.size());
+        const auto& constant{map};
+        for (const auto& [key, index] : original) {
+            BOOST_CHECK(&constant.find(*key)->second == index);
+        }
+        BOOST_CHECK(!constant.contains(ArithToUint256(arith_uint256{1} << 255)));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(blockmap_erase_reinsert_and_work)
+{
+    node::BlockMap map{true};
+    map.reserve(6000);
+    for (uint64_t id = 1; id <= 6000; ++id) {
+        auto [it, inserted]{map.try_emplace(ArithToUint256(arith_uint256{id}))};
+        BOOST_REQUIRE(inserted);
+        it->second.nHeight = id;
+        it->second.phashBlock = &it->first;
+        it->second.nChainWork = arith_uint256{1} << 200;
+    }
+    for (auto it = map.begin(); it != map.end();) {
+        if (it->second.nHeight % 2) it = map.erase(it); else ++it;
+    }
+    BOOST_CHECK_EQUAL(map.size(), 3000);
+    for (uint64_t id = 1; id <= 6000; ++id) {
+        const auto key{ArithToUint256(arith_uint256{id})};
+        BOOST_CHECK_EQUAL(map.contains(key), id % 2 == 0);
+        auto [it, inserted]{map.try_emplace(key)};
+        BOOST_CHECK_EQUAL(inserted, id % 2 != 0);
+        it->second.nHeight = id;
+        it->second.phashBlock = &it->first;
+    }
+    map.reserve(100000);
+    BOOST_CHECK_EQUAL(map.size(), 6000);
+    size_t count{0};
+    for (auto it = map.cbegin(); it != map.cend(); ++it) {
+        BOOST_CHECK(it->second.GetBlockHash() == it->first);
+        if (it->second.nHeight % 2 == 0) BOOST_CHECK(it->second.nChainWork == (arith_uint256{1} << 200));
+        ++count;
+    }
+    BOOST_CHECK_EQUAL(count, 6000);
+    for (auto it = map.begin(); it != map.end();) it = map.erase(it);
+    BOOST_CHECK(map.empty());
+    BOOST_CHECK(map.begin() == map.end());
+    BOOST_CHECK(map.try_emplace(uint256{}).second);
+}
+
+
 
 BOOST_AUTO_TEST_CASE(blockmanager_find_block_pos)
 {
@@ -58,6 +149,11 @@ BOOST_AUTO_TEST_CASE(blockmanager_find_block_pos)
     FlatFilePos actual{blockman.WriteBlock(params->GenesisBlock(), 1)};
     BOOST_CHECK_EQUAL(actual.nPos, STORAGE_HEADER_BYTES + ::GetSerializeSize(TX_WITH_WITNESS(params->GenesisBlock())) + STORAGE_HEADER_BYTES);
 }
+
+
+// File-presence checks cover data on non-active/invalid branches, but must not
+// retain references once those entries are pruned and the index is reloaded.
+
 
 BOOST_FIXTURE_TEST_CASE(blockmanager_scan_unlink_already_pruned_files, TestChain100Setup)
 {
