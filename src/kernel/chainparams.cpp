@@ -154,7 +154,6 @@ public:
         vSeeds.emplace_back("1seed.sugarchain.info");
         vSeeds.emplace_back("2seed.sugarchain.info");
         vSeeds.emplace_back("seed.sugarchain.site");
-        vSeeds.emplace_back("seed.sugar.hel.lu");
 
         // Wallet/address porting is deliberately deferred; these baseline fields
         // are not used for header, block, script or network validation.
