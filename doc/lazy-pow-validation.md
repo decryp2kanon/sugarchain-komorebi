@@ -83,6 +83,8 @@ in `debug.log` as `Lazy PoW`: start/completion/interruption/errors are
 reported separately. Zero progress is always logged immediately; subsequent
 progress is logged at most once every 10 seconds, checked after each bounded DB
 batch using a monotonic clock. This also limits fast evidence-reuse logging.
+Progress includes a two-decimal percentage against the current estimated total;
+only the separate completion message establishes scan completion.
 SHA256d networks such as regtest do not run this worker.
 
 If actual historical Yespower validation fails, the node reports the height/hash

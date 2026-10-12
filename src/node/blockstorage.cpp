@@ -152,7 +152,7 @@ std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Par
     std::optional<uint256> last;
     LogInfo("Lazy PoW workers: %d, pause between computed DB batches: %u ms\n", workers, pause_ms);
     LogInfo("Lazy PoW started: %u entries\n", stats.total.load());
-    LogInfo("Lazy PoW: 0/%u checked, 0 verified, 0 reused\n", stats.total.load());
+    LogInfo("Lazy PoW: 0/%u (0%%) checked, 0 verified, 0 reused\n", stats.total.load());
     auto last_progress_log{std::chrono::steady_clock::now()};
     // Short-lived DB snapshots avoid pinning obsolete table files for hours.
     // Keys are block identities, not heights; forks are checked independently.
@@ -258,8 +258,10 @@ std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Par
         const auto now{std::chrono::steady_clock::now()};
         if (now - last_progress_log >= std::chrono::seconds{10}) {
             const auto processed{stats.processed.load()};
-            LogInfo("Lazy PoW: %u/%u checked, %u verified, %u reused\n",
-                processed, std::max(stats.total.load(), processed), stats.verified.load(), stats.reused.load());
+            const auto total{std::max(stats.total.load(), processed)};
+            const double percent{total ? 100.0 * static_cast<double>(processed) / static_cast<double>(total) : 0.0};
+            LogInfo("Lazy PoW: %u/%u (%.2f%%) checked, %u verified, %u reused\n",
+                processed, total, percent, stats.verified.load(), stats.reused.load());
             last_progress_log = now;
         }
         // Optional throttling is per DB batch, never per header or warm reuse.
