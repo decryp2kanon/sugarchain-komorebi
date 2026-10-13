@@ -104,9 +104,14 @@ public:
 /** Access to the block database (blocks/index/) */
 class BlockTreeDB : public CDBWrapper
 {
+    void PopulateBatch(CDBBatch& batch, const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo,
+        int nLastFile, const std::vector<const CBlockIndex*>& blockinfo, const Consensus::Params* consensus);
+
 public:
     using CDBWrapper::CDBWrapper;
     void WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, const std::vector<const CBlockIndex*>& blockinfo, const Consensus::Params* consensus = nullptr);
+    /** Consume a temporary pointer vector after serialization, before DB insertion. */
+    void WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, std::vector<const CBlockIndex*>&& blockinfo, const Consensus::Params* consensus = nullptr);
     bool HasYespowerEvidence(const CBlockHeader& header, const Consensus::Params& consensus) const;
     /** Bounded background DB scan; caller keeps this DB alive until joined. */
     std::optional<std::string> VerifyHistoricalPoW(const Consensus::Params& consensus,

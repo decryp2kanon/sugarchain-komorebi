@@ -1342,7 +1342,16 @@ BOOST_AUTO_TEST_CASE(historical_evidence_durable_reopen_and_reindex)
     util::SignalInterrupt stop;
     {
         kernel::BlockTreeDB db{DBParams{.path = path, .cache_bytes = 1 << 20}};
-        db.WriteBatchSync({}, 0, {&index});
+        const std::vector<const CBlockIndex*> borrowed{&index};
+        db.WriteBatchSync({}, 0, borrowed);
+        BOOST_CHECK_EQUAL(borrowed.size(), 1U); // Existing reference callers are unchanged.
+        std::vector<const CBlockIndex*> owned{&index};
+        db.WriteBatchSync({}, 0, std::move(owned));
+        BOOST_CHECK(owned.empty()); // Temporary storage is consumed before DB insertion.
+        CDiskBlockIndex saved;
+        BOOST_REQUIRE(db.Read(std::make_pair(uint8_t{'b'}, hash), saved));
+        BOOST_CHECK(saved.ConstructBlockHash() == hash);
+        BOOST_CHECK(!db.HasYespowerEvidence(header, params));
         kernel::HistoricalPoWStats first;
         BOOST_CHECK(!db.VerifyHistoricalPoW(params, stop, first, 0));
         BOOST_CHECK(db.HasYespowerEvidence(header, params));
