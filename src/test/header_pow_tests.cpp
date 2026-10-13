@@ -856,17 +856,21 @@ BOOST_AUTO_TEST_CASE(growing_cache_retains_verified_proofs_and_rejects_invalid_h
         CacheBudget budget{bytes};
         InitYespowerVerificationCache(bytes, /*grow_on_demand=*/true);
         {
+            const auto benchmark_start{std::chrono::steady_clock::now()};
             Observation observation;
             BOOST_REQUIRE(verifier.CheckEach(real_headers, params));
+            BOOST_TEST_MESSAGE("Cache cold budget=" << bytes << " seconds=" << std::chrono::duration<double>(std::chrono::steady_clock::now() - benchmark_start).count());
 #ifdef ENABLE_YESPOWER_TEST_WRAP
             BOOST_CHECK_EQUAL(calls.load(), real_headers.size());
 #endif
         }
         {
+            const auto benchmark_start{std::chrono::steady_clock::now()};
             Observation observation;
             // Delay re-use until the complete fixture filled the cache; a miss
             // must recompute a real proof instead of silently trusting it.
             BOOST_REQUIRE(verifier.CheckEach(real_headers, params));
+            BOOST_TEST_MESSAGE("Cache delayed budget=" << bytes << " seconds=" << std::chrono::duration<double>(std::chrono::steady_clock::now() - benchmark_start).count());
 #ifdef ENABLE_YESPOWER_TEST_WRAP
             BOOST_TEST_MESSAGE("Scaled cache budget=" << bytes << " second-pass real proofs=" << calls.load());
             if (bytes == (2 << 20)) BOOST_CHECK_EQUAL(calls.load(), 0U);

@@ -136,3 +136,41 @@ peak or OOM protection. It remains unadopted, with cross-platform, sanitizer
 and actual-IBD performance validation incomplete. Production code and the
 operating node were not changed in this comparison. Existing cache regression
 results are unchanged; they were not rerun for this documentation-only update.
+
+## Adopted paged storage for the growing proof cache
+
+The growing backend now constructs initialized proof objects in 4 KiB pages
+only when written. Unallocated pages read as zero, preserving the original
+empty-slot semantics. The generic cache defaults to contiguous storage; eager
+proof caches and other users retain that default. Slot counts, hashing, growth
+thresholds, eviction and configured entry budgets are unchanged. Existing
+cache locks protect page access. No platform-specific mapping or raw object
+lifetime management is used.
+
+In an isolated reproduction at a 2048 MiB budget, the approximately 864 MiB
+tier expansion increased RSS by 870.00 MiB with contiguous storage and
+8.25 MiB with paged storage (99.05% less immediate growth). Deliberate idle
+waits did not change those readings. With 6.5 million inputs, repeated median
+peak RSS decreased from 1311.38 to 851.50 MiB (35.07%). With 12 million and
+44.9 million inputs, pages filled and final RSS increased by approximately
+7–8 MiB (0.55–0.58%) due to storage metadata/allocation overhead. This defers
+physical allocation; it is not a permanent 870 MiB whole-node saving.
+
+Sampled misses matched the baseline at all three input counts. Synthetic
+insertion time increased approximately 6.4% and 8.8% at the first two counts;
+the last count did not show an increase. Concurrent operating IBD introduces
+host-load uncertainty. Repeated 6,000-header production verification runs
+showed no consistent cold regression; median warm reuse at a scaled 2 MiB
+budget increased from 3.147 to 3.332 ms. These measurements do not establish
+full-IBD speedup or OOM avoidance.
+
+The existing header-PoW and CuckooCache suites passed 36 cases and 189,069
+assertions. GUI/daemon builds and the existing fast-startup functional test
+passed. An isolated paged-storage component passed ASan/UBSan and leak checks;
+this is not a full production sanitizer run. TSan and Windows/macOS builds
+were not rerun. The operating process and database were not restarted or
+modified. Larger index/replay and database-write memory peaks remain separate.
+
+This memory-management change is temporarily carried alongside Lazy PoW in
+PR #11. Before merging, split Lazy PoW and memory/CPU management into two
+separate PRs, retaining this change as an independent commit.
