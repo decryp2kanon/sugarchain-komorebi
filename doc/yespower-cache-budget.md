@@ -93,3 +93,46 @@ The confirmed evidence and regression coverage are retained. Select a lower
 budget only after deciding the acceptable recomputation cost, or investigate
 initialization/page-fault behavior separately. The ongoing operating IBD and
 its recorded baseline must not be interrupted for this experiment.
+
+## Intermediate budgets and the approximately 288 MiB expansion
+
+A separate isolated reproduction with the same component implementation
+allocated a 301,694,976-byte new tier. Helper RSS rose from 151.75 to
+441.50 MiB and remained there during deliberate 10- and 60-second idle waits.
+Those waits are not a real-IBD interval or throughput measurement.
+
+Intermediate budgets were run twice each in forward/reverse order. The
+44.9-million-input runs extend beyond the point where growth becomes disabled.
+The existing formula can stop growth before consuming the nominal entire
+entry budget; configured budget, actual allocation and whole-node RSS differ.
+
+| Entries inserted | Budget (MiB) | Helper RSS (MiB) | Sampled misses |
+|---:|---:|---:|---:|
+| 2,200,000 | 512 | 332.00 | 0.00% |
+| 2,200,000 | 1024 | 223.75 | 0.00% |
+| 2,200,000 | 2048 | 441.62 | 0.00% |
+| 6,000,000 | 512 | 332.00 | 0.00% |
+| 6,000,000 | 1024 | 658.50 | 0.00% |
+| 6,000,000 | 2048 | 441.62 | 0.00% |
+| 12,000,000 | 512 | 332.00 | 29.02% |
+| 12,000,000 | 1024 | 658.38 | 0.00% |
+| 12,000,000 | 2048 | 1311.12 | 0.00% |
+| 44,900,000 | 512 | 332.00 | 80.71% |
+| 44,900,000 | 1024 | 658.50 | 61.43% |
+| 44,900,000 | 2048 | 1311.25 | 24.02% |
+
+The 1024 MiB budget used less memory at 2.2 million inputs but more than the
+2048 MiB baseline at six million, due to different growth boundaries. The
+512 MiB budget retained the sampled keys at six million but lost about 81%
+at 44.9 million. These synthetic percentages are not mainnet cache miss
+rates or measured Yespower recomputation costs. No default/operating option
+change or full-IBD performance claim follows from them.
+
+The private Linux page prototype was also exercised at this larger expansion.
+It reduced RSS to about 154 MiB after discarding fresh zero-filled pages, but
+peak RSS was already about 441 MiB during initialization. At 2.2 million
+inputs its RSS grew to about 344 MiB. Thus it did not demonstrate a lower
+peak or OOM protection. It remains unadopted, with cross-platform, sanitizer
+and actual-IBD performance validation incomplete. Production code and the
+operating node were not changed in this comparison. Existing cache regression
+results are unchanged; they were not rerun for this documentation-only update.
