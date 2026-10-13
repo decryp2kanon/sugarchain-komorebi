@@ -247,7 +247,7 @@ BOOST_FIXTURE_TEST_CASE(blockmanager_loadblockindex_preserves_unpersisted_header
 
     // Exercise the same unpersisted-header boundary at production scale. Seed
     // valid regtest ancestors directly to avoid running the O(N) consistency
-    // scan after each of 262k headers; the boundary submissions below use the
+    // scan after each seeded header; the boundary submissions below use the
     // real validation/flush path with consistency checks enabled.
     const auto& consensus{chainman.GetConsensus()};
     CBlockHeader header{block};

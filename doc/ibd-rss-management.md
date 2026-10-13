@@ -37,7 +37,7 @@ flushes, so headers-first replay could accumulate millions of dirty entries
 before the first full block. Pooling those entries and releasing the temporary
 pointer vector helped, but left the large serialized batch and memtable.
 
-After an accepted header, check whether at least 262,144 unique index entries
+After an accepted header, check whether at least 32,768 unique index entries
 are dirty. If the active chainstate can flush, call its existing
 `FlushStateToDisk(FORCE_SYNC)` path. Checking inside the loop also covers
 large internal header submissions. Duplicate submissions do not increase
@@ -51,8 +51,9 @@ WAL mechanism, or evidence format is introduced. All operations remain under
 of the same atomic index write. Failures use the existing fatal flush path.
 Coins cache entries are synced rather than forcibly evicted. The trigger is
 shared by both fast-startup modes; it does not change which historical
-proofs must be recomputed. For the synthetic record shape below, a full
-threshold batch occupies approximately 48.75 MiB. Other record shapes and
+proofs must be recomputed. For the earlier synthetic record shape below, a full
+32,768-entry threshold batch occupies approximately 6.09 MiB (the original
+262,144-entry threshold used approximately 48.75 MiB). Other record shapes and
 file metadata can change that value.
 
 This threshold schedules persistence; it is not a byte budget. It applies
@@ -71,19 +72,22 @@ production validation path. Debug index-consistency checks remain enabled
 for those submissions. It checks a duplicate and invalid PoW below the
 threshold, parent/hash persistence at the boundary, unchanged coins best
 block, absence of false Yespower evidence, and the next still-dirty header.
-The direct seeding avoids an O(N) debug scan after each of 262k ancestors;
+The direct seeding avoids an O(N) debug scan after each seeded ancestor;
 it is not a replacement for the actual P2P test.
 
-The existing fast-startup functional test now sends 262,145 solved regtest
-headers over P2P, then forcibly terminates only its private test node. On
-restart, exactly the completed 262,144-header prefix survives, the one
-unpersisted suffix does not, and blocks, best block, chainwork and verifychain
-remain correct. This large functional fixture disables only the debug
+The existing fast-startup functional test now sends 32,769 solved regtest
+headers over P2P in each startup mode, then forcibly terminates only its
+private test node. On restart, exactly the completed 32,768-header prefix
+survives, the one unpersisted suffix does not, and blocks, best block, chainwork
+and verifychain remain correct. The second mode extends the first durable
+header tip with fresh headers, so it exercises another real write boundary
+rather than resubmitting already-persisted duplicates. This functional fixture
+disables only the debug
 index-consistency scan, not header validation. Its existing startup-mode
 switch and missing-file checks remain in place. A process kill after a
 completed write is not a power-loss or mid-fsync fault-injection test.
 
-## Measurement method and limits
+## Earlier component measurement method and limits
 
 The isolated helper uses production FastBlockMap, CBlockIndex, node pools
 and LevelDB with a 4 MiB write buffer and zero block-cache capacity. It uses
@@ -114,7 +118,10 @@ These changes are independent memory/CPU management work temporarily carried
 in PR #11. Split that work from Lazy PoW/persistent evidence into separate
 PRs before merging. The operating node and data remain untouched.
 
-## Repeated component results
+## Earlier 262,144-entry component results
+
+These measurements describe the preceding threshold, not the current 32,768
+setting. The follow-up below measures the additional change independently.
 
 Two repetitions per variant and count, median unsanitized values. Baseline
 includes the preceding dirty-node pooling and early pointer-array release.
@@ -146,7 +153,7 @@ The remaining resident map/indexes and ongoing DB work are not removed.
 More sync calls may have a different timing cost on another disk. No
 full-IBD wall-time improvement or new mainnet peak is established.
 
-## Validation results
+## Earlier validation results
 
 GUI and daemon builds passed. The selected normal cache, header-PoW,
 block-manager, DB-wrapper, chainstate-write and flush suites passed 65 cases
@@ -166,3 +173,92 @@ No mainnet replay, production restart, TSan, Windows/macOS build, mid-write
 fault injection or simulated power failure was performed. Consequently the
 original 22.691 GiB peak and total IBD duration still require a new full-run
 measurement; passing these tests is not a claim that all RAM pressure is gone.
+
+## Follow-up: 32,768-entry persistence threshold
+
+The follow-up keeps all four proof-cache improvements and changes only the
+header-accumulation threshold from 262,144 to 32,768. This makes the same
+ordered, atomic persistence path run sooner; it does not reduce PoW checks,
+shrink the configured proof cache, remove CBlockIndex fields, or replace the
+standard map. The measured CBlockIndex is 152 bytes on this x86-64 build. Its
+retained members require 145 bytes before 8-byte alignment, so simple member
+reordering cannot reduce that size.
+
+Candidate screening compared 262,144 / 65,536 / 32,768 / 16,384 / 8,192.
+At four million inputs, the 16,384 candidate's whole-helper peak was another
+55.48 MiB below 32,768, but ingest/flush took 64.23 versus 32.83 seconds; its
+write-phase peak was not lower in that pass. The 8,192 candidate made 489
+sync writes and took 74.30 seconds. Select 32,768 to retain substantial peak
+reduction without the smaller candidates' additional write cost. This is a
+measured compromise, not a universal optimum for all hardware.
+
+### Comparison using the actual DB wrapper
+
+The final helper uses the production CDBWrapper and CDiskBlockIndex
+serializer, the production map and pools, a 2 MiB block-tree DB cache budget,
+and the Linux inactive-read-cache reclamation policy. Consequently its write
+buffer is 512 KiB, with the normal uncompressed 32 MiB target table size and
+Bloom filter. It retains the entire map throughout each process and reopens
+the DB to check every key, serialized index field, synthetic value and count.
+It holds cs_main while accessing indexes. The paired `y`-shaped records use
+**version zero**, never valid proof evidence; no benchmark data is sent to a
+node. Keys and headers are synthetic, so this is a persistence-memory
+experiment, not mainnet validation. File metadata, real proof hashing,
+network activity and UTXO syncing are not reproduced here.
+
+Each input/threshold pair runs twice in forward/reverse order. Values below
+are medians. Baseline already includes the 262,144 limit, pooled dirty nodes,
+and early pointer-vector release. These results use a different DB policy
+from the earlier raw-LevelDB helper; do not combine their percentages.
+
+| Inputs | Write peak before → after (MiB) | Reduction | Whole helper peak before → after (MiB) | Reduction | Ingest/flush before → after (s) | Sync writes before → after |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1,000,000 | 428.168 → 285.268 | 33.37% | 451.275 → 379.818 | 15.83% | 4.784 → 4.263 | 4 → 31 |
+| 4,000,000 | 1124.744 → 869.061 | 22.73% | 1365.139 → 984.389 | 27.89% | 17.965 → 34.277 | 16 → 123 |
+| 12,000,000 | 3029.959 → 2411.209 | 20.42% | 3029.959 → 2473.568 | 18.36% | 61.830 → 153.349 | 46 → 367 |
+
+At 12 million inputs, the largest serialized batch falls from 48.500 to
+6.063 MiB (87.50%), while synchronous writes rise from 46 to 367. Ingest/flush
+increases by 91.518 seconds (148.02%) in this component experiment. This is
+not a measured whole-IBD slowdown. The remaining resident indexes dominate
+the reduced peak. Earlier one-million-input screening peaks varied from the
+repeated results because of allocator/compaction timing; no single screening
+run is presented as the final measurement.
+
+### Actual private-node comparison
+
+An isolated regtest node accepts one million solved headers over P2P in
+2,000-header messages, with `-fast-startup=0`, `-checkblockindex=0` (debug
+consistency scan only), and `-dbcache=16`. The block-tree DB still has its
+normal 2 MiB budget. Compare copied pre-change and rebuilt daemons in
+baseline/candidate/candidate/baseline order. Both the operating mainnet node
+and its data remain untouched. Each test node then shuts down gracefully and
+restarts; header count, active best block and verifychain are checked.
+
+| Metric, median of two runs | 262,144 | 32,768 | Reduction |
+|---|---:|---:|---:|
+| Peak RSS through header acceptance | 370.289 MiB | 295.082 MiB | 20.31% |
+| RSS at end of header acceptance | 304.055 MiB | 266.203 MiB | 12.45% |
+| Peak RSS during restarted process | 353.223 MiB | 311.232 MiB | 11.89% |
+| Higher peak across acceptance/restarted processes | 370.289 MiB | 311.232 MiB | 15.95% |
+| P2P fixture elapsed time through header acceptance | 40.850 s | 39.883 s | Within observed variation |
+
+Baseline elapsed times were 37.667/44.033 seconds; candidate times were
+39.396/40.370 seconds. Treat them as similar in this experiment, not proof
+of speedup. Regtest uses SHA256d and does not reproduce mainnet Yespower or
+genuine persistent evidence writes. Builds, other checks and operating IBD
+shared the host during the measurements. Mainnet IBD peak and total time
+remain unmeasured for the new binary; no percentage above can be applied
+directly to the original 22.691 GiB observation.
+
+### Follow-up validation
+
+Normal GUI/daemon builds and the selected 65 unit cases passed all 951,095
+assertions. ASan/UBSan with leak detection and halt-on-error passed the same
+cases/assertions. The expanded fast-startup functional test passed fresh
+write-boundary crash/restart sequences in both modes, including the lost
+unpersisted suffix and unchanged active chainstate. All four private-node
+benchmark runs passed restart/verifychain; all 12 final helper runs passed
+full record checks. The complete 813-case suite, TSan, Windows/macOS and
+power-loss/mid-write fault injection were not run. No operating node was
+restarted, and no full mainnet IBD result is claimed.

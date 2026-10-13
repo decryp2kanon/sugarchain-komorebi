@@ -398,7 +398,9 @@ public:
 
     // Bound dirty-header accumulation before the first block arrives. This is
     // a scheduling threshold, not a limit on resident indexes or batch bytes.
-    static constexpr size_t MAX_DIRTY_BLOCK_INDEX{262144};
+    // Keep the atomic batch small as LevelDB may temporarily exceed its write
+    // buffer budget while inserting an entire batch into the memtable.
+    static constexpr size_t MAX_DIRTY_BLOCK_INDEX{32768};
     bool BlockIndexWriteDue() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main)
     {
         AssertLockHeld(::cs_main);
