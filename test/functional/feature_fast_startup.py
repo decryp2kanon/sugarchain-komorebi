@@ -5,6 +5,11 @@
 
 Real Yespower eligibility and failure cases are covered by header_pow_tests.
 Here regtest covers mode switching, progress, chainstate and file-presence checks.
+It also exercises headers-only persistence through the actual P2P validation
+path in both startup modes: a completed storage boundary must survive a private
+node crash, while its next unpersisted header must not. This verifies persistence
+and chainstate behavior with regtest SHA256d; it does not benchmark mainnet IBD,
+exercise genuine Yespower evidence, or simulate a power failure during a write.
 """
 
 from test_framework.test_framework import BitcoinTestFramework
@@ -85,17 +90,28 @@ class FastStartupTest(BitcoinTestFramework):
                 assert_equal(actual[key], updated[key])
             assert node.verifychain(3, 20)
 
-        # Headers-only persistence must not wait for the first full block.
-        # Exercise the production threshold, then crash ONLY this test's node:
-        # the completed atomic prefix survives, the next dirty header does not,
-        # and the active chain/UTXO state remains unchanged. Disable the O(N)
-        # debug index scan for this large P2P fixture, not header validation.
+        # Regression: headers-first replay used to accumulate dirty indexes until
+        # full-block processing triggered persistence. Exercise the count-triggered
+        # FlushStateToDisk path with a flushable active chainstate in BOTH modes.
+        # Send one full persistence interval plus one extra header, then kill ONLY
+        # this private test node without a graceful shutdown that would save the
+        # extra header. After restart, require exactly the completed prefix, with
+        # the active block tip, chainwork and verifychain result preserved.
+        # This kills the process after the boundary write has completed; it does
+        # not inject a failure in the middle of an atomic write or test power loss.
+        # Disable the O(N) debug index scan for this large P2P fixture, not header
+        # validation, so checking every new header does not make the test O(N^2).
         header_tip = None
         for mode in ["0", "1"]:
             self.restart_node(0, [f"-fast-startup={mode}", "-checkblockindex=0"])
             before = node.getblockchaininfo()
             tip = node.getblockheader(header_tip or before["bestblockhash"])
+            # Match BlockManager.MAX_DIRTY_BLOCK_INDEX, reduced from 262144 to
+            # 32768. Test the real storage boundary rather than a test-only limit.
+            # Keep this fixture aligned when changing the production threshold;
+            # its benchmark rationale is in doc/ibd-rss-management.md.
             threshold = 32_768
+            # Give the entire generated header chain valid non-future timestamps.
             node.setmocktime(tip["time"] + threshold + 100)
             peer = node.add_p2p_connection(P2PInterface())
             previous = int(tip["hash"], 16)
@@ -110,6 +126,10 @@ class FastStartupTest(BitcoinTestFramework):
                 batch.append(CBlockHeader(header))
                 if i == threshold - 1:
                     persisted_hash = header.hash_hex
+                # Respect the 2000-header P2P message limit and finish separate
+                # messages exactly at the durable boundary and its dirty suffix.
+                # The ping ensures the node has handled each preceding message
+                # before the test proceeds to the process kill below.
                 if len(batch) == 2000 or i in (threshold - 1, threshold):
                     peer.send_and_ping(msg_headers(batch))
                     batch = []
@@ -119,11 +139,17 @@ class FastStartupTest(BitcoinTestFramework):
             node.kill_process()
             self.start_node(0, [f"-fast-startup={mode}", "-checkblockindex=0"])
             after = node.getblockchaininfo()
+            # The suffix was accepted in memory before the crash, but only the
+            # threshold-sized prefix was durable. Also check the surviving tip's
+            # identity, not just its height, alongside the unchanged active chain.
             assert_equal(after["headers"], tip["height"] + threshold)
             for key in ["blocks", "bestblockhash", "chainwork"]:
                 assert_equal(after[key], before[key])
             assert_equal(node.getblockheader(persisted_hash)["height"], after["headers"])
             assert node.verifychain(3, 20)
+            # Extend this durable tip in the next mode with fresh headers.
+            # Replaying the same headers would only exercise duplicate handling
+            # and could pass without triggering another real persistence boundary.
             header_tip = persisted_hash
 
 
