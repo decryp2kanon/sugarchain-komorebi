@@ -174,3 +174,46 @@ modified. Larger index/replay and database-write memory peaks remain separate.
 This memory-management change is temporarily carried alongside Lazy PoW in
 PR #11. Before merging, split Lazy PoW and memory/CPU management into two
 separate PRs, retaining this change as an independent commit.
+
+## Unified check of all four growth steps
+
+The adopted 4 KiB storage applies to every growing-cache tier, not only the
+last approximately 864 MiB expansion. A repeated isolated comparison of all
+four expansions used the same 2048 MiB budget, slots, hashes, input and
+thresholds. The following are median immediate RSS increases, not whole-node
+savings or cumulative peak reductions. The reference elapsed times identify
+the original observed IBD events; they are not predicted post-change times.
+
+| Original event | Contiguous increase (MiB) | Current 4 KiB increase (MiB) | Less immediate growth |
+|---|---:|---:|---:|
+| 2 m 51 s | 32.25 | 0.25 | 99.22% |
+| 8 m 13 s | 96.75 | 1.00 | 98.97% |
+| 23 m 47–52 s | 289.875 | 2.75 | 99.05% |
+| 70 m 58 s | 869.75 | 8.375 | 99.04% |
+
+A 1 KiB-page candidate was also compared. Its immediate increases were
+0.5, 1.5, 4.5 and 13.375 MiB: larger pointer directories increase the growth
+burst. At 6.5 million inputs it retained the same sampled results while using
+less physical memory than 4 KiB pages, but its filled-cache overhead and
+insertion cost increased. It was not adopted. The existing 4 KiB implementation
+remains unchanged; this comparison does not introduce a smaller cache budget,
+a new growth formula, or changes to genuine PoW checking and disk evidence.
+
+The full prefix comparison below reports median helper RSS (MiB), two runs
+per variant and input count, in forward/reverse order.
+
+| Inputs | Contiguous | Current 4 KiB | Unadopted 1 KiB |
+|---:|---:|---:|---:|
+| 6,500,000 | 1311.375 | 851.375 | 590.375 |
+| 12,000,000 | 1311.500 | 1318.625 | 1340.750 |
+| 44,900,000 | 1311.500 | 1318.625 | 1341.375 |
+
+Median synthetic insertion times (seconds), same order: 6,500,000: 4.988/5.383/5.503; 12,000,000: 10.147/11.421/12.302; 44,900,000: 42.408/46.998/51.328.
+The current paged implementation was slower than contiguous storage in
+these repetitions; earlier timing differences were host-load sensitive. Do
+not treat this memory improvement as a speedup. The 1 KiB variant increased
+filled-cache memory and insertion cost relative to current storage, and has
+no production adoption or production sanitizer claim. Sampled misses were
+identical across all variants: zero at 6.5/12 million inputs and 111,192 of
+462,887 at 44.9 million. Code was unchanged in this unified follow-up, so the
+previous production build/regression results were not unnecessarily rerun.
