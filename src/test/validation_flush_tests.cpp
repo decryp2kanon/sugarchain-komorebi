@@ -2,6 +2,9 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <chainparams.h>
+#include <node/blockstorage.h>
+#include <pow.h>
 #include <sync.h>
 #include <test/util/coins.h>
 #include <test/util/random.h>
@@ -11,7 +14,11 @@
 
 #include <boost/test/unit_test.hpp>
 
-BOOST_FIXTURE_TEST_SUITE(validation_flush_tests, TestingSetup)
+struct FlushTestingSetup : TestingSetup {
+    FlushTestingSetup() : TestingSetup{ChainType::REGTEST, {.extra_args = {"-maxmempool=0"}}} {}
+};
+
+BOOST_FIXTURE_TEST_SUITE(validation_flush_tests, FlushTestingSetup)
 
 //! Verify that Chainstate::GetCoinsCacheSizeState() switches from OK→LARGE→CRITICAL
 //! at the expected utilization thresholds, first with *no* mempool head-room,
@@ -63,6 +70,37 @@ BOOST_AUTO_TEST_CASE(getcoinscachesizestate)
     view.SetBestBlock(m_rng.rand256());
     view.Flush();
     BOOST_CHECK_EQUAL(chainstate.GetCoinsCacheSizeState(MAX_COINS_BYTES, /*max_mempool_size_bytes=*/0), CoinsCacheSizeState::OK);
+
+    // Exercise the real PERIODIC decision with both LARGE coins and a due block
+    // index write. Index pressure must not suppress coin-cache eviction.
+    SetMockTime(GetTime());
+    view.SetBestBlock(chainstate.m_chain.Tip()->GetBlockHash());
+    BOOST_REQUIRE(chainstate.ResizeCoinsCaches(MAX_COINS_BYTES, chainstate.m_coinsdb_cache_size_bytes));
+    for (size_t i{0}; i < MAX_ATTEMPTS && chainstate.GetCoinsCacheSizeState() == CoinsCacheSizeState::OK; ++i) {
+        AddTestCoin(m_rng, view);
+    }
+    BOOST_REQUIRE(chainstate.GetCoinsCacheSizeState() == CoinsCacheSizeState::LARGE);
+    BOOST_REQUIRE_GT(view.GetCacheSize(), 0U);
+
+    // Bypass header acceptance's own flushing hook while retaining genuine
+    // regtest proof of work, so only FlushStateToDisk makes this decision.
+    auto& chainman{*m_node.chainman};
+    auto& blockman{chainman.m_blockman};
+    CBlockHeader header{chainman.GetParams().GenesisBlock()};
+    header.hashPrevBlock = chainstate.m_chain.Genesis()->GetBlockHash();
+    ++header.nTime;
+    for (size_t i{0}; i < node::BlockManager::MAX_DIRTY_BLOCK_INDEX; ++i) {
+        do { ++header.nNonce; } while (!CheckBlockProofOfWork(header, chainman.GetConsensus()));
+        blockman.AddToBlockIndex(header, chainman.m_best_header);
+    }
+    BOOST_REQUIRE(blockman.BlockIndexWriteDue());
+
+    BlockValidationState state;
+    BOOST_REQUIRE(chainstate.FlushStateToDisk(state, FlushStateMode::PERIODIC));
+    BOOST_CHECK(!blockman.BlockIndexWriteDue());
+    BOOST_CHECK_EQUAL(view.GetCacheSize(), 0U);
+    BOOST_CHECK_EQUAL(view.GetDirtyCount(), 0U);
+    BOOST_CHECK(chainstate.GetCoinsCacheSizeState() == CoinsCacheSizeState::OK);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
