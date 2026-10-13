@@ -226,7 +226,7 @@ std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Par
         }
         // Finish this bounded batch even if shutdown arrived while classifying.
         // The queue joins its tasks before returning; committed successes survive.
-        const bool batch_valid{missing.empty() || verifier.CheckEach(missing, consensus)};
+        const bool batch_valid{missing.empty() || verifier.CheckEach(missing, consensus, /*cache_result=*/false)};
         CDBBatch batch{*this};
         bool dirty{false};
         for (size_t i{0}; i < headers.size(); ++i) {
@@ -237,7 +237,7 @@ std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Par
             } else {
                 // A failed queue batch is not evidence for every member. Locate
                 // its failure individually; cache hits are genuine prior checks.
-                if (!live[i] && !batch_valid && !CheckBlockProofOfWork(header, consensus)) {
+                if (!live[i] && !batch_valid && !CheckBlockProofOfWork(header, consensus, /*cache_result=*/false)) {
                     if (dirty) WriteBatch(batch, true);
                     stats.state = HistoricalPoWStats::FAILED;
                     return strprintf("Lazy PoW failed at height %d, hash %s. Shutting down. Back up data and recover with -fast-startup=0 -reindex. Reindexing cannot repair invalid PoW or damaged block files.", disk.nHeight, hash.ToString());

@@ -489,8 +489,29 @@ BOOST_AUTO_TEST_CASE(startup_checks_each_header_with_configured_workers)
             BOOST_CHECK_EQUAL(calls.load(), 0U); // Every check still consults verified process-local evidence.
 #endif
         }
+        // Lazy-style scans must really verify cold headers without retaining
+        // millions of old proofs in the foreground RAM cache.
+        InitYespowerVerificationCache(1 << 20);
+        for (int repeat = 0; repeat < 2; ++repeat) {
+            Observation observation;
+            BOOST_REQUIRE(verifier.CheckEach(headers, params, /*cache_result=*/false));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+            BOOST_CHECK_EQUAL(calls.load(), headers.size());
+            BOOST_CHECK_LE(peak.load(), static_cast<unsigned>(workers));
+#endif
+        }
         auto invalid{headers};
         Invalidate(invalid[12]);
+        BOOST_CHECK(!verifier.CheckEach(invalid, params, /*cache_result=*/false));
+        // Normal foreground checks still populate and reuse the cache.
+        BOOST_REQUIRE(verifier.CheckEach(headers, params));
+        {
+            Observation observation;
+            BOOST_REQUIRE(verifier.CheckEach(headers, params, /*cache_result=*/false));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+            BOOST_CHECK_EQUAL(calls.load(), 0U);
+#endif
+        }
         BOOST_CHECK(!verifier.CheckEach(invalid, params));
     }
 }

@@ -25,6 +25,8 @@ trust into proof and does not change validation of new network or imported heade
   does not sleep. Removing the old default eliminates about 5.2 days of deliberate
   per-header waits for a cold 44.9-million-header migration, not the actual work.
 
+Background checks may reuse genuine process-local cache hits, but do not insert newly verified historical headers into the foreground RAM cache. Their successful results are persisted as disk evidence instead. This avoids growing the foreground cache solely because the background scan traverses millions of old headers; ordinary startup and live-header caching remain unchanged. Other allocations and DB activity can still increase RSS.
+
 The worker starts after `Done loading`. Migration does not synchronously verify all
 historical headers before readiness. Full-mainnet startup time and steady-state
 resource interference must still be measured; a small fixture cannot establish

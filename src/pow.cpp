@@ -211,13 +211,14 @@ YespowerVerificationCache& VerificationCache()
 struct HeaderPoWCheck {
     const CBlockHeader* header;
     const Consensus::Params* params;
+    bool cache_result{true};
 
     // Preserve allocation/computation errors on the calling thread; do not
     // turn a local resource failure into an invalid-header/peer penalty.
     std::optional<std::exception_ptr> operator()() const
     {
         try {
-            if (CheckBlockProofOfWork(*header, *params)) return std::nullopt;
+            if (CheckBlockProofOfWork(*header, *params, cache_result)) return std::nullopt;
             return std::exception_ptr{};
         } catch (...) {
             return std::current_exception();
@@ -438,7 +439,7 @@ uint256 GetYespowerEvidenceDigest(const CBlockHeader& header, const Consensus::P
     return (HashWriter{} << GetYespowerEvidenceRulesHash(params) << header).GetHash();
 }
 
-bool CheckBlockProofOfWork(const CBlockHeader& header, const Consensus::Params& params)
+bool CheckBlockProofOfWork(const CBlockHeader& header, const Consensus::Params& params, bool cache_result)
 {
     if (!DeriveTarget(header.nBits, params.powLimit)) return false;
     if (!params.fYespowerSugar || EnableFuzzDeterminism()) {
@@ -448,7 +449,7 @@ bool CheckBlockProofOfWork(const CBlockHeader& header, const Consensus::Params& 
     const auto entry{cache.Entry(header)};
     if (cache.Contains(entry)) return true;
     if (!CheckProofOfWork(header.GetPoWHash(), header.nBits, params)) return false;
-    cache.Insert(entry);
+    if (cache_result) cache.Insert(entry);
     return true;
 }
 
@@ -487,14 +488,14 @@ HeaderPoWVerifier::HeaderPoWVerifier(int workers)
     : m_impl{workers > 1 ? std::make_unique<Impl>(workers) : nullptr} {}
 HeaderPoWVerifier::~HeaderPoWVerifier() = default;
 
-bool HeaderPoWVerifier::CheckEach(std::span<const CBlockHeader> headers, const Consensus::Params& params)
+bool HeaderPoWVerifier::CheckEach(std::span<const CBlockHeader> headers, const Consensus::Params& params, bool cache_result)
 {
     // Startup sends every stored header through CheckBlockProofOfWork, which
     // may hit the process-local cache. Unlike Check(), it never uses message
     // batch evidence to skip individual calls; Check() also admits its first
     // header separately and has a warm-cache fast path.
     if (!m_impl || !params.fYespowerSugar || EnableFuzzDeterminism()) {
-        return std::ranges::all_of(headers, [&](const auto& header) { return CheckBlockProofOfWork(header, params); });
+        return std::ranges::all_of(headers, [&](const auto& header) { return CheckBlockProofOfWork(header, params, cache_result); });
     }
     std::unique_lock call_lock{m_impl->caller_mutex};
     // Keep workers fed across variable proof durations, with bounded queue
@@ -504,7 +505,7 @@ bool HeaderPoWVerifier::CheckEach(std::span<const CBlockHeader> headers, const C
         std::vector<HeaderPoWCheck> batch;
         batch.reserve(std::min(headers.size(), queue_batch_size));
         while (!headers.empty() && batch.size() < queue_batch_size) {
-            batch.push_back({&headers.front(), &params});
+            batch.push_back({&headers.front(), &params, cache_result});
             headers = headers.subspan(1);
         }
         if (!m_impl->RunBatch(std::move(batch))) return false;
