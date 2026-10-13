@@ -396,6 +396,15 @@ public:
 
     std::unique_ptr<BlockTreeDB> m_block_tree_db GUARDED_BY(::cs_main);
 
+    // Bound dirty-header accumulation before the first block arrives. This is
+    // a scheduling threshold, not a limit on resident indexes or batch bytes.
+    static constexpr size_t MAX_DIRTY_BLOCK_INDEX{262144};
+    bool BlockIndexWriteDue() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main)
+    {
+        AssertLockHeld(::cs_main);
+        return m_dirty_blockindex.size() >= MAX_DIRTY_BLOCK_INDEX;
+    }
+
     void WriteBlockIndexDB() EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
     /** On success, optionally return all indexes in height order for this load. */
     bool LoadBlockIndexDB(const std::optional<uint256>& snapshot_blockhash, std::vector<CBlockIndex*>* sorted_indices = nullptr)

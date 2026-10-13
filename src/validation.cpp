@@ -4325,6 +4325,14 @@ bool ChainstateManager::ProcessNewBlockHeaders(std::span<const CBlockHeader> hea
             if (ppindex) {
                 *ppindex = pindex;
             }
+            // Headers-first replay can accumulate millions of dirty indexes
+            // without processing a block (and hence without a periodic flush).
+            // Use the existing ordered, atomic persistence path before its
+            // dirty set, serialized batch and memtable become replay-sized.
+            // Check within the loop to also bound large internal submissions.
+            if (m_blockman.BlockIndexWriteDue() && ActiveChainstate().CanFlushToDisk()) {
+                if (!ActiveChainstate().FlushStateToDisk(state, FlushStateMode::FORCE_SYNC)) return false;
+            }
         }
     }
     if (NotifyHeaderTip()) {

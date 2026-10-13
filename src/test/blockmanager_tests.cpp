@@ -5,6 +5,7 @@
 #include <chain.h>
 #include <chainparams.h>
 #include <clientversion.h>
+#include <consensus/validation.h>
 #include <node/blockstorage.h>
 #include <node/context.h>
 #include <node/kernel_notifications.h>
@@ -225,22 +226,85 @@ BOOST_FIXTURE_TEST_CASE(blockmanager_loadblockindex_preserves_unpersisted_header
     auto& chainman{*Assert(m_node.chainman)};
     auto& blockman{chainman.m_blockman};
     CBlock block{CreateBlock({}, GetScriptForRawPubKey(coinbaseKey.GetPubKey()), chainman.ActiveChainstate())};
-    LOCK(::cs_main);
-    blockman.WriteBlockIndexDB();
-    block.nNonce = 0;
-    while (!CheckProofOfWork(block.GetHash(), block.nBits, chainman.GetConsensus())) ++block.nNonce;
-    CBlockIndex* ignored_best{nullptr};
-    auto* unpersisted{blockman.AddToBlockIndex(block, ignored_best)};
-    for (int reload = 0; reload < 2; ++reload) {
-        std::vector<CBlockIndex*> ordered;
-        BOOST_REQUIRE(blockman.LoadBlockIndexDB(std::nullopt, &ordered));
-        const std::set<CBlockIndex*> unique{ordered.begin(), ordered.end()};
-        BOOST_CHECK_EQUAL(ordered.size(), blockman.m_block_index.size());
-        BOOST_CHECK_EQUAL(unique.size(), ordered.size());
-        BOOST_CHECK_EQUAL(unique.count(unpersisted), 1U);
-        for (auto& [hash, index] : blockman.m_block_index) BOOST_CHECK_EQUAL(unique.count(&index), 1U);
-        BOOST_CHECK(std::is_sorted(ordered.begin(), ordered.end(), node::CBlockIndexHeightOnlyComparator()));
+    {
+        LOCK(::cs_main);
+        blockman.WriteBlockIndexDB();
+        block.nNonce = 0;
+        while (!CheckProofOfWork(block.GetHash(), block.nBits, chainman.GetConsensus())) ++block.nNonce;
+        CBlockIndex* ignored_best{nullptr};
+        auto* unpersisted{blockman.AddToBlockIndex(block, ignored_best)};
+        for (int reload = 0; reload < 2; ++reload) {
+            std::vector<CBlockIndex*> ordered;
+            BOOST_REQUIRE(blockman.LoadBlockIndexDB(std::nullopt, &ordered));
+            const std::set<CBlockIndex*> unique{ordered.begin(), ordered.end()};
+            BOOST_CHECK_EQUAL(ordered.size(), blockman.m_block_index.size());
+            BOOST_CHECK_EQUAL(unique.size(), ordered.size());
+            BOOST_CHECK_EQUAL(unique.count(unpersisted), 1U);
+            for (auto& [hash, index] : blockman.m_block_index) BOOST_CHECK_EQUAL(unique.count(&index), 1U);
+            BOOST_CHECK(std::is_sorted(ordered.begin(), ordered.end(), node::CBlockIndexHeightOnlyComparator()));
+        }
     }
+
+    // Exercise the same unpersisted-header boundary at production scale. Seed
+    // valid regtest ancestors directly to avoid running the O(N) consistency
+    // scan after each of 262k headers; the boundary submissions below use the
+    // real validation/flush path with consistency checks enabled.
+    const auto& consensus{chainman.GetConsensus()};
+    CBlockHeader header{block};
+    auto next_header = [&] {
+        header.hashPrevBlock = header.GetHash();
+        ++header.nTime;
+        header.nNonce = 0;
+        while (!CheckProofOfWork(header.GetHash(), header.nBits, consensus)) ++header.nNonce;
+    };
+    {
+        LOCK(cs_main);
+        for (size_t i{1}; i < BlockManager::MAX_DIRTY_BLOCK_INDEX - 1; ++i) {
+            next_header();
+            blockman.AddToBlockIndex(header, chainman.m_best_header);
+        }
+        BOOST_CHECK(!blockman.BlockIndexWriteDue());
+    }
+    SetMockTime(header.nTime + 10);
+    const auto before_boundary{header.GetHash()};
+    CDiskBlockIndex disk;
+    auto read_index = [&](const uint256& hash) {
+        LOCK(cs_main);
+        return blockman.m_block_tree_db->Read(std::make_pair(uint8_t{'b'}, hash), disk);
+    };
+    BOOST_CHECK(!read_index(before_boundary));
+    BlockValidationState duplicate_state;
+    BOOST_REQUIRE(chainman.ProcessNewBlockHeaders({&header, 1}, true, duplicate_state));
+    BOOST_CHECK(!read_index(before_boundary));
+
+    next_header();
+    auto invalid{header};
+    do { ++invalid.nNonce; } while (CheckProofOfWork(invalid.GetHash(), invalid.nBits, consensus));
+    BlockValidationState invalid_state;
+    BOOST_CHECK(!chainman.ProcessNewBlockHeaders({&invalid, 1}, true, invalid_state));
+    BOOST_CHECK(invalid_state.IsInvalid());
+    BOOST_CHECK(!read_index(before_boundary));
+
+    const auto coins_best{WITH_LOCK(cs_main, return chainman.ActiveChainstate().CoinsTip().GetBestBlock())};
+    BlockValidationState boundary_state;
+    BOOST_REQUIRE(chainman.ProcessNewBlockHeaders({&header, 1}, true, boundary_state));
+    BOOST_REQUIRE(read_index(header.GetHash()));
+    BOOST_CHECK(disk.hashPrev == before_boundary);
+    BOOST_CHECK(disk.ConstructBlockHash() == header.GetHash());
+    BOOST_REQUIRE(read_index(before_boundary));
+    BOOST_CHECK(disk.ConstructBlockHash() == before_boundary);
+    BOOST_CHECK(!WITH_LOCK(cs_main, return blockman.BlockIndexWriteDue()));
+    BOOST_CHECK(WITH_LOCK(cs_main, return chainman.ActiveChainstate().CoinsTip().GetBestBlock()) == coins_best);
+    BOOST_CHECK(!WITH_LOCK(cs_main, return blockman.m_block_tree_db->HasYespowerEvidence(header, consensus)));
+
+    // A new header after the boundary remains dirty until a later flush.
+    next_header();
+    BlockValidationState after_state;
+    BOOST_REQUIRE(chainman.ProcessNewBlockHeaders({&header, 1}, true, after_state));
+    BOOST_CHECK(!read_index(header.GetHash()));
+    WITH_LOCK(cs_main, blockman.WriteBlockIndexDB());
+    BOOST_REQUIRE(read_index(header.GetHash()));
+    BOOST_CHECK(disk.ConstructBlockHash() == header.GetHash());
 }
 
 BOOST_FIXTURE_TEST_CASE(blockmanager_loadblockindex_branch_file_and_pruning, TestChain100Setup)

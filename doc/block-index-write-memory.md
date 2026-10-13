@@ -1,6 +1,6 @@
 # Large block-index write memory
 
-## Limited mitigation, not a full peak-memory fix
+## Earlier mitigation: release the serialized input vector
 
 The observed large first index write had an approximately 7 GiB rise followed
 by a roughly 22.69 GiB process peak. Code review shows a large serialized
@@ -47,10 +47,10 @@ are not controlled full-IBD measurements.
 
 ## Remaining work and PR scope
 
-Large batch/memtable overlap remains. Plain chunking is not adopted: it changes
+The early-release change alone leaves large batch/memtable overlap. Plain chunking was not adopted: it changes
 all-index atomicity and requires explicit analysis of parent availability,
 block-file metadata, chainstate ordering, partial failures and crash recovery.
-A bounded transactional persistence design needs its own proposal and tests.
+The follow-up in [Unified IBD RSS management](ibd-rss-management.md) instead bounds header accumulation by invoking the existing complete flush earlier, without subdividing a transaction. Large batches originating outside that header path remain a limitation.
 This independent partial memory-management change belongs to the future
 memory/CPU-management PR, separate from Lazy PoW/persistent evidence. PR #11
 remains temporarily combined; no operating restart or DB modification occurs.
