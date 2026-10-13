@@ -786,13 +786,16 @@ BOOST_AUTO_TEST_CASE(cache_budget_eviction_and_reset_only_trigger_reverification
     const auto headers{Headers(90, 25)};
     CacheBudget budget{64}; // Two entries: force eviction without a large fixture.
     HeaderPoWVerifier verifier{8};
-    BOOST_REQUIRE(verifier.Check(headers, params));
-    {
-        Observation observation;
+    for (const bool growing : {false, true}) {
+        InitYespowerVerificationCache(64, growing);
         BOOST_REQUIRE(verifier.Check(headers, params));
+        {
+            Observation observation;
+            BOOST_REQUIRE(verifier.Check(headers, params));
 #ifdef ENABLE_YESPOWER_TEST_WRAP
-        BOOST_CHECK_GE(calls.load(), headers.size() - 2);
+            BOOST_CHECK_GE(calls.load(), headers.size() - 2);
 #endif
+        }
     }
     InitYespowerVerificationCache(1 << 20);
     {
@@ -840,6 +843,42 @@ BOOST_AUTO_TEST_CASE(growing_cache_retains_verified_proofs_and_rejects_invalid_h
         BOOST_CHECK_EQUAL(calls.load(), 1U); // Failed proofs must never become cache hits.
 #endif
     }
+    DataStream stream{test::data::sugarchain_headers};
+    std::vector<CBlockHeader> real_headers(6000);
+    for (auto& header : real_headers) stream >> header;
+    BOOST_REQUIRE(stream.empty());
+    auto bad{real_headers.front()};
+    Invalidate(bad);
+    HeaderPoWVerifier verifier{8};
+    // Scale budgets down to force genuine eviction with a small real fixture.
+    for (const size_t bytes : {size_t{64 << 10}, size_t{128 << 10},
+                               size_t{256 << 10}, size_t{2 << 20}}) {
+        CacheBudget budget{bytes};
+        InitYespowerVerificationCache(bytes, /*grow_on_demand=*/true);
+        {
+            Observation observation;
+            BOOST_REQUIRE(verifier.CheckEach(real_headers, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+            BOOST_CHECK_EQUAL(calls.load(), real_headers.size());
+#endif
+        }
+        {
+            Observation observation;
+            // Delay re-use until the complete fixture filled the cache; a miss
+            // must recompute a real proof instead of silently trusting it.
+            BOOST_REQUIRE(verifier.CheckEach(real_headers, params));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+            BOOST_TEST_MESSAGE("Scaled cache budget=" << bytes << " second-pass real proofs=" << calls.load());
+            if (bytes == (2 << 20)) BOOST_CHECK_EQUAL(calls.load(), 0U);
+            else BOOST_CHECK_GT(calls.load(), 0U);
+#endif
+        }
+        BOOST_CHECK(!CheckBlockProofOfWork(bad, params));
+        auto wrong_limit{params};
+        wrong_limit.powLimit = uint256{};
+        BOOST_CHECK(!CheckBlockProofOfWork(real_headers.front(), wrong_limit));
+    }
+
 }
 
 BOOST_AUTO_TEST_CASE(cache_backend_mode_changes_reset_evidence_and_keep_rejection)
