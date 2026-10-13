@@ -262,3 +262,157 @@ benchmark runs passed restart/verifychain; all 12 final helper runs passed
 full record checks. The complete 813-case suite, TSan, Windows/macOS and
 power-loss/mid-write fault injection were not run. No operating node was
 restarted, and no full mainnet IBD result is claimed.
+
+## Follow-up: ordinary full-block persistence
+
+The next baseline is `e7b8a7937072a6aaeada04b64cdcfd8fb79bb0c1`, including
+the 32,768-entry header trigger and all earlier memory changes. Full blocks
+can enter `AcceptBlock` without passing through `ProcessNewBlockHeaders`.
+Their index/status changes could still accumulate until the ordinary timer,
+coin-cache pressure or another forced write. A private full-block-only test
+confirmed that the baseline did not persist the expected count boundary.
+
+Add `BlockIndexWriteDue()` to the existing `PERIODIC` decision in
+`FlushStateToDisk`. Keep the existing mode, timer, coin-cache pressure and
+pruning conditions. In particular, replacing PERIODIC with FORCE_SYNC would
+suppress its LARGE coin-cache eviction; the implementation does not do that.
+The header trigger, threshold, atomic index write, block/undo-before-index
+ordering, chainstate ordering, PoW policy and DB formats remain unchanged.
+NONE and IF_NEEDED gain no new count trigger. COINDB debug output records
+`index=1` when index pressure requests the write.
+
+This is an accumulation safeguard for another path, not proof that this
+path caused the original events 6–7. It schedules complete writes at existing
+safe opportunities; it is not a universal dirty-set or serialized-byte cap.
+Pre-initialization, large pre-existing sets and bulk state transitions may
+still exceed it. Mempool callers using PERIODIC may also incur an index
+write. More frequent writes can increase validation/RPC delay and disk work.
+
+### Full-block comparison method
+
+Private regtest nodes receive solved, coinbase-only blocks directly over P2P,
+without prior header announcements. Both daemons use `-fast-startup=0`,
+`-checkblockindex=0` (only the expensive debug consistency scan), `-dbcache=512`
+and COINDB logging. A fixed mock clock prevents elapsed-time writes. Actual
+consensus checks, block/undo files, block-tree DB and UTXO persistence remain
+active. Regtest SHA256d is not mainnet Yespower.
+
+After accepting the input, both arms call `gettxoutsetinfo("none")` to persist
+the remaining suffix and scan UTXOs. Include that final write in elapsed time
+and peak memory: excluding it would hide the baseline's deferred large write.
+Sample RSS/anonymous/file-backed memory every 100 ms and record Linux VmHWM.
+Record process write_bytes and completed chainstate writes before shutdown.
+Then restart and compare block/header heights, best block, chainwork, UTXO
+count/best block and verifychain. Reopened-process VmHWM is recorded separately.
+Timing includes the Python block generator/P2P fixture and the final UTXO scan;
+it is not isolated validation CPU time. RPC samples after each P2P barrier do
+not measure worst-case RPC latency during a synchronous write.
+
+One million blocks per process, baseline/candidate/candidate/baseline order,
+two runs per binary on a Ryzen 9 5950X Linux host. Builds and the sanitizer
+suite finished first. The operating IBD continued throughout; a private
+four-node DB-crash test overlapped the first three runs, ending just before
+the final baseline. This is not an idle-host or slow-storage comparison.
+Every run passed restart and UTXO checks with the same one-million-output
+UTXO tip. Values below are medians; each restarted process has its own HWM.
+
+| Metric | Baseline | PERIODIC count trigger | Change |
+|---|---:|---:|---:|
+| Peak RSS through acceptance and final sync/scan | 727.762 MiB | 479.461 MiB | -34.12% |
+| Higher peak including restarted process | 727.762 MiB | 479.461 MiB | -34.12% |
+| RSS after acceptance, before final sync/scan | 442.625 MiB | 451.961 MiB | +2.11% |
+| RSS after final sync/scan | 676.289 MiB | 479.461 MiB | -29.10% |
+| Restarted-process peak RSS | 395.869 MiB | 308.887 MiB | -21.97% |
+| Block generation/send/acceptance time | 147.356 s | 147.886 s | +0.36% |
+| Final sync plus UTXO scan | 3.461 s | 0.281 s | -91.89% |
+| Acceptance plus final sync/scan time | 150.817 s | 148.167 s | -1.76% |
+| Process write_bytes during the measured window | 703.904 MiB | 1472.711 MiB | +109.22% |
+| Logged chainstate writes before shutdown | 1 | 31 | 30 additional writes |
+
+Baseline peak values were 727.758/727.766 MiB and candidate values
+482.848/476.074 MiB. Total times were 151.217/150.417 versus
+147.448/148.886 seconds. Acceptance-only ranges overlap; the final-sync
+reduction reflects work moved into earlier writes, not eliminated work.
+The modest total-time difference is observational and does not establish a
+mainnet speedup. Restart time is not included in that time total.
+
+Both candidate runs performed 30 count-triggered PERIODIC writes and one
+final FORCE_SYNC; no periodic-timer or LARGE/CRITICAL pressure write replaced
+the tested trigger. The baseline deferred all of that persistence to its
+single final FORCE_SYNC. Earlier DB activity raises intermediate RSS slightly
+and roughly doubles observed write_bytes. This counter excludes work after
+the measurement window and is not a physical-device lifetime-write total.
+Real transactions that create and spend coins between former flushes may
+add other write costs. Accept the change for lower observed peak memory,
+not a promised speed gain or unchanged disk workload. No swap was observed
+in the sampled private nodes. One candidate run's maximum sampled RPC took
+12.316 ms, versus 1.095 ms in the other candidate and 1.330/1.352 ms in the
+baseline runs. The limited, post-barrier samples do not establish improved
+responsiveness or bound stalls during writes.
+
+### Other reassessment candidates
+
+Two-million-entry production-map helper screening retained the same
+CBlockIndex, standard map, hasher and node pool. Natural growth was compared
+with local 1.25x/1.5x capacity reservations, twice each in reversed order.
+All keys, heights, key/parent pointers, misses and duplicates were checked.
+The helper models allocation and lookup, not validation or DB persistence.
+
+| Policy | Peak RSS (MiB) | RSS reduction | Insertion (s) | Insertion cost | Full lookup/check (s) |
+|---|---:|---:|---:|---:|---:|
+| Existing natural growth | 391.836 | — | 0.887428 | — | 0.424384 |
+| Local 1.25x growth | 385.801 | 1.54% | 1.411485 | +59.05% | 0.489121 |
+| Local 1.5x growth | 388.494 | 0.85% | 1.020671 | +15.01% | 0.443252 |
+
+Reject both: the small observed saving does not justify additional rehash
+and lookup costs. These short shared-host experiments do not predict the
+44.9-million-entry result. Keep the disk-load reservation policy unchanged.
+
+Proof-cache lifetime and UTXO/allocator changes were audited but not adopted.
+Skipping proof reinsertion does not release already allocated cache pages;
+removing them safely requires accounting for presync, replay, multiple peers
+and genuine evidence reuse. Existing smaller-cache/page experiments show
+recomputation or allocation-overhead costs. There is no new evidence for an
+unconditional cache reset, Sync-to-Flush substitution or malloc_trim policy.
+Retain the earlier events 1–4 improvement and its documented filled-cache
+cost. Do not count retained changes as newly achieved savings.
+
+### Validation
+
+Normal daemon/GUI builds passed. The selected 65 unit cases passed all
+1,180,524 assertions in both the normal build and ASan/UBSan with leak
+detection and halt-on-error. The complete 813-case suite was not run.
+`feature_fast_startup.py`, `feature_abortnode.py` and `rpc_invalidateblock.py`
+passed. The existing four-node `feature_dbcrash.py` completed all 40 rounds:
+21 crash-driven restarts across its three fault nodes and another 30 crashes
+during recovery, with final UTXO hashes matching. That test injects chainstate
+batch crashes; the index-WAL sync failure described below is a separate test.
+
+The existing multi-block activation unit test is strengthened with a real
+disk-backed strict-mode fixture: just below/at/above the dirty threshold,
+unchanged NONE/IF_NEEDED behavior, unchanged mock time, normal cache retention,
+DB reopen and block/undo metadata/readback. The existing coin-cache threshold
+test now combines LARGE coins with index pressure and checks that eviction
+still occurs. The existing fast-startup functional test sends full blocks
+without header announcements in both startup modes, kills only its private
+node after a completed boundary, checks the durable prefix/UTXO and missing
+suffix, then reaccepts the suffix. Its headers-only crash test is retained.
+
+A separate private mode-zero fault experiment injects one EIO at the
+count-triggered block-index WAL `fdatasync`, using a wrapper scoped to that
+test's exact index directory and an armed marker. At the 32,768th new full
+block the log reports `PERIODIC ... periodic=0, index=1`, followed by
+`System error while flushing: Fatal LevelDB error ... Input/output error`.
+The node exits itself with code 1. Removing the marker permits normal
+restart: the complete WAL batch is recovered, the older durable UTXO tip
+is advanced through normal activation, and full-chain `verifychain(4, 0)`
+passes. After another block and restart, UTXO MuHash, count, total amount and
+best block match. No DB/WAL bytes are manually changed. This tests one sync
+error and process recovery, not power-loss durability, partial writes or a
+permanent device failure.
+
+No operating node or data was restarted or changed. A new complete mainnet
+IBD peak and duration, slow-device costs, TSan and Windows/macOS remain
+unmeasured. None of these percentages can be added to earlier results or
+applied to the old 22.691 GiB peak. This is memory-management work to split
+from Lazy PoW before merging PR #11.
