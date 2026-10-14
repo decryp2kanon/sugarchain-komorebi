@@ -974,6 +974,8 @@ private:
 
     /** Most recent headers presync progress update, for rate-limiting. */
     MockableSteadyClock::time_point m_last_presync_update GUARDED_BY(GetMutex()){};
+    /** Last logged height, separate from the GUI notification rate limit. */
+    std::optional<int64_t> m_last_presync_log_height GUARDED_BY(GetMutex());
 
     //! A queue for script verifications that have to be performed by worker threads.
     CCheckQueue<CScriptCheck> m_script_check_queue;
