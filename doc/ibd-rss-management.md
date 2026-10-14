@@ -416,3 +416,13 @@ IBD peak and duration, slow-device costs, TSan and Windows/macOS remain
 unmeasured. None of these percentages can be added to earlier results or
 applied to the old 22.691 GiB peak. This is memory-management work to split
 from Lazy PoW before merging PR #11.
+
+
+## Additional methods investigated after the reassessment
+
+[Additional peak-RSS experiments](ibd-rss-new-methods.md) compare higher map
+load factors, packing immutable proof-cache tiers, and block-index native
+pread with the already optimized baseline. Header-stage RSS improved in the
+pread experiment, but the complete full-block fixture peak did not. None of
+these new candidates was adopted; their distinct benefits and costs are
+recorded without adding them to earlier savings.
