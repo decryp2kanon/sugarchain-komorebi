@@ -1,63 +1,104 @@
-# 프리싱크 체인워크 계산 최적화 결과
+# Presync chainwork calculation optimization results
 
-2026-10-14. 먼저 구현·반복 측정·일반 안전성 검사를 진행한 뒤 결과를 작성했다.
+2026-10-14. This report was written after implementation, repeated measurements,
+and the normal validation tests.
 
-## 적용한 변경
+## Implementation
 
-`src/headerssync.cpp`의 PRESYNC와 REDOWNLOAD 체인워크 누적에 기존 `GetBitsProof(bits, true)` 정확한 계산 경로를 재사용했다. 적합한 compact target은 64비트 계산을 사용하고 나머지는 기존 256비트 계산으로 돌아간다. 이 함수의 `fast_startup` 인자 이름은 계산 경로 선택용이며, 이번 호출은 운영 `-fast-startup` 설정이나 과거 PoW 신뢰 정책을 바꾸지 않는다.
+PRESYNC and REDOWNLOAD chainwork accumulation in `src/headerssync.cpp` now reuses
+the existing exact `GetBitsProof(bits, true)` calculation. Eligible compact targets
+use 64-bit arithmetic; other targets retain the original 256-bit calculation.
+The function's `fast_startup` argument selects an arithmetic implementation. These
+calls do not change the runtime `-fast-startup` setting or historical PoW trust
+policy.
 
-Yespower 계산, 워커 8개, 실패 판단 전 최대 8개 cold 작업, 난이도·MTP·연결·commitment·최소 체인워크 조건은 그대로다. 추가 캐시나 메모리 할당은 도입하지 않았다. RSS 5GiB를 보장하는 전역 제한을 추가한 것은 아니다.
+Yespower computation, the eight-worker limit, the maximum of eight cold checks
+before a failure decision, difficulty, MTP, linkage, commitments, and minimum
+chainwork requirements are unchanged. No additional cache or memory allocation
+was introduced. This change does not impose a global 5 GiB RSS limit.
 
-## 실측
+## Measurements
 
-현재 HEAD a63275b21c를 기준으로 같은 빌드의 baseline/candidate/candidate/baseline 순서로 비교했다. 실제 메인넷 헤더 6,000개, PRESYNC+REDOWNLOAD 300라운드이며 genuine PoW 입력 확인은 타이머 밖에서 실행한다. 매 라운드 상태 전환과 반환 헤더를 확인한다.
+The baseline was commit `a63275b21c`. Baseline and candidate executables used the
+same build configuration and were measured in baseline/candidate/candidate/baseline
+order. Each run processed 6,000 real mainnet headers through 300 PRESYNC and
+REDOWNLOAD rounds. Genuine input PoW verification was outside the timer. Every
+round checked state transitions and returned headers.
 
-| 실행 | 변경 전 | 변경 후 |
+| Measurement | Baseline | Candidate |
 |---|---:|---:|
-| 첫 측정 | 5.08020초 | 4.21122초 |
-| 두 번째 측정 | 5.12126초 | 4.16071초 |
-| 중앙값 | 5.10073초 | 4.185965초 |
+| First run | 5.08020 s | 4.21122 s |
+| Second run | 5.12126 s | 4.16071 s |
+| Median | 5.10073 s | 4.185965 s |
 
-상태 머신 구성요소 시간은 **17.934% 감소**, 처리량은 약 **21.85% 증가**했다. 이것은 실제 Yespower 계산과 네트워크를 포함한 전체 프리싱크 성능이 아니다. 전체 7시간에 이 비율을 적용해서는 안 된다.
+State-machine component time decreased by **17.934%**, corresponding to about
+**21.85% higher throughput**. This is not an end-to-end presync measurement:
+actual Yespower computation and network delivery are excluded. Do not apply this
+percentage to the full seven-hour presync duration.
 
-별도 8워커 proof 측정은 최초 6,000개 2.98655초(2,009.01개/초, 실제 Yespower 6,000회), 재검증 0.00653611초(실제 Yespower 0회)였다. 운영 노드가 계속 CPU를 사용하는 상황이므로 독점 머신의 처리량 상한이나 개선 전후 비교가 아니다. 캐시가 이미 재사용되고 있다는 사실은 확인한다.
+A separate eight-worker proof benchmark checked 6,000 headers in 2.98655 s on its
+cold pass (2,009.01 headers/s, 6,000 actual Yespower calls). The repeated pass took
+0.00653611 s with zero actual Yespower calls. The operating node was still using
+CPU resources. These figures are neither a dedicated-machine throughput ceiling
+nor a baseline/candidate comparison. They confirm that proof reuse already works.
 
-## 기대 효과와 한계
+## Expected benefit and limitations
 
-채택 가능한 작은 계산 최적화지만 7시간을 3시간으로 줄이는 해법을 확보한 것은 아니다. 최초 Yespower 비용이 훨씬 크며, 이번 변경의 전체 단축률은 아직 미측정이다. 3시간을 목표로 검증을 약화하거나 워커를 8개 이상으로 늘리지 않았다.
+This is a small arithmetic optimization, not a demonstrated solution for reducing
+seven hours to three. Initial Yespower verification is much more expensive, and
+the end-to-end reduction from this change remains unmeasured. Verification was
+not weakened, and the worker count was not increased beyond eight to pursue the
+three-hour target.
 
-캐시 확대·작업 큐 재설계는 이번 커밋에 포함하지 않았다. 이를 적용하려면 실제 중복 PoW 계산과 워커 대기 비용의 추가 근거가 필요하다. 이미 구현된 공유 캐시·rolling target sum·SugarShield 나눗셈 최적화를 새 성과로 계산하지 않았다.
+Cache expansion and queue redesign are outside this change. They require further
+evidence about repeated PoW computation and worker waiting time. Existing shared
+caches, rolling target sums, and SugarShield division optimizations are not counted
+as new improvements.
 
-## 검증
+## Validation
 
-- 일반 chain/pow/header-sync: 21개, 6,872,266 assertions 통과.
-- 일반 SugarShield: 12개, 404,609 assertions 통과. 실제 메인넷 6,000개 검증과 양 단계 왕복 포함.
-- 독립 256비트 기준식과 compact 지수·부호·overflow·경계값 비교를 포함한 기존 exact-arithmetic 검사 통과.
-- 격리 `p2p_headers_sync_with_minchainwork.py` 통과.
-- 격리 `p2p_sugarchain_header_pow.py` 통과.
-- daemon·GUI·CLI·unit 빌드 완료.
-- ASan + UBSan + 누수 검사: 같은 33개, 7,074,267 assertions 통과. 일반 검사와 assertion 수 차이는 무작위 chain fixture 크기에 따른다.
+- Normal chain, PoW, and header-sync tests: 21 cases and 6,872,266 assertions passed.
+- Normal SugarShield tests: 12 cases and 404,609 assertions passed, including
+  6,000 real mainnet headers and both synchronization passes.
+- Existing exact-arithmetic tests passed against an independent 256-bit reference
+  across compact exponents, sign, overflow, and boundary inputs.
+- Isolated `p2p_headers_sync_with_minchainwork.py` passed.
+- Isolated `p2p_sugarchain_header_pow.py` passed.
+- Daemon, GUI, CLI, and unit-test builds completed.
+- ASan, UBSan, and leak checks: the same 33 cases passed with 7,074,267 assertions.
+  Assertion totals differ from the normal run because the chain fixture uses
+  randomly generated branches and queries.
 
-운영 노드와 데이터는 재시작·변경하지 않았다. 빌드 결과는 다음 사용자 재시작부터 적용되며, 프리싱크 도중 재시작하면 진행을 잃을 수 있으므로 이 작은 변경을 적용하려고 지금 재시작하는 것은 권하지 않는다.
+The operating node and its data were not restarted or modified. The rebuilt
+executables take effect on the next user-initiated restart. Restarting during
+presync can lose its progress; applying this small change does not justify
+interrupting the current run.
 
-## PR 분리
+## PR separation
 
-PR #11은 임시 통합 상태다. 최종적으로 다음 세 PR로 분리해 각각 검토·측정한다.
+PR #11 is a temporary integration branch. Before merge, separate it into three
+PRs and review and measure each scope independently:
 
-1. Lazy PoW: 백그라운드 과거 검증·검증 결과 저장과 재사용·병렬화.
-2. RSS 최적화: IBD 메모리 사용과 순간 피크 감소.
-3. 프리싱크 속도 최적화: 이번 체인워크 계산 변경을 포함한 시간 단축.
+1. **Lazy PoW:** background historical verification, persistent evidence and
+   reuse, and parallel verification.
+2. **RSS optimization:** retained memory and transient IBD peak reductions.
+3. **Presync speed optimization:** time reductions, including this chainwork
+   calculation change.
 
-주목적이 프리싱크 시간 단축이면 메모리 사용을 조정하더라도 세 번째 범위로 분류한다. 실제 PR 분리·병합은 이번에 수행하지 않았다.
+A change whose main purpose is presync speed belongs in the third scope even if
+it adjusts memory usage. No PR split or merge was performed as part of this work.
 
-## 재현 및 근거
+## Reproduction and evidence
 
 ```bash
 build/bin/bench_headers_sync src/test/data/sugarchain_headers.raw 6000 300
 build/bin/bench_header_pow src/test/data/sugarchain_headers.raw 6000 8 16
 ```
 
-입력 6,000헤더 SHA256: `d0560434d8927def1b9a656822b74715cc030440877c18735d8256c6d0e0c67b`.
+SHA256 of the 6,000-header input:
+`d0560434d8927def1b9a656822b74715cc030440877c18735d8256c6d0e0c67b`.
 
-원시 결과·빌드·검사 로그: `/home/ak/.local/state/sugarchain-komorebi/presync-speed/`.
-기존 성능 자료: `doc/ibd-optimization.md`.
+Local raw measurements, build output, and test logs:
+`/home/ak/.local/state/sugarchain-komorebi/presync-speed/`.
+
+Earlier performance measurements: [IBD optimization](ibd-optimization.md).
