@@ -36,7 +36,7 @@ Yespower 계산, 워커 8개, 실패 판단 전 최대 8개 cold 작업, 난이�
 - 격리 `p2p_headers_sync_with_minchainwork.py` 통과.
 - 격리 `p2p_sugarchain_header_pow.py` 통과.
 - daemon·GUI·CLI·unit 빌드 완료.
-- ASan + UBSan + 누수 검사: 같은 33개, 7,276,875 assertions 통과.
+- ASan + UBSan + 누수 검사: 같은 33개, 7,074,267 assertions 통과. 일반 검사와 assertion 수 차이는 무작위 chain fixture 크기에 따른다.
 
 운영 노드와 데이터는 재시작·변경하지 않았다. 빌드 결과는 다음 사용자 재시작부터 적용되며, 프리싱크 도중 재시작하면 진행을 잃을 수 있으므로 이 작은 변경을 적용하려고 지금 재시작하는 것은 권하지 않는다.
 
