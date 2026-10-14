@@ -87,7 +87,7 @@ endif()
 install_binary_component(bench_bitcoin INTERNAL)
 
 # Explicit cold/repeated passes; not installed as a production application.
-add_executable(bench_header_pow header_pow.cpp)
+add_executable(bench_header_pow header_pow.cpp ../headerssync.cpp)
 target_link_libraries(bench_header_pow core_interface bitcoin_common)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_compile_definitions(bench_header_pow PRIVATE ENABLE_YESPOWER_BENCH_WRAP)
