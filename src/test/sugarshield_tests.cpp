@@ -418,6 +418,62 @@ BOOST_AUTO_TEST_CASE(rolling_targets_match_full_history_with_irregular_times)
     }
 }
 
+BOOST_AUTO_TEST_CASE(cached_mtp_matches_full_history_with_duplicate_and_decreasing_times)
+{
+    const auto synthetic{SyntheticParams()};
+    HeaderChain chain{SyntheticGenesis()};
+    constexpr std::array<int64_t, 13> offsets{0, 0, 4, 4, -1, 4, -1, 5, 0, 5, -1, 4, 9};
+    for (size_t height{1}; height <= 1800; ++height) {
+        CBlockHeader header;
+        header.nVersion = 1;
+        header.hashPrevBlock = chain.hashes.back();
+        header.nTime = static_cast<uint32_t>(chain.headers.front().GetBlockTime() + 5 * static_cast<int64_t>(height) + offsets[height % offsets.size()]);
+        // Duplicates and backwards steps are permitted while time exceeds MTP.
+        BOOST_REQUIRE_GT(header.GetBlockTime(), chain.index.back().GetMedianTimePast());
+        // Full ancestry and its sorted median remain the independent oracle
+        // for the bounded checker's retained endpoint values.
+        header.nBits = GetNextWorkRequired(&chain.index.back(), &header, synthetic);
+        MineHeader(header, synthetic);
+        chain.Append(header);
+    }
+    BOOST_REQUIRE(std::adjacent_find(chain.headers.begin(), chain.headers.end(),
+        [](const auto& a, const auto& b) { return a.nTime == b.nTime; }) != chain.headers.end());
+    BOOST_REQUIRE(std::adjacent_find(chain.headers.begin(), chain.headers.end(),
+        [](const auto& a, const auto& b) { return a.nTime > b.nTime; }) != chain.headers.end());
+    for (const size_t start : {0U, 1U, 2U, 9U, 10U, 509U, 510U, 511U, 519U, 520U, 521U, 522U, 1400U}) {
+        BOOST_TEST_CONTEXT("start=" << start) {
+            // Covers short/genesis upper medians, both window boundaries,
+            // eviction, non-genesis initialization and the REDOWNLOAD reset.
+            CheckRoundTrip(chain, start, synthetic, {1, 521}, 17);
+        }
+    }
+    for (const size_t start : {0U, 520U, 1400U}) {
+        const size_t bad_height{start + 17};
+        auto bad{chain.headers[bad_height]};
+        --bad.nBits;
+        MineHeader(bad, synthetic);
+        BOOST_REQUIRE(CheckBlockProofOfWork(bad, synthetic));
+        BOOST_REQUIRE_NE(bad.nBits, GetNextWorkRequired(&chain.index[bad_height - 1], &bad, synthetic));
+        for (const bool redownload : {false, true}) {
+            BOOST_TEST_CONTEXT("start=" << start << " redownload=" << redownload) {
+                HeadersSyncState sync{0, synthetic, {1, 15218}, chain.index[start], chain.index.back().nChainWork};
+                if (redownload) {
+                    BOOST_REQUIRE(sync.ProcessNextHeaders(std::span{chain.headers}.subspan(start + 1), true).success);
+                    BOOST_REQUIRE(sync.GetState() == State::REDOWNLOAD);
+                }
+                BOOST_REQUIRE(sync.ProcessNextHeaders(std::span{chain.headers}.subspan(start + 1, 16), true).success);
+                ASSERT_DEBUG_LOG("invalid difficulty transition at height=" + std::to_string(bad_height) +
+                                 (redownload ? " (redownload phase)" : " (presync phase)"));
+                const auto result{sync.ProcessNextHeaders(std::span{&bad, 1}, true)};
+                BOOST_CHECK(!result.success);
+                BOOST_CHECK(!result.request_more);
+                BOOST_CHECK(result.pow_validated_headers.empty());
+                BOOST_CHECK(sync.GetState() == State::FINAL);
+            }
+        }
+    }
+}
+
 BOOST_AUTO_TEST_CASE(invalid_difficulty_with_valid_pow_in_both_passes)
 {
     const auto synthetic{SyntheticParams()};
