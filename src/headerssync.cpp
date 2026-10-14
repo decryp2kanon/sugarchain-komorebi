@@ -276,7 +276,9 @@ bool HeadersSyncState::ValidateAndProcessSingleHeader(const CBlockHeader& curren
         }
     }
 
-    m_current_chain_work += GetBlockProof(current);
+    // Reuse the exact compact-target fast path; unsupported encodings retain
+    // the original 256-bit calculation. This does not trust or skip any PoW.
+    m_current_chain_work += GetBitsProof(current.nBits, /*fast_startup=*/true);
     m_last_header_received = current;
     m_current_height = next_height;
 
@@ -314,7 +316,7 @@ bool HeadersSyncState::ValidateAndStoreRedownloadedHeader(const CBlockHeader& he
     }
 
     // Track work on the redownloaded chain
-    m_redownload_chain_work += GetBlockProof(header);
+    m_redownload_chain_work += GetBitsProof(header.nBits, /*fast_startup=*/true);
 
     if (m_redownload_chain_work >= m_minimum_required_work) {
         m_process_all_remaining_headers = true;
