@@ -213,6 +213,45 @@ BOOST_AUTO_TEST_CASE(target_division_matches_generic_arithmetic)
     }
 }
 
+BOOST_AUTO_TEST_CASE(combined_target_divisor_preserves_rounding_and_fallback)
+{
+    FastRandomContext rng{true};
+    // Include UINT32_MAX and its successor, and products on either side of
+    // the combined-divisor boundary. The oracle retains two generic divisions.
+    for (const auto [window, spacing] : std::array<std::pair<int64_t, int64_t>, 7>{{
+             {1, 4294967295LL}, {1, 4294967296LL}, {65535, 1}, {65536, 1},
+             {29308, 5}, {29309, 5}, {510, 5}}}) {
+        auto rules{params};
+        rules.nPowAveragingWindow = window;
+        rules.nPowTargetSpacing = spacing;
+        const int64_t expected_span{rules.AveragingWindowTimespan()};
+        const arith_uint256 divisor{uint64_t(window * expected_span)};
+        for (const uint256 limit : {params.powLimit, ArithToUint256(~arith_uint256{0})}) {
+            rules.powLimit = limit;
+            for (const int64_t span : {-expected_span, int64_t{0}, expected_span, 5 * expected_span}) {
+                const auto check = [&](const arith_uint256& total) {
+                    int64_t adjusted{expected_span + (span - expected_span) / 4};
+                    adjusted = std::clamp(adjusted, rules.MinActualTimespan(), rules.MaxActualTimespan());
+                    arith_uint256 reference{total / arith_uint256{uint64_t(window)}};
+                    reference /= arith_uint256{uint64_t(expected_span)};
+                    reference *= adjusted;
+                    if (reference > UintToArith256(limit)) reference = UintToArith256(limit);
+                    BOOST_CHECK_EQUAL(CalculateSugarShieldWorkRequired(total, span, rules), reference.GetCompact());
+                };
+                check(arith_uint256{0});
+                check(~arith_uint256{0});
+                for (unsigned bit{0}; bit < 220; bit += 7) {
+                    const arith_uint256 multiple{divisor * (arith_uint256{1} << bit)};
+                    check(multiple - 1);
+                    check(multiple);
+                    check(multiple + 1);
+                }
+                for (unsigned i{0}; i < 256; ++i) check(UintToArith256(rng.rand256()));
+            }
+        }
+    }
+}
+
 BOOST_AUTO_TEST_CASE(calculation_vectors)
 {
     BOOST_CHECK_EQUAL(params.nPowAveragingWindow, 510);
