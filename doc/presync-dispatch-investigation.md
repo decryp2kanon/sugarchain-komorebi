@@ -4,6 +4,9 @@ Baseline: `9a1d3e695e9d1916edcf544d115bd2c27e98bb94`, 2026-10-15.
 
 ## Objective and status
 
+Completed: see [measurements and final rejection decision](presync-dispatch-results.md).
+The remainder records the original plan and its preparation checkpoints.
+
 Investigate why a hash-only timing improvement did not survive the real verifier
 path, then test whether dispatch overhead can be reduced without changing the
 first-header admission check or the eight-cold-proof failure-decision boundary.
