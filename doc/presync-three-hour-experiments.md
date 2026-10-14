@@ -165,3 +165,90 @@ hashes at 4 MiB. Both incompatible mode combinations were rejected. Private raw
 results are retained in `cache-balanced-delayed-results.json` and its four run
 directories. Repeated trial evidence and broader retention checks would still be
 needed before adopting a production cache replacement.
+
+## D. Shared-body specialization and combined rolling prefetch
+
+These are **new private variants**, separate from the copied-helper specialization
+in section B. `shared` generates a third set of mixing functions from the same
+source bodies, dispatching Yespower 1.0 with `N=2048`, `r=32` through fixed
+parameters inside the existing public API. It preserves generic S-box construction
+and initial `r=1` expansion. `rolling` combines that specialization with bounded
+prefetch hints issued during mixing instead of issuing all hints at its start.
+The combined result does not isolate either change's contribution.
+
+Each variant completed its own two sequential ABBA groups: four baseline and four
+candidate runs, each hashing 40,000 real headers with eight workers and no proof
+cache. Both series used the same balanced affinity and memory limit described
+above. Every timed run performed exactly 40,000 hashes and produced the same
+aggregate output digest as section B. The table reports medians from each series;
+positive changes mean slower, negative changes mean faster.
+
+| Private variant | Baseline → candidate wall seconds | Wall change | Baseline → candidate worker CPU seconds | CPU-time change | Decision |
+|---|---:|---:|---:|---:|---|
+| Shared bodies, original prefetch | 18.897068 → 19.361716 | **+2.46%** | 138.275742 → 138.933219 | **+0.48%** | No demonstrated performance benefit; do not adopt this version |
+| Shared bodies plus rolling prefetch | 19.079410 → 17.671742 | **−7.38%** | 138.596547 → 136.532394 | **−1.49%** | Investigate smaller changes; not adopted |
+
+Shared wall-time ranges overlap. The combined rolling ranges do not overlap in
+these eight runs; average worker CPU was 713.61–759.53% for baseline and
+762.08–781.81% for the candidate. This utilization difference is another reason not to equate the
+7.38% elapsed improvement with intrinsic hash CPU savings. Across both series,
+process peak RSS ranged from **71.76 to 72.40 MiB**; these measurements do not
+establish a material RSS improvement. All sixteen runs exited successfully with
+zero memory-limit, OOM and OOM-kill events. These remain private hash measurements,
+not node-wide resource measurements or a completed three-hour PRESYNC.
+
+Correctness was checked again against the separately compiled unchanged original
+for **each new variant**, rather than inheriting the copied-helper results:
+
+- The 8,691-input comparison, including genesis known-answer validation, passed
+  for shared and combined rolling.
+- The initial generic API driver passed **279 comparisons, including 9 invalid
+  cases**, for each variant. It includes versions 0.5/1.0, alternative N/r values,
+  several input lengths and personalization choices, and unaligned inputs.
+- Fresh-scratch allocation-failure injection passed for each variant, with two
+  denied mmap calls and matching failure status/output. Other allocation-failure
+  paths were not exhaustively tested.
+- A separately authored API driver passed **159 valid cases, 46 invalid cases
+  and 50 local initialization/free cycles** for shared and combined rolling.
+  Its case selection covers both versions; N=1024/2048/4096; r=8/16/32;
+  lengths 0/1/32/80/81/256; four personalization modes; scratch reuse and recovery;
+  output canaries, unchanged input and unchanged scratch on invalid parameters;
+  and four threads with independent scratch regions. These are selected cases,
+  not the complete Cartesian product.
+- That same independent API suite also passed for **shared with ASan/UBSan**.
+  Combined rolling has no sanitizer result in this checkpoint. All three API
+  suite results report `tls_cases=0`; the optional legacy TLS test was not run.
+
+This is finite differential coverage on the current build/platform, not a proof
+of equivalence for all inputs or configurations. Private checks do not substitute
+for integrated validation, invalid-input work-bound tests, portable builds or a
+full matching-work PRESYNC. No runtime source or operating node was changed.
+
+Evidence is retained in `shared-time-results.json`, `rolling-time-results.json`,
+`shared-check-results.json`, `rolling-check-results.json` and their run
+directories; `compute/shared-build-metadata.json` records candidate build identity.
+`api-correctness/results.json`, its build metadata and run logs record the
+independent suite. With retained artifacts and fresh tags, the existing
+`run_private` helper can repeat these commands:
+
+```sh
+run_private retry-shared-check "$EVIDENCE_ROOT/compute/driver-shared" \
+    check fixed "$HEADERS_RAW" 6000 8
+run_private retry-rolling-check "$EVIDENCE_ROOT/compute/driver-rolling" \
+    check fixed "$HEADERS_RAW" 6000 8
+# Use baseline/fixed/fixed/baseline twice per driver, with distinct tags.
+run_private retry-shared-a1 "$EVIDENCE_ROOT/compute/driver-shared" \
+    bench baseline "$HEADERS_RAW" 40000 8
+run_private retry-rolling-b1 "$EVIDENCE_ROOT/compute/driver-rolling" \
+    bench fixed "$HEADERS_RAW" 40000 8
+"$EVIDENCE_ROOT/api-correctness/api-parity-shared"
+"$EVIDENCE_ROOT/api-correctness/api-parity-rolling"
+ASAN_OPTIONS=detect_leaks=1 "$EVIDENCE_ROOT/api-correctness/api-parity-shared-asan"
+```
+
+The next comparison separates a smaller outer-dispatch specialization from a
+prefetch-only change. **Neither minimal variant has a completed performance
+comparison recorded here.** Preserve their separate source/build identities and
+validate their own generic paths before interpreting any timing. No performance
+numbers above may be transferred to them, added to cache results, or presented as
+achievement of the three-hour target.
