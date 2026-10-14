@@ -77,7 +77,7 @@ Retained evidence includes:
 - `cache-screen-r1-{0-baseline,1-remainder,2-segmented}/`: stdout, stderr, measurements and raw samples. This single-thread screen used the earlier eight-CPU mask; it is not pooled with compute timing.
 - `compute-check-results.json`, `compute-balanced-results.json` and their per-run directories: completed checks and accepted ABBA results.
 - `measurement-setup-note.txt`, `cache-screen-0-baseline.service.log`, `compute-screen-results.json`: excluded setup/timing records.
-- `delayed-header-pow.cpp`, `delayed-baseline`, `delayed-segmented`: prepared real-proof follow-up, **not yet measured at this checkpoint**. It changes repeat message boundaries from 2,000 to 1,999 headers to avoid reusing the original batch keys.
+- `delayed-header-pow.cpp`, `delayed-baseline`, `delayed-segmented`: prepared real-proof follow-up, measured in the follow-up below. It changes repeat message boundaries from 2,000 to 1,999 headers to avoid reusing the original batch keys.
 
 Run only one measurement at a time and use fresh output tags. The runner refuses to overwrite an existing result directory. Its affinity is topology-specific and must be reviewed before using another host.
 
@@ -111,10 +111,57 @@ run_private retry-cache-b "$EVIDENCE_ROOT/cache/retention" \
 
 ## Pending decisions and validation
 
-1. Measure real cold and delayed verification with constrained cache capacity, actual Yespower call counts and reinsertion churn. Keep changed message boundaries or use individual `CheckEach`/`CheckBlockProofOfWork` passes: a 48 MiB scaled cache still has the same 2 MiB batch cache as the full-size setting, so unchanged-message repeats can hide individual-proof eviction. Existing `header_pow_tests` already provides a smaller batch-independent cold/delayed fixture. An optional `bench_header_pow --delayed-reuse` mode is being prepared for a separate commit after build/smoke validation; its intended 2,000/1,999 message sizes are incompatible with `--presync` and `--block-stage`.
+1. Measure real cold and delayed verification with constrained cache capacity, actual Yespower call counts and reinsertion churn. Keep changed message boundaries or use individual `CheckEach`/`CheckBlockProofOfWork` passes: a 48 MiB scaled cache still has the same 2 MiB batch cache as the full-size setting, so unchanged-message repeats can hide individual-proof eviction. Existing `header_pow_tests` already provides a smaller batch-independent cold/delayed fixture. The opt-in `bench_header_pow --delayed-reuse` mode reproduces this experiment; its 2,000/1,999 message sizes are incompatible with `--presync` and `--block-stage`.
 2. Repeat useful cache comparisons, record early RSS and segment balance, and measure PRESYNC→REDOWNLOAD cost. Do not expand to 4/5 GiB unless real recomputation justifies it; total-memory accounting and the legacy backend's integer bounds need a separate check.
 3. For the fixed hash candidate, confirm the benefit in a private node/verification path and against the generic layout control. Preserve a portable fallback and replace experimental source duplication with maintainable integration only if benefit survives.
 4. Before adopting either candidate, run relevant mutation/target/context, invalid-first/middle/last proof, reset/eviction/concurrency, failure, P2P and sanitizer checks. Preserve the existing maximum speculative work on rejected input.
 5. Only a complete matching-work PRESYNC within 10,800 seconds with measured node-wide resource compliance can satisfy the target. Do not multiply or add improvements from these unrelated screens. Commit and push accepted logical steps and checkpoint evidence separately.
 
 PR #11 remains staging work intended for separation into **Lazy PoW**, **RSS/memory management**, and **presync performance/diagnostics** PRs. This checkpoint belongs to the third scope and performs no split or merge.
+
+
+## C. Real delayed reuse follow-up and reproducible benchmark
+
+An ABBA screen used 100,000 contiguous real headers, eight workers and a scaled
+4 MiB cache. The cold pass uses 2,000-header chunks and the delayed repeat uses
+1,999-header chunks. Each process loads and checks fixture continuity, difficulty
+and median time before the timer. Timed passes include genuine PoW when proof
+cache evidence is unavailable; every cold pass performed exactly 100,000 hashes.
+
+| Order | Private policy | Cold seconds | Delayed seconds | Delayed real hashes | Process peak RSS, MiB |
+|---:|---|---:|---:|---:|---:|
+| 1 | Existing growth | 52.4198 | 45.7378 | 85,204 | 94.418 |
+| 2 | Fixed segments | 52.3810 | 0.112937 | 0 | 95.266 |
+| 3 | Fixed segments | 51.7938 | 0.112560 | 0 | 94.840 |
+| 4 | Existing growth | 52.5772 | 43.2414 | 85,179 | 94.559 |
+
+This establishes a real-proof benefit for **changed boundaries after delayed
+reuse**. It does not establish the same miss rate in a running initial PRESYNC.
+Misses are reinserted during real verification, so this table is not comparable
+to the read-only synthetic probe miss rate. The two cold timings per variant
+are insufficient to assert a small cold-pass speedup. The larger cache policy
+remains unadopted pending evidence that its earlier allocation is worthwhile in
+the intended workload.
+
+Unchanged 2,000-header messages can restore individual evidence from the existing
+batch cache: 37.5 million headers need 18,750 such batch entries and 44.9 million
+need 22,450, compared with 65,536 slots in the 2 MiB batch cache. These counts do
+not guarantee retention under other branches, boundaries or competing traffic,
+but explain why the deliberately misaligned repeat is not a normal-network speed
+measurement. Neither cache policy removes the first genuine hash of each unique
+header or demonstrates the three-hour target.
+
+The repository benchmark now exposes the same pattern explicitly:
+
+```sh
+build/bin/bench_header_pow "$HEADERS_RAW" 100000 8 4 --grow-cache --delayed-reuse
+# Ordinary identical-message control:
+build/bin/bench_header_pow "$HEADERS_RAW" 100000 8 4 --grow-cache
+```
+
+No node runtime path changes in this benchmark commit. The benchmark built and
+completed a 6,000-real-header smoke run, with 6,000 cold hashes and zero repeated
+hashes at 4 MiB. Both incompatible mode combinations were rejected. Private raw
+results are retained in `cache-balanced-delayed-results.json` and its four run
+directories. Repeated trial evidence and broader retention checks would still be
+needed before adopting a production cache replacement.

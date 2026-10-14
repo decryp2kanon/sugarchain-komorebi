@@ -44,17 +44,19 @@ extern "C" int __wrap_yespower(yespower_local_t* local, const uint8_t* input, si
 int main(int argc, char** argv)
 {
     try {
-        if (argc < 4) throw std::runtime_error("Usage: bench_header_pow RAW_HEADERS COUNT WORKERS (1-8) [CACHE_MIB (1-2048)] [--block-stage] [--grow-cache] [--presync]");
-        bool block_stage{false}, grow_cache{false}, presync{false};
+        if (argc < 4) throw std::runtime_error("Usage: bench_header_pow RAW_HEADERS COUNT WORKERS (1-8) [CACHE_MIB (1-2048)] [--block-stage] [--grow-cache] [--presync] [--delayed-reuse]");
+        bool block_stage{false}, grow_cache{false}, presync{false}, delayed_reuse{false};
         const bool has_cache_arg{argc >= 5 && !std::string_view{argv[4]}.starts_with("--")};
         for (int i = has_cache_arg ? 5 : 4; i < argc; ++i) {
             const std::string_view option{argv[i]};
             if (option == "--block-stage") block_stage = true;
             else if (option == "--grow-cache") grow_cache = true;
             else if (option == "--presync") presync = true;
+            else if (option == "--delayed-reuse") delayed_reuse = true;
             else throw std::runtime_error("Unknown mode");
         }
         if (presync && block_stage) throw std::runtime_error("Choose presync or block-stage mode");
+        if (delayed_reuse && (presync || block_stage)) throw std::runtime_error("Delayed reuse is a separate proof-cache experiment");
         auto number = [](std::string_view arg, unsigned maximum) {
             unsigned value{0};
             auto [end, error]{std::from_chars(arg.data(), arg.data() + arg.size(), value)};
@@ -142,8 +144,13 @@ int main(int argc, char** argv)
                     }
                 }
             } else {
-                for (size_t pos{0}; pos < headers.size(); pos += 2000) {
-                    if (!verifier.Check(std::span{headers}.subspan(pos, std::min(size_t{2000}, headers.size() - pos)), params)) {
+                // A repeated identical message can restore individual evidence
+                // from the batch cache. Change repeat boundaries only in this
+                // opt-in experiment to expose delayed individual-proof misses.
+                // This is a controlled reuse pattern, not a measured peer trace.
+                const size_t chunk{delayed_reuse && std::string_view{pass} == "repeat" ? 1999U : 2000U};
+                for (size_t pos{0}; pos < headers.size(); pos += chunk) {
+                    if (!verifier.Check(std::span{headers}.subspan(pos, std::min(chunk, headers.size() - pos)), params)) {
                         throw std::runtime_error("Invalid proof of work");
                     }
                 }
