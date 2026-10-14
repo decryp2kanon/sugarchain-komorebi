@@ -2,6 +2,9 @@
 
 Date: 2026-10-15. Production baseline: `49b9f7ed78cd37e5eae1f28e4ed24e8cc89d76a4`.
 
+Final outcome: [completed comparisons and adoption decisions](presync-three-hour-results.md).
+This file preserves intermediate checkpoints; the linked report resolves their pending decisions.
+
 ## Status and objective
 
 **The three-hour target has not been achieved. No runtime candidate from this checkpoint is installed or adopted.** The completed experiments below use private executables; node runtime source, operating binaries, operating node and its data remain unchanged.
