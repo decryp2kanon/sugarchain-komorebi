@@ -16,6 +16,8 @@
 #include <atomic>
 #include <charconv>
 #include <chrono>
+#include <ctime>
+#include <cstdint>
 #include <deque>
 #include <fstream>
 #include <functional>
@@ -28,15 +30,56 @@
 const std::function<std::string(const char*)> G_TRANSLATION_FUN{nullptr};
 
 #ifdef ENABLE_YESPOWER_BENCH_WRAP
-static std::atomic<uint64_t> pow_calls{0}, pow_wall_ns{0};
+static std::atomic<uint64_t> pow_calls{0}, pow_wall_ns{0}, pow_cpu_ns{0};
+static bool pow_timing{true};
+#if defined(CLOCK_THREAD_CPUTIME_ID)
+static std::atomic<bool> pow_cpu_clock_available{true};
+#endif
+
+// Unlike elapsed times summed across concurrent calls, this clock measures CPU
+// actually consumed by each calling thread. Unsupported platforms say unavailable.
+static uint64_t ThreadCPUTimeNs()
+{
+#if defined(CLOCK_THREAD_CPUTIME_ID)
+    timespec value{};
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &value) != 0) {
+        pow_cpu_clock_available = false;
+        return 0;
+    }
+    return uint64_t(value.tv_sec) * 1'000'000'000 + uint64_t(value.tv_nsec);
+#else
+    return 0;
+#endif
+}
+
+static void PrintPoWMeasurements()
+{
+    std::cout << pow_calls.load() << ',';
+    if (!pow_timing) {
+        std::cout << "unavailable,unavailable";
+        return;
+    }
+    std::cout << double(pow_wall_ns.load()) / 1e9 << ',';
+#if defined(CLOCK_THREAD_CPUTIME_ID)
+    if (pow_cpu_clock_available) std::cout << double(pow_cpu_ns.load()) / 1e9;
+    else std::cout << "unavailable";
+#else
+    std::cout << "unavailable";
+#endif
+}
 extern "C" int __real_yespower(yespower_local_t*, const uint8_t*, size_t, const yespower_params_t*, yespower_binary_t*);
 extern "C" int __wrap_yespower(yespower_local_t* local, const uint8_t* input, size_t size,
                               const yespower_params_t* params, yespower_binary_t* output)
 {
     ++pow_calls;
+    if (!pow_timing) return __real_yespower(local, input, size, params, output);
+    const auto cpu_start{ThreadCPUTimeNs()};
     const auto start{std::chrono::steady_clock::now()};
     const auto result{__real_yespower(local, input, size, params, output)};
-    pow_wall_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
+    const auto end{std::chrono::steady_clock::now()};
+    const auto cpu_end{ThreadCPUTimeNs()};
+    pow_wall_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+    if (cpu_end >= cpu_start) pow_cpu_ns += cpu_end - cpu_start;
     return result;
 }
 #endif
@@ -44,8 +87,8 @@ extern "C" int __wrap_yespower(yespower_local_t* local, const uint8_t* input, si
 int main(int argc, char** argv)
 {
     try {
-        if (argc < 4) throw std::runtime_error("Usage: bench_header_pow RAW_HEADERS COUNT WORKERS (1-8) [CACHE_MIB (1-2048)] [--block-stage] [--grow-cache] [--presync] [--delayed-reuse]");
-        bool block_stage{false}, grow_cache{false}, presync{false}, delayed_reuse{false};
+        if (argc < 4) throw std::runtime_error("Usage: bench_header_pow RAW_HEADERS COUNT WORKERS (1-8) [CACHE_MIB (1-2048)] [--block-stage] [--grow-cache] [--presync] [--delayed-reuse] [--no-pow-timing] [--stage-timing]");
+        bool block_stage{false}, grow_cache{false}, presync{false}, delayed_reuse{false}, stage_timing{false};
         const bool has_cache_arg{argc >= 5 && !std::string_view{argv[4]}.starts_with("--")};
         for (int i = has_cache_arg ? 5 : 4; i < argc; ++i) {
             const std::string_view option{argv[i]};
@@ -53,6 +96,10 @@ int main(int argc, char** argv)
             else if (option == "--grow-cache") grow_cache = true;
             else if (option == "--presync") presync = true;
             else if (option == "--delayed-reuse") delayed_reuse = true;
+            else if (option == "--stage-timing") stage_timing = true;
+#ifdef ENABLE_YESPOWER_BENCH_WRAP
+            else if (option == "--no-pow-timing") pow_timing = false;
+#endif
             else throw std::runtime_error("Unknown mode");
         }
         if (presync && block_stage) throw std::runtime_error("Choose presync or block-stage mode");
@@ -79,6 +126,10 @@ int main(int argc, char** argv)
         history.front().phashBlock = &genesis_hash;
         history.front().nChainWork = GetBlockProof(history.front());
         auto previous_hash{chain->GenesisBlock().GetHash()};
+        // Identify the fixture independently of PoW call counts. The --presync
+        // processed-header column deliberately includes the eight peer copies.
+        std::vector<uint256> fixture_ids;
+        fixture_ids.reserve(count);
         for (auto& header : headers) {
             std::array<char, 80> bytes;
             if (!input.read(bytes.data(), bytes.size())) throw std::runtime_error("Truncated header input");
@@ -95,13 +146,23 @@ int main(int argc, char** argv)
             history.back().nHeight = previous->nHeight + 1;
             history.back().nChainWork = previous->nChainWork + GetBlockProof(header);
             previous_hash = header.GetHash();
+            fixture_ids.push_back(previous_hash);
         }
+        std::sort(fixture_ids.begin(), fixture_ids.end());
+        if (std::adjacent_find(fixture_ids.begin(), fixture_ids.end()) != fixture_ids.end()) {
+            throw std::runtime_error("Duplicate header identifier in fixture");
+        }
+        const size_t unique_fixture_headers{fixture_ids.size()};
+        std::vector<uint256>().swap(fixture_ids);
         HeaderPoWVerifier verifier{int(workers)};
-        std::cout << "workers,pass,headers,seconds,headers_per_second,yespower_calls,yespower_thread_wall_seconds\n";
+        std::cout << "workers,pass,headers,seconds,headers_per_second,yespower_calls,yespower_thread_wall_seconds,yespower_thread_cpu_seconds,unique_fixture_headers";
+        if (stage_timing) std::cout << ",verifier_seconds,context_seconds,other_seconds";
+        std::cout << std::endl;
         for (const auto* pass : {"cold", "repeat"}) {
 #ifdef ENABLE_YESPOWER_BENCH_WRAP
             pow_calls = 0;
             pow_wall_ns = 0;
+            pow_cpu_ns = 0;
 #endif
             // Independent peer states, bounded/misaligned messages and shared proof
             // evidence. Includes genuine PoW and contextual checks, but not socket
@@ -115,6 +176,14 @@ int main(int argc, char** argv)
                         chain->HeadersSync(), history.front(), history.back().nChainWork));
                 }
             }
+            std::chrono::steady_clock::duration verifier_time{}, context_time{};
+            const auto check = [&](std::span<const CBlockHeader> batch) {
+                if (!stage_timing) return verifier.Check(batch, params);
+                const auto begin{std::chrono::steady_clock::now()};
+                const bool valid{verifier.Check(batch, params)};
+                verifier_time += std::chrono::steady_clock::now() - begin;
+                return valid;
+            };
             const auto start{std::chrono::steady_clock::now()};
             if (presync) {
                 bool pending{true};
@@ -126,11 +195,13 @@ int main(int argc, char** argv)
                         pending = true;
                         const size_t count{std::min(size_t{1000} + peer * 125, headers.size() - pos)};
                         const auto batch{std::span{headers}.subspan(pos, count)};
-                        if (!verifier.Check(batch, params)) throw std::runtime_error("Invalid peer proof");
+                        if (!check(batch)) throw std::runtime_error("Invalid peer proof");
                         // Synthetic chunks deliberately vary below the P2P limit.
                         // Keep requesting data instead of interpreting a short chunk
                         // as the remote tip; this is not a wire-message simulator.
+                        const auto context_begin{stage_timing ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{}};
                         const auto result{states[peer]->ProcessNextHeaders(batch, true)};
+                        if (stage_timing) context_time += std::chrono::steady_clock::now() - context_begin;
                         pos += count;
                         if (!result.success || !result.pow_validated_headers.empty() ||
                             states[peer]->GetPresyncWork() != history[pos].nChainWork) {
@@ -150,7 +221,7 @@ int main(int argc, char** argv)
                 // This is a controlled reuse pattern, not a measured peer trace.
                 const size_t chunk{delayed_reuse && std::string_view{pass} == "repeat" ? 1999U : 2000U};
                 for (size_t pos{0}; pos < headers.size(); pos += chunk) {
-                    if (!verifier.Check(std::span{headers}.subspan(pos, std::min(chunk, headers.size() - pos)), params)) {
+                    if (!check(std::span{headers}.subspan(pos, std::min(chunk, headers.size() - pos)))) {
                         throw std::runtime_error("Invalid proof of work");
                     }
                 }
@@ -160,21 +231,31 @@ int main(int argc, char** argv)
             std::cout << workers << ',' << (presync ? "presync-" : "") << pass << ',' << processed << ',' << seconds << ','
                       << processed / seconds << ',';
 #ifdef ENABLE_YESPOWER_BENCH_WRAP
-            std::cout << pow_calls.load() << ',' << double(pow_wall_ns.load()) / 1e9;
+            PrintPoWMeasurements();
 #else
-            std::cout << "unavailable,unavailable";
+            std::cout << "unavailable,unavailable,unavailable";
 #endif
+            std::cout << ',' << unique_fixture_headers;
+            if (stage_timing) {
+                // These caller-thread intervals never overlap. Summed PoW
+                // thread timings above are a separate diagnostic, not addends.
+                const double verifier_seconds{std::chrono::duration<double>(verifier_time).count()};
+                const double context_seconds{std::chrono::duration<double>(context_time).count()};
+                std::cout << ',' << verifier_seconds << ',' << context_seconds << ','
+                          << seconds - verifier_seconds - context_seconds;
+            }
             std::cout << std::endl;
         }
         if (block_stage) {
             // Isolate the serial proof check used by block validation. Reset is
             // a controlled all-miss case, not an assertion about live retention.
-            std::cout << "block_proof_pass,headers,seconds,headers_per_second,yespower_calls,yespower_thread_wall_seconds\n";
+            std::cout << "block_proof_pass,headers,seconds,headers_per_second,yespower_calls,yespower_thread_wall_seconds,yespower_thread_cpu_seconds,unique_fixture_headers\n";
             for (const bool reset : {false, true}) {
                 if (reset) InitYespowerVerificationCache(cache_bytes, grow_cache);
 #ifdef ENABLE_YESPOWER_BENCH_WRAP
                 pow_calls = 0;
                 pow_wall_ns = 0;
+                pow_cpu_ns = 0;
 #endif
                 const auto start{std::chrono::steady_clock::now()};
                 for (const auto& header : headers) {
@@ -183,11 +264,11 @@ int main(int argc, char** argv)
                 const double seconds{std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count()};
                 std::cout << (reset ? "cold" : "warm") << ',' << headers.size() << ',' << seconds << ',' << headers.size() / seconds << ',';
 #ifdef ENABLE_YESPOWER_BENCH_WRAP
-                std::cout << pow_calls.load() << ',' << double(pow_wall_ns.load()) / 1e9;
+                PrintPoWMeasurements();
 #else
-                std::cout << "unavailable,unavailable";
+                std::cout << "unavailable,unavailable,unavailable";
 #endif
-                std::cout << std::endl;
+                std::cout << ',' << unique_fixture_headers << std::endl;
             }
         }
     } catch (const std::exception& error) {

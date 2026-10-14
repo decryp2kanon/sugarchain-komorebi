@@ -59,3 +59,20 @@ gains without claiming the three-hour goal unless the complete interval is timed
 
 This work belongs to the presync group of the future **Lazy PoW / RSS management /
 presync performance** three-PR split. No PR split or merge is part of this task.
+
+## Measurement implementation checkpoint
+
+The benchmark now appends actual `CLOCK_THREAD_CPUTIME_ID` proof CPU time and
+independently checked unique fixture identifiers to its existing CSV columns.
+`--stage-timing` reports disjoint verifier/context/other caller intervals;
+`--no-pow-timing` disables per-proof clocks for overhead controls while retaining
+call counts. Unsupported clocks explicitly report unavailable. Summed thread
+elapsed time is still a separate diagnostic, not wall time saved.
+
+The benchmark built successfully. A 6,000-header smoke run covered raw continuous
+hashing, an eight-item raw barrier, real one-peer verification, and the eight-peer
+driver. Every cold arm performed 6,000 proofs; verifier repeats performed zero.
+The private dispatch candidate also passed the existing 31 `header_pow_tests`
+cases and all 54,986 assertions, including invalid-proof bounds and exception
+recovery. These are preparation checks, not evidence of a speed improvement or
+full PRESYNC completion. No runtime candidate is adopted at this checkpoint.
