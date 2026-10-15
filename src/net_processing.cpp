@@ -144,7 +144,7 @@ static_assert(MAX_BLOCKTXN_DEPTH <= MIN_BLOCKS_TO_KEEP, "MAX_BLOCKTXN_DEPTH too 
  *  Larger windows tolerate larger download speed differences between peer, but increase the potential
  *  degree of disordering of blocks on disk (which make reindexing and pruning harder). We'll probably
  *  want to make this a per-peer adaptive value at some point. */
-static const unsigned int BLOCK_DOWNLOAD_WINDOW = 1024;
+static const unsigned int BLOCK_DOWNLOAD_WINDOW = DEFAULT_IBD_BLOCK_DOWNLOAD_WINDOW;
 /** Block download timeout base, expressed in multiples of the block interval (i.e. 10 min) */
 static constexpr double BLOCK_DOWNLOAD_TIMEOUT_BASE = 1;
 /** Additional block download timeout per parallel downloading peer (i.e. 5 min) */
@@ -1438,10 +1438,13 @@ void PeerManagerImpl::FindNextBlocksToDownload(const Peer& peer, unsigned int co
         return;
 
     const CBlockIndex *pindexWalk = state->pindexLastCommonBlock;
-    // Never fetch further than the best block we know the peer has, or more than BLOCK_DOWNLOAD_WINDOW + 1 beyond the last
+    // Never fetch further than the best block we know the peer has, or more than the selected window + 1 beyond the last
     // linked block we have in common with this peer. The +1 is so we can detect stalling, namely if we would be able to
     // download that next block if the window were 1 larger.
-    int nWindowEnd = state->pindexLastCommonBlock->nHeight + BLOCK_DOWNLOAD_WINDOW;
+    const int download_window{m_chainman.IsInitialBlockDownload()
+        ? std::clamp(m_opts.ibd_download_window, DEFAULT_IBD_BLOCK_DOWNLOAD_WINDOW, MAX_IBD_BLOCK_DOWNLOAD_WINDOW)
+        : static_cast<int>(BLOCK_DOWNLOAD_WINDOW)};
+    int nWindowEnd = state->pindexLastCommonBlock->nHeight + download_window;
 
     FindNextBlocks(vBlocks, peer, state, pindexWalk, count, nWindowEnd, &m_chainman.ActiveChain(), &nodeStaller);
 }
@@ -1472,7 +1475,10 @@ void PeerManagerImpl::TryDownloadingHistoricalBlocks(const Peer& peer, unsigned 
         return;
     }
 
-    FindNextBlocks(vBlocks, peer, state, from_tip, count, std::min<int>(from_tip->nHeight + BLOCK_DOWNLOAD_WINDOW, target_block->nHeight));
+    const int download_window{m_chainman.IsInitialBlockDownload()
+        ? std::clamp(m_opts.ibd_download_window, DEFAULT_IBD_BLOCK_DOWNLOAD_WINDOW, MAX_IBD_BLOCK_DOWNLOAD_WINDOW)
+        : static_cast<int>(BLOCK_DOWNLOAD_WINDOW)};
+    FindNextBlocks(vBlocks, peer, state, from_tip, count, std::min<int>(from_tip->nHeight + download_window, target_block->nHeight));
 }
 
 void PeerManagerImpl::FindNextBlocks(std::vector<const CBlockIndex*>& vBlocks, const Peer& peer, CNodeState *state, const CBlockIndex *pindexWalk, unsigned int count, int nWindowEnd, const CChain* activeChain, NodeId* nodeStaller)

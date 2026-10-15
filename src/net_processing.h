@@ -52,6 +52,8 @@ static const unsigned int MAX_CMPCTBLOCKS_INFLIGHT_PER_BLOCK = 3;
 static const unsigned int MAX_HEADERS_RESULTS = 2000;
 static constexpr int DEFAULT_IBD_BLOCK_REQUEST_LIMIT{16};
 static constexpr int MAX_IBD_BLOCK_REQUEST_LIMIT{128};
+static constexpr int DEFAULT_IBD_BLOCK_DOWNLOAD_WINDOW{1024};
+static constexpr int MAX_IBD_BLOCK_DOWNLOAD_WINDOW{4096};
 
 struct CNodeStateStats {
     int nSyncHeight = -1;
@@ -101,6 +103,8 @@ public:
         int header_pow_workers{DEFAULT_HEADER_POW_WORKERS};
         //! Opt-in IBD pipeline budget; normal relay/direct-fetch limits are unchanged.
         int ibd_block_request_limit{DEFAULT_IBD_BLOCK_REQUEST_LIMIT};
+        //! Opt-in lookahead; the per-peer request ceiling is independent.
+        int ibd_download_window{DEFAULT_IBD_BLOCK_DOWNLOAD_WINDOW};
     };
 
     static std::unique_ptr<PeerManager> make(CConnman& connman, AddrMan& addrman,
