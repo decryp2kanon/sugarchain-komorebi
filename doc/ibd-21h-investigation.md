@@ -27,3 +27,33 @@ add overlapping phase savings. Keep the future Lazy PoW / RSS management /
 presync-performance PR split, with new block-pipeline work scoped separately
 according to the final implementation. Private commands, source/binary hashes,
 samples and results belong under `$EVIDENCE_ROOT/ibd-21h-followup/`.
+
+## First diagnosis checkpoint
+
+The operating GUI's executable hash differs from the current built GUI. The
+observed 21-hour run therefore cannot be assigned all later source changes.
+The operating process and normal executables are preserved for diagnosis.
+
+A fresh requested-block regtest probe prepares solved coinbase-only blocks and
+headers before timing. Eight ordinary outbound P2P responders answer real GETDATA
+requests with pre-serialized blocks. They do not send unsolicited blocks. Final
+tip, UTXO scan, verifychain and restart-tip checks pass. Regtest uses SHA256d;
+this is not a mainnet Yespower or large-index reproduction.
+
+| Diagnostic, 20,000 blocks | Elapsed | Node CPU | BLOCK-handler time |
+|---|---:|---:|---:|
+| All responder delays 100 ms | 2.936 s | 81.1% | 1.491 s |
+| Delays 50/70/100/150/300/500/800/1,000 ms | 19.621 s | 16.0% | 1.430 s |
+
+Nested private timers aggregate parse, lock scope, validation, ConnectBlock,
+flush, DB writes and FileCommit. Their sums overlap; whole-process persistence
+timers also include preparation/final sync/shutdown. Message queue waits overlap
+and cannot be added to elapsed time. These traces establish a controlled slow-
+supply example, not the missing historical mainnet stage timings.
+
+Screen a lookahead of 4,096 versus 1,024 without raising the configured per-peer
+128-request ceiling. The original source already documents the tradeoff:
+larger lookahead tolerates uneven delivery but increases block-file disorder.
+The first 40,000-block ABBA group was 72.84% shorter in the heterogeneous-delay
+fixture. A second group and production-option safety checks remain pending.
+Do not extrapolate this percentage to the 21-hour run or change defaults on it.
