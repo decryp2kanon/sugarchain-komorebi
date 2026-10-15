@@ -1,32 +1,27 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 The Sugarchain Komorebi developers
 # Distributed under the MIT software license, see the accompanying file COPYING.
-"""Manual Linux requested-block pipeline benchmark using fresh regtest data.
+"""Manual Linux requested-block benchmark with fixed production resource settings.
 
-Set PROBE_RESULT, BITCOIND and BITCOINCLI; pass the build's --configfile and a
-fresh --tmpdir. PROBE_WINDOW selects the opt-in lookahead, PROBE_COUNT the block
-count, PROBE_PEERS the responder count, and PROBE_DELAYS_MS comma-separated
-response delays. Source preparation/serialization precedes the acceptance timer.
-This helper does not enforce a CPU/RAM budget: apply external resource controls.
+Set PROBE_RESULT, BITCOIND and BITCOINCLI; use a fresh --tmpdir and build config.
+PROBE_COUNT, PROBE_PEERS and PROBE_DELAYS_MS configure the fixture/suppliers.
+PROBE_PADDING adds valid OP_RETURN coinbase payload bytes (transport/storage
+stress, not representative script validation or UTXO growth). PROBE_FIRST_DELAY_MS
+optionally delays the response batch containing the first block. Compare separate
+internal-window binaries; there is no download-window user option.
 
-I/O counters end after the explicit final sync/consistency check, before shutdown.
-The child high-water mark after shutdown assumes the daemon is the only sizable
-child; CLI mode is disabled. Restarted-process RSS is also retained separately.
-See doc/ibd-download-window.md for scope, protocol and measurement limitations.
+The helper does not enforce resource limits; apply external controls. Preparation
+is outside acceptance timing. I/O ends after final sync/check, before shutdown.
+Child RSS assumes the daemon is the only sizable child. See doc/ibd-download-window.md.
 """
-import hashlib
-import json
-import os
-import resource
-import sys
-import threading
-import time
+import hashlib, json, os, statistics, sys, threading, time, resource
 from pathlib import Path
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'test' / 'functional'))
 from test_framework.blocktools import create_block, create_coinbase
+from test_framework.script import CScript, OP_RETURN
 from test_framework.messages import CBlockHeader, msg_block, msg_headers, MSG_BLOCK, MSG_TYPE_MASK
-from test_framework.p2p import P2PInterface, NetworkThread
+from test_framework.p2p import P2PInterface, NetworkThread, p2p_lock
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal
 
@@ -64,7 +59,7 @@ class Supplier(P2PInterface):
             self._transport.write(data)
             self.sent += len(wanted)
             self.events.append({'kind': 'enqueue', 't': time.monotonic(), 'count': len(wanted), 'bytes': len(data)})
-        NetworkThread.network_event_loop.call_later(self.delay, deliver)
+        NetworkThread.network_event_loop.call_later(float(os.getenv('PROBE_FIRST_DELAY_MS', '0')) / 1000 if os.getenv('PROBE_FIRST_DELAY_MS') and next(iter(self.payloads)) in wanted else self.delay, deliver)
 
     def release(self):
         self.released = True
@@ -75,24 +70,20 @@ class Supplier(P2PInterface):
 class Probe(BitcoinTestFramework):
 
     def set_test_params(self):
-        if not Path('/proc/self/stat').is_file():
-            raise RuntimeError('This benchmark requires Linux /proc resource counters')
-        if not os.environ.get('PROBE_RESULT'):
-            raise RuntimeError('Set PROBE_RESULT to an output JSON path')
+        if not Path('/proc/self/stat').is_file() or not os.environ.get('PROBE_RESULT'):
+            raise RuntimeError('Linux /proc and PROBE_RESULT are required')
         self.setup_clean_chain = True
         self.num_nodes = 1
         self.supports_cli = False
-        self.extra_args = [['-conf=bitcoin.conf', '-disablewallet=1', '-checkblockindex=0', '-fast-startup=0', '-parpow=8', '-dbcache=512', '-debug=0', '-maxibdblocksinflight=' + os.getenv('PROBE_LIMIT', '128')]]
-        if os.getenv('PROBE_WINDOW'):
-            self.extra_args[0].append('-maxibddownloadwindow=' + os.environ['PROBE_WINDOW'])
+        self.extra_args = [['-conf=bitcoin.conf', '-disablewallet=1', '-checkblockindex=0', '-fast-startup=0', '-parpow=8', '-dbcache=4096', '-maxpowcache=2048', '-debug=0', '-maxibdblocksinflight=' + os.getenv('PROBE_LIMIT', '128')]]
 
     def run_test(self):
         n = self.nodes[0]
         count = int(os.getenv('PROBE_COUNT', '20000'))
         num = int(os.getenv('PROBE_PEERS', '8'))
         delay = float(os.getenv('PROBE_DELAY_MS', '100'))
-        if not 1 <= count <= 1000000 or not 1 <= num <= 8:
-            raise ValueError('Use 1..1000000 blocks and 1..8 peers')
+        if not 1 <= count <= 1000000 or not 1 <= num <= 8 or (not 0 <= int(os.getenv('PROBE_PADDING', '0')) <= 131072):
+            raise ValueError('Use 1..1000000 blocks, 1..8 peers and 0..131072 padding bytes')
         info = n.getblockchaininfo()
         tip = n.getblockheader(info['bestblockhash'])
         prev = int(info['bestblockhash'], 16)
@@ -100,6 +91,10 @@ class Probe(BitcoinTestFramework):
         payloads = {}
         for i in range(count):
             b = create_block(prev, create_coinbase(i + 1), tip['time'] + i + 1)
+            padding = int(os.getenv('PROBE_PADDING', '0'))
+            if padding:
+                b.vtx[0].vout[0].scriptPubKey = CScript([OP_RETURN, bytes(padding)])
+                b.hashMerkleRoot = b.calc_merkle_root()
             b.solve()
             prev = b.hash_int
             blocks.append(b)
@@ -143,21 +138,27 @@ class Probe(BitcoinTestFramework):
         thread.start()
         begin = time.monotonic()
         progress = []
+        last_peer_query = 0
+        data = []
         for peer in peers:
             NetworkThread.network_event_loop.call_soon_threadsafe(peer.release)
         try:
             while True:
-                chain = n.getblockchaininfo()
-                data = n.getpeerinfo()
+                height_now = n.getblockcount()
                 now = time.monotonic()
-                progress.append({'t': now, 'height': chain['blocks'], 'inflight': sum((len(p.get('inflight', [])) for p in data)), 'peers': len(data)})
-                if chain['blocks'] == count:
+                if now - last_peer_query >= 1:
+                    data = n.getpeerinfo()
+                    last_peer_query = now
+                progress.append({'t': now, 'height': height_now, 'inflight': sum((len(p.get('inflight', [])) for p in data)), 'peers': len(data)})
+                if height_now == count:
                     break
                 if now - begin > 180:
                     raise TimeoutError('owned probe interval exceeded 180 seconds')
-                time.sleep(0.02)
+                time.sleep(0.1)
             elapsed = time.monotonic() - begin
             after = snapshot()
+            chain = n.getblockchaininfo()
+            data = n.getpeerinfo()
             assert_equal(chain['bestblockhash'], f'{prev:064x}')
             assert_equal(len(data), num)
             flush = time.monotonic()
@@ -170,7 +171,7 @@ class Probe(BitcoinTestFramework):
         finally:
             stop.set()
             thread.join()
-        result = {'measurement_version': 2, 'node_pid': pid, 'io_through_final_sync': {k: after_sync['io'][k] - before['io'][k] for k in before['io']}, 'node_cpu_through_final_sync_s': after_sync['cpu_s'] - before['cpu_s'], 'count': count, 'num_peers': num, 'response_delay_ms': delay, 'response_delays_ms': delays, 'limit': os.getenv('PROBE_LIMIT', '128'), 'seconds': elapsed, 'blocks_per_s': count / elapsed, 'node_cpu_s': after['cpu_s'] - before['cpu_s'], 'node_cpu_percent': 100 * (after['cpu_s'] - before['cpu_s']) / elapsed, 'peak_rss_kib': max([before['VmHWM'], after['VmHWM'], after_sync['VmHWM']] + [s['VmHWM'] for s in sampled]), 'flush_utxo_s': flush, 'ibd_at_end': chain['initialblockdownload'], 'tip': chain['bestblockhash'], 'progress': progress, 'samples': sampled, 'suppliers': [{'index': p.index, 'sent': p.sent, 'events': p.events} for p in peers], 'fixture_payload_sha256': hashlib.sha256(b''.join((payloads[b.hash_int] for b in blocks))).hexdigest()}
+        result = {'padding_bytes': int(os.getenv('PROBE_PADDING', '0')), 'first_delay_ms': os.getenv('PROBE_FIRST_DELAY_MS'), 'initial_snapshot': before, 'after_snapshot': after, 'after_sync_snapshot': after_sync, 'measurement_version': 3, 'node_pid': pid, 'io_through_final_sync': {k: after_sync['io'][k] - before['io'][k] for k in before['io']}, 'node_cpu_through_final_sync_s': after_sync['cpu_s'] - before['cpu_s'], 'count': count, 'num_peers': num, 'response_delay_ms': delay, 'response_delays_ms': delays, 'limit': os.getenv('PROBE_LIMIT', '128'), 'seconds': elapsed, 'blocks_per_s': count / elapsed, 'node_cpu_s': after['cpu_s'] - before['cpu_s'], 'node_cpu_percent': 100 * (after['cpu_s'] - before['cpu_s']) / elapsed, 'peak_rss_kib': max([before['VmHWM'], after['VmHWM'], after_sync['VmHWM']] + [s['VmHWM'] for s in sampled]), 'flush_utxo_s': flush, 'ibd_at_end': chain['initialblockdownload'], 'tip': chain['bestblockhash'], 'progress': progress, 'samples': sampled, 'suppliers': [{'index': p.index, 'sent': p.sent, 'events': p.events} for p in peers], 'fixture_payload_sha256': hashlib.sha256(b''.join((payloads[b.hash_int] for b in blocks))).hexdigest()}
         shutdown_start = time.monotonic()
         self.stop_node(0)
         result['shutdown_seconds'] = time.monotonic() - shutdown_start
