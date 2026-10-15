@@ -64,6 +64,12 @@ Measured no-option daemon hashes:
 
 Final builds may differ in comments/version metadata; measured binaries and private raw results are retained separately. Fixture payload hashes and tips are identical within each condition.
 
+## Previous full-mainnet IBD graph
+
+![Previous mainnet IBD run: 21h00m14s graph duration and 12.176 GiB peak RSS](benchmarks/ibd-2026-10-14-21h.png)
+
+User-provided test evidence, started 2026-10-14 10:38:02 local time. The graph reports 21h00m14s and peak RSS 12.176 GiB. This run predates the internal 4096 download-window change; it is **not** a full-mainnet result for that change. At the last sample, blocks were 44,901,914 and headers 44,919,059: the graph's completion condition reflects IBD-flag exit, not exact tip equality. The Lazy PoW 1/1 annotation is not evidence of a 44.9-million-entry background pass. CPU 100% represents one logical CPU.
+
 ## Earlier investigation and limits
 
 The previous opt-in 100k uneven-delay test showed 72.93% shorter acceptance-plus-sync time; the earlier small-fixture measurements remain historical evidence, not current option instructions. See the prior revision of this document for that protocol. The no-option matrix above is the basis for the current default decision.
