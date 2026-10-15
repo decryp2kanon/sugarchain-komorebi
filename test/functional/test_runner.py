@@ -280,6 +280,8 @@ BASE_SCRIPTS = [
     'p2p_ibd_download_limits.py --v1transport',
     'p2p_ibd_download_limits.py --v2transport',
     'p2p_ibd_download_limits.py --v1transport --inflight-limit=16',
+    'p2p_ibd_download_window.py --v1transport',
+    'p2p_ibd_download_window.py --v2transport',
     'p2p_net_deadlock.py --v1transport',
     'p2p_net_deadlock.py --v2transport',
     'wallet_signmessagewithaddress.py',
