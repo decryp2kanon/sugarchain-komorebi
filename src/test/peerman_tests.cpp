@@ -106,28 +106,6 @@ BOOST_AUTO_TEST_CASE(ibd_request_budget_is_opt_in_and_bounded)
     }
 }
 
-BOOST_AUTO_TEST_CASE(ibd_download_window_is_opt_in_and_independent)
-{
-    ArgsManager args;
-    PeerManager::Options options;
-    node::ApplyArgsManOptions(args, options);
-    BOOST_CHECK_EQUAL(options.ibd_download_window, 1024);
-    for (const auto& [text, expected] : std::vector<std::pair<const char*, int>>{
-             {"-9223372036854775808", 1024}, {"0", 1024}, {"1023", 1024},
-             {"1024", 1024}, {"2048", 2048}, {"4096", 4096},
-             {"4097", 4096}, {"9223372036854775807", 4096}}) {
-        args.ForceSetArg("-maxibddownloadwindow", text);
-        node::ApplyArgsManOptions(args, options);
-        BOOST_CHECK_EQUAL(options.ibd_download_window, expected);
-        BOOST_CHECK_EQUAL(options.ibd_block_request_limit, DEFAULT_IBD_BLOCK_REQUEST_LIMIT);
-        BOOST_CHECK_EQUAL(options.header_pow_workers, DEFAULT_HEADER_POW_WORKERS);
-    }
-    args.ForceSetArg("-maxibdblocksinflight", "128");
-    node::ApplyArgsManOptions(args, options);
-    BOOST_CHECK_EQUAL(options.ibd_download_window, 4096);
-    BOOST_CHECK_EQUAL(options.ibd_block_request_limit, 128);
-}
-
 /** Window, in blocks, for connecting to NODE_NETWORK_LIMITED peers */
 static constexpr int64_t NODE_NETWORK_LIMITED_ALLOW_CONN_BLOCKS = 144;
 

@@ -144,7 +144,7 @@ static_assert(MAX_BLOCKTXN_DEPTH <= MIN_BLOCKS_TO_KEEP, "MAX_BLOCKTXN_DEPTH too 
  *  Larger windows tolerate larger download speed differences between peer, but increase the potential
  *  degree of disordering of blocks on disk (which make reindexing and pruning harder). We'll probably
  *  want to make this a per-peer adaptive value at some point. */
-static const unsigned int BLOCK_DOWNLOAD_WINDOW = DEFAULT_IBD_BLOCK_DOWNLOAD_WINDOW;
+static const unsigned int BLOCK_DOWNLOAD_WINDOW = 1024;
 /** Block download timeout base, expressed in multiples of the block interval (i.e. 10 min) */
 static constexpr double BLOCK_DOWNLOAD_TIMEOUT_BASE = 1;
 /** Additional block download timeout per parallel downloading peer (i.e. 5 min) */
@@ -1442,7 +1442,7 @@ void PeerManagerImpl::FindNextBlocksToDownload(const Peer& peer, unsigned int co
     // linked block we have in common with this peer. The +1 is so we can detect stalling, namely if we would be able to
     // download that next block if the window were 1 larger.
     const int download_window{m_chainman.IsInitialBlockDownload()
-        ? std::clamp(m_opts.ibd_download_window, DEFAULT_IBD_BLOCK_DOWNLOAD_WINDOW, MAX_IBD_BLOCK_DOWNLOAD_WINDOW)
+        ? IBD_BLOCK_DOWNLOAD_WINDOW
         : static_cast<int>(BLOCK_DOWNLOAD_WINDOW)};
     int nWindowEnd = state->pindexLastCommonBlock->nHeight + download_window;
 
@@ -1476,7 +1476,7 @@ void PeerManagerImpl::TryDownloadingHistoricalBlocks(const Peer& peer, unsigned 
     }
 
     const int download_window{m_chainman.IsInitialBlockDownload()
-        ? std::clamp(m_opts.ibd_download_window, DEFAULT_IBD_BLOCK_DOWNLOAD_WINDOW, MAX_IBD_BLOCK_DOWNLOAD_WINDOW)
+        ? IBD_BLOCK_DOWNLOAD_WINDOW
         : static_cast<int>(BLOCK_DOWNLOAD_WINDOW)};
     FindNextBlocks(vBlocks, peer, state, from_tip, count, std::min<int>(from_tip->nHeight + download_window, target_block->nHeight));
 }

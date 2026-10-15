@@ -46,10 +46,10 @@ class P2PStaller(P2PDataStore):
 
 
 class P2PIBDStallingTest(BitcoinTestFramework):
-    download_window = 1024
+    download_window = 4096
 
     def send_header_chunks(self, peer, headers):
-        # Larger opt-in windows still use ordinary, bounded headers messages.
+        # The internal IBD window still uses ordinary, bounded headers messages.
         for pos in range(0, len(headers), MAX_HEADERS_RESULTS):
             peer.send_and_ping(msg_headers(headers[pos:pos + MAX_HEADERS_RESULTS]))
 

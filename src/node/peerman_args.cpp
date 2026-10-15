@@ -32,9 +32,6 @@ void ApplyArgsManOptions(const ArgsManager& argsman, PeerManager::Options& optio
     if (auto value{argsman.GetIntArg("-maxibdblocksinflight")}) {
         options.ibd_block_request_limit = std::clamp<int64_t>(*value, DEFAULT_IBD_BLOCK_REQUEST_LIMIT, MAX_IBD_BLOCK_REQUEST_LIMIT);
     }
-    if (auto value{argsman.GetIntArg("-maxibddownloadwindow")}) {
-        options.ibd_download_window = std::clamp<int64_t>(*value, DEFAULT_IBD_BLOCK_DOWNLOAD_WINDOW, MAX_IBD_BLOCK_DOWNLOAD_WINDOW);
-    }
 }
 
 } // namespace node
