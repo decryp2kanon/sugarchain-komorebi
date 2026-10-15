@@ -1,7 +1,7 @@
 # Follow-up to the observed 21-hour IBD
 
-Baseline: `5866c6540a`, 2026-10-15. Investigation completed with an opt-in
-IBD download-window candidate. See [results and limitations](ibd-download-window.md).
+Baseline: `5866c6540a`, 2026-10-15. Investigation completed with a wider internal
+IBD download window, without a new user option. See [results and limitations](ibd-download-window.md).
 The checkpoint observations below are retained as investigation history.
 
 The first priority is the post-header block interval, approximately 10 h 21 m
