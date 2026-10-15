@@ -1,7 +1,8 @@
 # Follow-up to the observed 21-hour IBD
 
-Baseline: `5866c6540a`, 2026-10-15. Investigation in progress; no new speedup
-or runtime change is established at this checkpoint.
+Baseline: `5866c6540a`, 2026-10-15. Investigation completed with an opt-in
+IBD download-window candidate. See [results and limitations](ibd-download-window.md).
+The checkpoint observations below are retained as investigation history.
 
 The first priority is the post-header block interval, approximately 10 h 21 m
 of the user's completed run. Average node CPU was about 49.8% of one logical
