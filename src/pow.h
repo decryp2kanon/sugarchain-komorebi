@@ -50,6 +50,19 @@ inline constexpr size_t MAX_YESPOWER_CACHE_BYTES{size_t{2048} << 20};
  */
 void InitYespowerVerificationCache(size_t bytes, bool grow_on_demand = false);
 
+/** Proof storage only: excludes hash flags, allocator overhead and batch-cache metadata. */
+struct YespowerCacheUsage {
+    size_t budget_bytes{};
+    size_t proof_capacity_bytes{};
+    size_t proof_storage_bytes{};
+    size_t tiers{};
+};
+YespowerCacheUsage GetYespowerVerificationCacheUsage();
+/** Drop IBD-era RAM evidence, preserving the configured budget and verification policy.
+ * Must be called outside cs_main. Old storage is destroyed outside the cache lock.
+ */
+bool ShrinkYespowerVerificationCache();
+
 /** With cs_main held, restore an evicted proof from a genuinely checked live index. */
 void CacheVerifiedBlockIndexProof(const CBlockIndex& index, const Consensus::Params& params);
 

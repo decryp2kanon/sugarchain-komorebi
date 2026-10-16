@@ -1382,4 +1382,78 @@ BOOST_AUTO_TEST_CASE(historical_evidence_durable_reopen_and_reindex)
     }
 }
 
+BOOST_AUTO_TEST_CASE(post_ibd_shrink_discards_only_ram_evidence)
+{
+    CacheBudget restore{DEFAULT_YESPOWER_CACHE_BYTES};
+    InitYespowerVerificationCache(1 << 20, true);
+    auto headers{Headers(920, 1024)};
+    HeaderPoWVerifier verifier{8};
+    BOOST_REQUIRE(verifier.CheckEach(headers, params));
+    const auto before{GetYespowerVerificationCacheUsage()};
+    BOOST_REQUIRE_GT(before.tiers, 1U);
+    {
+        Observation observation;
+        BOOST_REQUIRE(CheckBlockProofOfWork(headers.back(), params));
+        BOOST_CHECK_EQUAL(calls.load(), 0U);
+    }
+    BOOST_REQUIRE(ShrinkYespowerVerificationCache());
+    const auto after{GetYespowerVerificationCacheUsage()};
+    BOOST_CHECK_EQUAL(after.budget_bytes, before.budget_bytes);
+    BOOST_CHECK_EQUAL(after.tiers, 1U);
+    BOOST_CHECK_LT(after.proof_storage_bytes, before.proof_storage_bytes);
+    BOOST_CHECK(!ShrinkYespowerVerificationCache());
+    {
+        Observation observation;
+        BOOST_REQUIRE(CheckBlockProofOfWork(headers.back(), params));
+        BOOST_CHECK_EQUAL(calls.load(), 1U);
+        auto invalid{headers.back()};
+        invalid.nBits = 0;
+        BOOST_CHECK(!CheckBlockProofOfWork(invalid, params));
+    }
+    InitYespowerVerificationCache(1 << 20, false);
+    BOOST_REQUIRE(CheckBlockProofOfWork(headers.back(), params));
+    BOOST_CHECK(!ShrinkYespowerVerificationCache());
+    {
+        Observation observation;
+        BOOST_REQUIRE(CheckBlockProofOfWork(headers.back(), params));
+        BOOST_CHECK_EQUAL(calls.load(), 0U);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(post_ibd_shrink_is_safe_during_parallel_checks)
+{
+    CacheBudget restore{DEFAULT_YESPOWER_CACHE_BYTES};
+    InitYespowerVerificationCache(1 << 20, true);
+    auto headers{Headers(921, 256)};
+    HeaderPoWVerifier initial{2};
+    BOOST_REQUIRE(initial.CheckEach(headers, params));
+    std::atomic<unsigned> failures{0}, ready{0}, shrinks{0};
+    std::atomic<bool> start{false};
+    {
+        std::jthread shrinking{[&] {
+            while (ready.load() != 2) std::this_thread::yield();
+            start = true;
+            for (int i{0}; i < 100; ++i) {
+                if (ShrinkYespowerVerificationCache()) ++shrinks;
+                GetYespowerVerificationCacheUsage();
+            }
+        }};
+        std::vector<std::jthread> readers;
+        for (int n{0}; n < 2; ++n) readers.emplace_back([&] {
+            HeaderPoWVerifier verifier{2};
+            ++ready;
+            while (!start.load()) std::this_thread::yield();
+            for (int i{0}; i < 8; ++i) {
+                if (!verifier.CheckEach(headers, params)) ++failures;
+                auto invalid{headers.back()};
+                invalid.nBits = 0;
+                if (CheckBlockProofOfWork(invalid, params)) ++failures;
+            }
+        });
+    }
+    BOOST_CHECK_EQUAL(failures.load(), 0U);
+    BOOST_CHECK_GT(shrinks.load(), 0U);
+    BOOST_CHECK_EQUAL(GetYespowerVerificationCacheUsage().budget_bytes, 1U << 20);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

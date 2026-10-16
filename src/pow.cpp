@@ -60,6 +60,11 @@ class PagedYespowerProofs {
 
 public:
     void resize(size_t size) { m_pages.resize((size + PAGE_ITEMS - 1) / PAGE_ITEMS); }
+    size_t AllocatedBytes() const
+    {
+        return m_pages.capacity() * sizeof(std::unique_ptr<Page>) +
+            std::count_if(m_pages.begin(), m_pages.end(), [](const auto& page) { return bool(page); }) * sizeof(Page);
+    }
     const uint256& operator[](size_t index) const
     {
         static const uint256 empty{};
@@ -132,6 +137,24 @@ class YespowerVerificationCache {
     ValidStore m_valid;
     std::unique_ptr<Cache> m_batches;
     std::shared_mutex m_mutex;
+    size_t m_budget_bytes{};
+    bool m_grow_on_demand{false};
+
+    YespowerCacheUsage UsageLocked() const
+    {
+        YespowerCacheUsage usage{.budget_bytes = m_budget_bytes};
+        if (m_valid.index() == 1) {
+            const auto& growing{*std::get<1>(m_valid)};
+            usage.proof_capacity_bytes = growing.allocated;
+            usage.tiers = growing.valid.size();
+            for (const auto& tier : growing.valid) usage.proof_storage_bytes += tier->GetStorage().AllocatedBytes();
+        } else {
+            const size_t batch_bytes{m_budget_bytes >= 1024 ? std::min(m_budget_bytes / 8, size_t{2} << 20) : 0};
+            usage.proof_capacity_bytes = usage.proof_storage_bytes = m_budget_bytes - batch_bytes;
+            usage.tiers = 1;
+        }
+        return usage;
+    }
 
     bool ContainsLocked(const uint256& entry) const
     {
@@ -169,6 +192,40 @@ public:
         std::unique_lock lock{m_mutex};
         std::swap(m_valid, replacement);
         std::swap(m_batches, batches);
+        m_budget_bytes = bytes;
+        m_grow_on_demand = grow_on_demand;
+    }
+
+    YespowerCacheUsage Usage()
+    {
+        std::shared_lock lock{m_mutex};
+        return UsageLocked();
+    }
+
+    bool Shrink()
+    {
+        ValidStore replacement;
+        std::unique_ptr<Cache> batches;
+        {
+            std::unique_lock lock{m_mutex};
+            if (!m_grow_on_demand) return false;
+            const size_t batch_bytes{m_budget_bytes >= 1024 ? std::min(m_budget_bytes / 8, size_t{2} << 20) : 0};
+            const size_t valid_budget{m_budget_bytes - batch_bytes};
+            const auto usage{UsageLocked()};
+            // An untouched initial tier has nothing useful to release. The same
+            // operation is harmless on a freshly restarted, already-synced node.
+            if (usage.proof_storage_bytes <= DEFAULT_YESPOWER_CACHE_BYTES && usage.tiers == 1) return false;
+            replacement.emplace<1>(std::make_unique<GrowingCache>(valid_budget));
+            if (batch_bytes) {
+                batches = std::make_unique<Cache>();
+                batches->setup_bytes(batch_bytes);
+            }
+            std::swap(m_valid, replacement);
+            std::swap(m_batches, batches);
+        }
+        // Salt, target checks and cache-miss semantics are unchanged. In-flight
+        // checks may insert genuinely computed results into the new cache.
+        return true;
     }
 
     uint256 Entry(const CBlockHeader& header) const
@@ -259,6 +316,17 @@ void InitYespowerVerificationCache(size_t bytes, bool grow_on_demand)
         throw std::invalid_argument("Yespower cache size must be positive and at most 2048 MiB");
     }
     VerificationCache().Reset(bytes, grow_on_demand);
+}
+
+YespowerCacheUsage GetYespowerVerificationCacheUsage()
+{
+    return VerificationCache().Usage();
+}
+
+bool ShrinkYespowerVerificationCache()
+{
+    AssertLockNotHeld(cs_main);
+    return VerificationCache().Shrink();
 }
 
 // Preserve integer operation ordering (divide before multiply) for consensus.
