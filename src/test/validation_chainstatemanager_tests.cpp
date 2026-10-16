@@ -202,6 +202,7 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_ibd_exit_after_loading_blocks, ChainTe
         const auto recent_time{Now<NodeSeconds>() - chainman.m_options.max_tip_age};
 
         chainman.m_cached_is_ibd.store(cached_is_ibd, std::memory_order_relaxed);
+        chainman.m_post_ibd_cleanup_pending = false;
         chainman.m_blockman.m_importing = loading_blocks;
         if (tip_exists) {
             tip.nChainWork = chainman.MinimumChainWork() - (enough_work ? 0 : 1);
@@ -221,11 +222,59 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_ibd_exit_after_loading_blocks, ChainTe
                         apply(cached_is_ibd, loading_blocks, tip_exists, enough_work, tip_recent);
                         const bool expected_ibd = cached_is_ibd && (loading_blocks || !tip_exists || !enough_work || !tip_recent);
                         BOOST_CHECK_EQUAL(chainman.IsInitialBlockDownload(), expected_ibd);
+                        BOOST_CHECK_EQUAL(WITH_LOCK(cs_main, return chainman.m_post_ibd_cleanup_pending), cached_is_ibd && !expected_ibd);
                     }
                 }
             }
         }
     }
+}
+
+struct PostIBDCleanupSetup : TestChain100Setup {
+    PostIBDCleanupSetup() : TestChain100Setup{ChainType::REGTEST, TestOpts{.coins_db_in_memory = false}} {}
+};
+
+BOOST_FIXTURE_TEST_CASE(post_ibd_cleanup_waits_for_catchup_and_persists_coins, PostIBDCleanupSetup)
+{
+    auto& manager{*m_node.chainman};
+    auto& chainstate{manager.ActiveChainstate()};
+    const COutPoint point{Txid::FromUint256(m_rng.rand256()), 0};
+    CBlockIndex ahead;
+    CBlockIndex* best_header;
+    uint256 best_block;
+    {
+        LOCK(cs_main);
+        best_header = manager.m_best_header;
+        best_block = chainstate.CoinsTip().GetBestBlock();
+        chainstate.CoinsTip().AddCoin(point, Coin{CTxOut{1, CScript{} << OP_TRUE}, 1, false}, false);
+        ahead.pprev = manager.ActiveTip();
+        ahead.nHeight = ahead.pprev->nHeight + 1;
+        manager.m_best_header = &ahead;
+        manager.m_cached_is_ibd.store(false, std::memory_order_relaxed);
+        manager.m_post_ibd_cleanup_pending = true;
+    }
+    BlockValidationState state;
+    BOOST_REQUIRE(manager.MaybeReleaseIBDCaches(state));
+    {
+        LOCK(cs_main);
+        BOOST_CHECK(manager.m_post_ibd_cleanup_pending);
+        BOOST_CHECK(chainstate.CoinsTip().HaveCoin(point));
+        manager.m_best_header = best_header;
+    }
+    BOOST_REQUIRE(manager.MaybeReleaseIBDCaches(state));
+    {
+        LOCK(cs_main);
+        BOOST_CHECK(!manager.m_post_ibd_cleanup_pending);
+        BOOST_CHECK_EQUAL(chainstate.CoinsTip().GetCacheSize(), 0U);
+        // Reopen the real isolated LevelDB, rather than reading its old memtable.
+        chainstate.CoinsDB().ResizeCache(1 << 20);
+        BOOST_CHECK(chainstate.CoinsDB().HaveCoin(point));
+        BOOST_CHECK(chainstate.CoinsDB().GetBestBlock() == best_block);
+        // Cleanup is one-shot: normal new cache entries survive later calls.
+        BOOST_CHECK(chainstate.CoinsTip().HaveCoin(point));
+    }
+    BOOST_REQUIRE(manager.MaybeReleaseIBDCaches(state));
+    BOOST_CHECK_GT(WITH_LOCK(cs_main, return chainstate.CoinsTip().GetCacheSize()), 0U);
 }
 
 struct SnapshotTestSetup : TestChain100Setup {
