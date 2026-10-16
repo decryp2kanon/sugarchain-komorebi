@@ -1,5 +1,7 @@
 # Internal IBD block-download lookahead
 
+**Mainnet follow-up:** see the [completed observational comparison](ibd-mainnet-comparison-2026-10-16.md): 21h00m10s → 17h29m38s (16.71% shorter), with no presync speedup and essentially unchanged peak RSS. This is separate from the controlled fixture results below.
+
 ## Current behavior: no new user option
 
 IBD uses an internal 4096-block lookahead. **There is no `-maxibddownloadwindow` option.** The earlier opt-in implementation and startup instructions are superseded. Remove that argument if it was copied into a startup command. Rebuild/restart is required to run the new implementation; this work did not restart or reconfigure the operating node.
@@ -31,13 +33,13 @@ Small conditions used 40,000 blocks. Padded conditions used 8192 blocks with 65,
 
 The node was observed using getblockcount every 100 ms and getpeerinfo every second, plus Linux process counters. Eight distinct physical-core affinity slots and a 10,000,000,000-byte cgroup memory fence (kernel rounded) applied only to disposable test processes. There was no CPU quota. No OOM occurred. The operating node continued running, so this is a controlled same-host comparison, not an otherwise idle host guarantee. No builds/heavy tests overlapped timing.
 
-**Decision:** adopt internal 4096 without another user setting. Repeated reductions in the uneven-delivery cases and modest absolute measured memory costs support this choice. This is an engineering judgment under the tested conditions, not proof of unchanged mainnet memory usage. Larger out-of-order work can affect storage layout, pruning and reindexing. Full mainnet/HDD/pruning/reindex results and whole-IBD time remain unmeasured.
+**Decision:** adopt internal 4096 without another user setting. Repeated reductions in the uneven-delivery cases and modest absolute measured memory costs support this choice. This is an engineering judgment under the tested conditions, not proof of unchanged mainnet memory usage. Larger out-of-order work can affect storage layout, pruning and reindexing. At the time of adoption, full-mainnet results were unmeasured. The linked follow-up now records a completed observational pair; controlled mainnet attribution and HDD/pruning/reindex results remain unmeasured.
 
 ## Safety checks and build
 
 All 16 runs passed final height/tip, UTXO height/bestblock, verifychain(3,100), normal shutdown and restart checks. A 1024-block padded smoke passed after correcting an initial helper-only use of an obsolete transaction rehash API; the failed smoke was retained and excluded from timing results. A later portable-helper launch initially used a relative path under systemd and failed before starting a node; rerunning with an absolute path passed.
 
-Peer-manager unit tests passed (4 cases). Functional stalling/backoff/recovery passed at the default 16-per-peer budget and explicit 128 budget on v1/v2 transports, all exercising the internal 4096 boundary. The redundant option-specific functional wrapper and option-parsing unit case were removed. Malformed/mutated/duplicate/inflation/future-timestamp rejection passed; that test does not hold IBD true throughout. Daemon, GUI, CLI and test targets were built. No new sanitizer campaign or full-mainnet rerun was performed.
+Peer-manager unit tests passed (4 cases). Functional stalling/backoff/recovery passed at the default 16-per-peer budget and explicit 128 budget on v1/v2 transports, all exercising the internal 4096 boundary. The redundant option-specific functional wrapper and option-parsing unit case were removed. Malformed/mutated/duplicate/inflation/future-timestamp rejection passed; that test does not hold IBD true throughout. Daemon, GUI, CLI and test targets were built. No new sanitizer campaign or full-mainnet rerun was performed during those isolated tests. A subsequent completed mainnet run is documented in the follow-up linked above.
 
 ## Manual reproducer
 
