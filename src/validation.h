@@ -974,6 +974,8 @@ private:
 
     /** Most recent headers presync progress update, for rate-limiting. */
     MockableSteadyClock::time_point m_last_presync_update GUARDED_BY(GetMutex()){};
+    /** Last logged height, separate from the GUI notification rate limit. */
+    std::optional<int64_t> m_last_presync_log_height GUARDED_BY(GetMutex());
 
     //! A queue for script verifications that have to be performed by worker threads.
     CCheckQueue<CScriptCheck> m_script_check_queue;
@@ -1048,6 +1050,8 @@ public:
      * enough work and is recent.
      */
     std::atomic_bool m_cached_is_ibd{true};
+    //! One-shot cleanup, requested on IBD exit and deferred until header-tip catchup.
+    bool m_post_ibd_cleanup_pending GUARDED_BY(::cs_main){false};
 
     /**
      * Every received block is assigned a unique and increasing identifier, so we
@@ -1180,6 +1184,10 @@ public:
      * `ImportBlocks()` finishes).
      */
     void UpdateIBDStatus() EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+    /** Release IBD-era caches after relay, outside cs_main on entry.
+     * Returns false on the existing fatal chainstate-persistence failure path.
+     */
+    bool MaybeReleaseIBDCaches(BlockValidationState& state) LOCKS_EXCLUDED(cs_main);
 
     node::BlockMap& BlockIndex() EXCLUSIVE_LOCKS_REQUIRED(::cs_main)
     {

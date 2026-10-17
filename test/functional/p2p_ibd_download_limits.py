@@ -3,8 +3,8 @@
 # Distributed under the MIT software license, see the accompanying file COPYING.
 """Run upstream's window/stall/backoff regression with the opt-in IBD budget.
 
-The original test still covers the unchanged default. This variant exercises
-1024-block window exhaustion, staller eviction/backoff and recovery at 128.
+The original test still covers the default per-peer request budget. This variant exercises
+4096-block window exhaustion, staller eviction/backoff and recovery at 128.
 """
 from p2p_ibd_stalling import P2PIBDStallingTest
 

@@ -1,0 +1,67 @@
+{
+  "previous": {
+    "events_local": {
+      "first_presync": "2026-10-14T10:38:03+09:00",
+      "first_replay": "2026-10-14T17:51:34+09:00",
+      "first_positive_block_rpc": "2026-10-14T20:00:46+09:00",
+      "headers_44900000_rpc": "2026-10-14T21:16:58+09:00",
+      "IBD_exit_log": "2026-10-15T07:38:13+09:00",
+      "first_equal_heights_rpc": "2026-10-15T07:38:51+09:00"
+    },
+    "seconds": {
+      "total": 75610.0,
+      "presync": 26011.0,
+      "replay_to_first_block": 7752.0,
+      "overlap_to_common_header_height": 4572.0,
+      "after_common_header_height": 37275.0
+    },
+    "resources": {
+      "samples": 15062,
+      "mean_cpu_percent_time_weighted": 242.44927666875103,
+      "peak_sampled_cpu_percent": 654.6103647632083,
+      "estimated_cpu_core_hours": 50.89414399404856,
+      "mean_rss_gib_sampled": 7.064545145770529,
+      "max_sampled_rss_gib": 12.11838150024414,
+      "max_process_hwm_rss_gib": 12.17605209350586,
+      "largest_sample_interval_s": 6.0
+    }
+  },
+  "current": {
+    "events_local": {
+      "first_presync": "2026-10-15T16:00:02+09:00",
+      "first_replay": "2026-10-15T23:19:45+09:00",
+      "first_positive_block_rpc": "2026-10-16T00:15:26+09:00",
+      "headers_44900000_rpc": "2026-10-16T01:29:00+09:00",
+      "IBD_exit_log": "2026-10-16T09:29:40+09:00",
+      "first_equal_heights_rpc": "2026-10-16T09:30:23+09:00"
+    },
+    "seconds": {
+      "total": 62978.0,
+      "presync": 26383.0,
+      "replay_to_first_block": 3341.0,
+      "overlap_to_common_header_height": 4414.0,
+      "after_common_header_height": 28840.0
+    },
+    "resources": {
+      "samples": 12541,
+      "mean_cpu_percent_time_weighted": 262.4348804977294,
+      "peak_sampled_cpu_percent": 810.0021146939954,
+      "estimated_cpu_core_hours": 45.88819682658621,
+      "mean_rss_gib_sampled": 6.639931543032506,
+      "max_sampled_rss_gib": 12.140750885009766,
+      "max_process_hwm_rss_gib": 12.184062957763672,
+      "largest_sample_interval_s": 6.0
+    }
+  },
+  "changes": {
+    "duration_pct": {
+      "total": -16.706784816823173,
+      "presync": 1.4301641613163607,
+      "replay_to_first_block": -56.901444788441694,
+      "overlap_to_common_header_height": -3.455818022747159,
+      "after_common_header_height": -22.629107981220653
+    },
+    "cpu_core_hours_pct": -9.835998357783037,
+    "peak_rss_delta_mib": 8.203125
+  }
+}

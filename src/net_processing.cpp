@@ -1438,10 +1438,13 @@ void PeerManagerImpl::FindNextBlocksToDownload(const Peer& peer, unsigned int co
         return;
 
     const CBlockIndex *pindexWalk = state->pindexLastCommonBlock;
-    // Never fetch further than the best block we know the peer has, or more than BLOCK_DOWNLOAD_WINDOW + 1 beyond the last
+    // Never fetch further than the best block we know the peer has, or more than the selected window + 1 beyond the last
     // linked block we have in common with this peer. The +1 is so we can detect stalling, namely if we would be able to
     // download that next block if the window were 1 larger.
-    int nWindowEnd = state->pindexLastCommonBlock->nHeight + BLOCK_DOWNLOAD_WINDOW;
+    const int download_window{m_chainman.IsInitialBlockDownload()
+        ? IBD_BLOCK_DOWNLOAD_WINDOW
+        : static_cast<int>(BLOCK_DOWNLOAD_WINDOW)};
+    int nWindowEnd = state->pindexLastCommonBlock->nHeight + download_window;
 
     FindNextBlocks(vBlocks, peer, state, pindexWalk, count, nWindowEnd, &m_chainman.ActiveChain(), &nodeStaller);
 }
@@ -1472,7 +1475,10 @@ void PeerManagerImpl::TryDownloadingHistoricalBlocks(const Peer& peer, unsigned 
         return;
     }
 
-    FindNextBlocks(vBlocks, peer, state, from_tip, count, std::min<int>(from_tip->nHeight + BLOCK_DOWNLOAD_WINDOW, target_block->nHeight));
+    const int download_window{m_chainman.IsInitialBlockDownload()
+        ? IBD_BLOCK_DOWNLOAD_WINDOW
+        : static_cast<int>(BLOCK_DOWNLOAD_WINDOW)};
+    FindNextBlocks(vBlocks, peer, state, from_tip, count, std::min<int>(from_tip->nHeight + download_window, target_block->nHeight));
 }
 
 void PeerManagerImpl::FindNextBlocks(std::vector<const CBlockIndex*>& vBlocks, const Peer& peer, CNodeState *state, const CBlockIndex *pindexWalk, unsigned int count, int nWindowEnd, const CChain* activeChain, NodeId* nodeStaller)

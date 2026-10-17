@@ -1,0 +1,823 @@
+{
+  "baseline_commit": "b243458883",
+  "candidate": "Guard final remainder by max(2, current-stage insertion count) slots; no runtime adoption assumed",
+  "scenario_notes": {
+    "early-2048": "40000 unique genuine headers, 2048 MiB budget, 8 peer-state copies; final growth not reached",
+    "grown-4": "100000 unique genuine headers, scaled 4 MiB budget, 8 staggered/misaligned peer-state copies; final growth reached. Synthetic PRESYNC driver, not actual P2P or full mainnet.",
+    "delayed-4": "Single traversal then delayed repeat with chunk boundaries 2000 -> 1999, scaled 4 MiB. Separate cache-reuse diagnostic."
+  },
+  "conditions": {
+    "workers": 8,
+    "affinity": [
+      0,
+      1,
+      2,
+      3,
+      8,
+      9,
+      10,
+      11
+    ],
+    "nice": 19,
+    "io_priority": "idle",
+    "address_space_limit_bytes": 8589934592,
+    "per_process_timeout_seconds": 180,
+    "pow_per_call_timing": false,
+    "counter_enabled": true,
+    "shared_host": true
+  },
+  "runs": [
+    {
+      "scenario": "early-2048",
+      "index": 0,
+      "mode": "baseline",
+      "result": {
+        "workers": "8",
+        "pass": "presync-cold",
+        "headers": "320000",
+        "seconds": "17.4061",
+        "headers_per_second": "18384.3",
+        "yespower_calls": "40000",
+        "yespower_thread_wall_seconds": "unavailable",
+        "yespower_thread_cpu_seconds": "unavailable",
+        "unique_fixture_headers": "40000",
+        "proof_capacity_bytes": "16760832",
+        "proof_storage_bytes": "16793568",
+        "tiers": "1",
+        "phase_cpu_seconds": "126.761"
+      },
+      "process_resource": {
+        "User time (seconds)": 126.94,
+        "System time (seconds)": 0.28,
+        "Maximum resident set size (kbytes)": 99484.0,
+        "Major (requiring I/O) page faults": 0.0,
+        "Minor (reclaiming a frame) page faults": 15895.0,
+        "Voluntary context switches": 44215.0,
+        "Involuntary context switches": 1931.0,
+        "Swaps": 0.0
+      }
+    },
+    {
+      "scenario": "early-2048",
+      "index": 1,
+      "mode": "candidate",
+      "result": {
+        "workers": "8",
+        "pass": "presync-cold",
+        "headers": "320000",
+        "seconds": "17.4029",
+        "headers_per_second": "18387.7",
+        "yespower_calls": "40000",
+        "yespower_thread_wall_seconds": "unavailable",
+        "yespower_thread_cpu_seconds": "unavailable",
+        "unique_fixture_headers": "40000",
+        "proof_capacity_bytes": "16760832",
+        "proof_storage_bytes": "16785376",
+        "tiers": "1",
+        "phase_cpu_seconds": "126.055"
+      },
+      "process_resource": {
+        "User time (seconds)": 126.31,
+        "System time (seconds)": 0.18,
+        "Maximum resident set size (kbytes)": 99156.0,
+        "Major (requiring I/O) page faults": 0.0,
+        "Minor (reclaiming a frame) page faults": 15357.0,
+        "Voluntary context switches": 44012.0,
+        "Involuntary context switches": 1933.0,
+        "Swaps": 0.0
+      }
+    },
+    {
+      "scenario": "early-2048",
+      "index": 2,
+      "mode": "candidate",
+      "result": {
+        "workers": "8",
+        "pass": "presync-cold",
+        "headers": "320000",
+        "seconds": "18.0917",
+        "headers_per_second": "17687.7",
+        "yespower_calls": "40000",
+        "yespower_thread_wall_seconds": "unavailable",
+        "yespower_thread_cpu_seconds": "unavailable",
+        "unique_fixture_headers": "40000",
+        "proof_capacity_bytes": "16760832",
+        "proof_storage_bytes": "16793568",
+        "tiers": "1",
+        "phase_cpu_seconds": "129.695"
+      },
+      "process_resource": {
+        "User time (seconds)": 129.74,
+        "System time (seconds)": 0.4,
+        "Maximum resident set size (kbytes)": 98400.0,
+        "Major (requiring I/O) page faults": 0.0,
+        "Minor (reclaiming a frame) page faults": 15364.0,
+        "Voluntary context switches": 44392.0,
+        "Involuntary context switches": 2189.0,
+        "Swaps": 0.0
+      }
+    },
+    {
+      "scenario": "early-2048",
+      "index": 3,
+      "mode": "baseline",
+      "result": {
+        "workers": "8",
+        "pass": "presync-cold",
+        "headers": "320000",
+        "seconds": "18.8355",
+        "headers_per_second": "16989.2",
+        "yespower_calls": "40000",
+        "yespower_thread_wall_seconds": "unavailable",
+        "yespower_thread_cpu_seconds": "unavailable",
+        "unique_fixture_headers": "40000",
+        "proof_capacity_bytes": "16760832",
+        "proof_storage_bytes": "16793568",
+        "tiers": "1",
+        "phase_cpu_seconds": "129.94"
+      },
+      "process_resource": {
+        "User time (seconds)": 130.09,
+        "System time (seconds)": 0.31,
+        "Maximum resident set size (kbytes)": 98448.0,
+        "Major (requiring I/O) page faults": 0.0,
+        "Minor (reclaiming a frame) page faults": 15358.0,
+        "Voluntary context switches": 43728.0,
+        "Involuntary context switches": 2231.0,
+        "Swaps": 0.0
+      }
+    },
+    {
+      "scenario": "early-2048",
+      "index": 4,
+      "mode": "baseline",
+      "result": {
+        "workers": "8",
+        "pass": "presync-cold",
+        "headers": "320000",
+        "seconds": "17.6019",
+        "headers_per_second": "18179.8",
+        "yespower_calls": "40000",
+        "yespower_thread_wall_seconds": "unavailable",
+        "yespower_thread_cpu_seconds": "unavailable",
+        "unique_fixture_headers": "40000",
+        "proof_capacity_bytes": "16760832",
+        "proof_storage_bytes": "16793568",
+        "tiers": "1",
+        "phase_cpu_seconds": "127.679"
+      },
+      "process_resource": {
+        "User time (seconds)": 127.86,
+        "System time (seconds)": 0.26,
+        "Maximum resident set size (kbytes)": 98916.0,
+        "Major (requiring I/O) page faults": 0.0,
+        "Minor (reclaiming a frame) page faults": 15364.0,
+        "Voluntary context switches": 43861.0,
+        "Involuntary context switches": 1957.0,
+        "Swaps": 0.0
+      }
+    },
+    {
+      "scenario": "early-2048",
+      "index": 5,
+      "mode": "candidate",
+      "result": {
+        "workers": "8",
+        "pass": "presync-cold",
+        "headers": "320000",
+        "seconds": "17.2762",
+        "headers_per_second": "18522.6",
+        "yespower_calls": "40000",
+        "yespower_thread_wall_seconds": "unavailable",
+        "yespower_thread_cpu_seconds": "unavailable",
+        "unique_fixture_headers": "40000",
+        "proof_capacity_bytes": "16760832",
+        "proof_storage_bytes": "16793568",
+        "tiers": "1",
+        "phase_cpu_seconds": "125.891"
+      },
+      "process_resource": {
+        "User time (seconds)": 126.05,
+        "System time (seconds)": 0.29,
+        "Maximum resident set size (kbytes)": 99016.0,
+        "Major (requiring I/O) page faults": 0.0,
+        "Minor (reclaiming a frame) page faults": 15359.0,
+        "Voluntary context switches": 44696.0,
+        "Involuntary context switches": 1948.0,
+        "Swaps": 0.0
+      }
+    },
+    {
+      "scenario": "early-2048",
+      "index": 6,
+      "mode": "candidate",
+      "result": {
+        "workers": "8",
+        "pass": "presync-cold",
+        "headers": "320000",
+        "seconds": "17.4001",
+        "headers_per_second": "18390.7",
+        "yespower_calls": "40000",
+        "yespower_thread_wall_seconds": "unavailable",
+        "yespower_thread_cpu_seconds": "unavailable",
+        "unique_fixture_headers": "40000",
+        "proof_capacity_bytes": "16760832",
+        "proof_storage_bytes": "16793568",
+        "tiers": "1",
+        "phase_cpu_seconds": "126.107"
+      },
+      "process_resource": {
+        "User time (seconds)": 126.32,
+        "System time (seconds)": 0.23,
+        "Maximum resident set size (kbytes)": 98912.0,
+        "Major (requiring I/O) page faults": 0.0,
+        "Minor (reclaiming a frame) page faults": 15363.0,
+        "Voluntary context switches": 44111.0,
+        "Involuntary context switches": 1916.0,
+        "Swaps": 0.0
+      }
+    },
+    {
+      "scenario": "early-2048",
+      "index": 7,
+      "mode": "baseline",
+      "result": {
+        "workers": "8",
+        "pass": "presync-cold",
+        "headers": "320000",
+        "seconds": "17.8483",
+        "headers_per_second": "17928.9",
+        "yespower_calls": "40000",
+        "yespower_thread_wall_seconds": "unavailable",
+        "yespower_thread_cpu_seconds": "unavailable",
+        "unique_fixture_headers": "40000",
+        "proof_capacity_bytes": "16760832",
+        "proof_storage_bytes": "16793568",
+        "tiers": "1",
+        "phase_cpu_seconds": "128.832"
+      },
+      "process_resource": {
+        "User time (seconds)": 128.98,
+        "System time (seconds)": 0.3,
+        "Maximum resident set size (kbytes)": 98716.0,
+        "Major (requiring I/O) page faults": 0.0,
+        "Minor (reclaiming a frame) page faults": 15363.0,
+        "Voluntary context switches": 45532.0,
+        "Involuntary context switches": 1934.0,
+        "Swaps": 0.0
+      }
+    },
+    {
+      "scenario": "grown-4",
+      "index": 0,
+      "mode": "baseline",
+      "result": {
+        "workers": "8",
+        "pass": "presync-cold",
+        "headers": "800000",
+        "seconds": "61.8365",
+        "headers_per_second": "12937.3",
+        "yespower_calls": "135349",
+        "yespower_thread_wall_seconds": "unavailable",
+        "yespower_thread_cpu_seconds": "unavailable",
+        "unique_fixture_headers": "100000",
+        "proof_capacity_bytes": "2322432",
+        "proof_storage_bytes": "2326968",
+        "tiers": "5",
+        "phase_cpu_seconds": "437.863"
+      },
+      "process_resource": {
+        "User time (seconds)": 438.11,
+        "System time (seconds)": 0.76,
+        "Maximum resident set size (kbytes)": 99536.0,
+        "Major (requiring I/O) page faults": 0.0,
+        "Minor (reclaiming a frame) page faults": 15387.0,
+        "Voluntary context switches": 145988.0,
+        "Involuntary context switches": 6939.0,
+        "Swaps": 0.0
+      }
+    },
+    {
+      "scenario": "grown-4",
+      "index": 1,
+      "mode": "candidate",
+      "result": {
+        "workers": "8",
+        "pass": "presync-cold",
+        "headers": "800000",
+        "seconds": "71.3225",
+        "headers_per_second": "11216.7",
+        "yespower_calls": "162845",
+        "yespower_thread_wall_seconds": "unavailable",
+        "yespower_thread_cpu_seconds": "unavailable",
+        "unique_fixture_headers": "100000",
+        "proof_capacity_bytes": "3670016",
+        "proof_storage_bytes": "3677184",
+        "tiers": "6",
+        "phase_cpu_seconds": "518.243"
+      },
+      "process_resource": {
+        "User time (seconds)": 518.57,
+        "System time (seconds)": 0.63,
+        "Maximum resident set size (kbytes)": 99528.0,
+        "Major (requiring I/O) page faults": 0.0,
+        "Minor (reclaiming a frame) page faults": 15664.0,
+        "Voluntary context switches": 175597.0,
+        "Involuntary context switches": 7479.0,
+        "Swaps": 0.0
+      }
+    },
+    {
+      "scenario": "grown-4",
+      "index": 2,
+      "mode": "candidate",
+      "result": {
+        "workers": "8",
+        "pass": "presync-cold",
+        "headers": "800000",
+        "seconds": "74.9231",
+        "headers_per_second": "10677.6",
+        "yespower_calls": "162554",
+        "yespower_thread_wall_seconds": "unavailable",
+        "yespower_thread_cpu_seconds": "unavailable",
+        "unique_fixture_headers": "100000",
+        "proof_capacity_bytes": "3670016",
+        "proof_storage_bytes": "3677184",
+        "tiers": "6",
+        "phase_cpu_seconds": "529.06"
+      },
+      "process_resource": {
+        "User time (seconds)": 529.17,
+        "System time (seconds)": 0.85,
+        "Maximum resident set size (kbytes)": 100184.0,
+        "Major (requiring I/O) page faults": 0.0,
+        "Minor (reclaiming a frame) page faults": 15744.0,
+        "Voluntary context switches": 176262.0,
+        "Involuntary context switches": 8797.0,
+        "Swaps": 0.0
+      }
+    },
+    {
+      "scenario": "grown-4",
+      "index": 3,
+      "mode": "baseline",
+      "result": {
+        "workers": "8",
+        "pass": "presync-cold",
+        "headers": "800000",
+        "seconds": "60.3022",
+        "headers_per_second": "13266.5",
+        "yespower_calls": "135264",
+        "yespower_thread_wall_seconds": "unavailable",
+        "yespower_thread_cpu_seconds": "unavailable",
+        "unique_fixture_headers": "100000",
+        "proof_capacity_bytes": "2322432",
+        "proof_storage_bytes": "2326968",
+        "tiers": "5",
+        "phase_cpu_seconds": "433.854"
+      },
+      "process_resource": {
+        "User time (seconds)": 434.06,
+        "System time (seconds)": 0.76,
+        "Maximum resident set size (kbytes)": 99300.0,
+        "Major (requiring I/O) page faults": 0.0,
+        "Minor (reclaiming a frame) page faults": 15399.0,
+        "Voluntary context switches": 146210.0,
+        "Involuntary context switches": 6389.0,
+        "Swaps": 0.0
+      }
+    },
+    {
+      "scenario": "grown-4",
+      "index": 4,
+      "mode": "baseline",
+      "result": {
+        "workers": "8",
+        "pass": "presync-cold",
+        "headers": "800000",
+        "seconds": "60.2372",
+        "headers_per_second": "13280.8",
+        "yespower_calls": "135175",
+        "yespower_thread_wall_seconds": "unavailable",
+        "yespower_thread_cpu_seconds": "unavailable",
+        "unique_fixture_headers": "100000",
+        "proof_capacity_bytes": "2322432",
+        "proof_storage_bytes": "2326968",
+        "tiers": "5",
+        "phase_cpu_seconds": "432.687"
+      },
+      "process_resource": {
+        "User time (seconds)": 432.96,
+        "System time (seconds)": 0.71,
+        "Maximum resident set size (kbytes)": 99300.0,
+        "Major (requiring I/O) page faults": 0.0,
+        "Minor (reclaiming a frame) page faults": 15394.0,
+        "Voluntary context switches": 147630.0,
+        "Involuntary context switches": 6693.0,
+        "Swaps": 0.0
+      }
+    },
+    {
+      "scenario": "grown-4",
+      "index": 5,
+      "mode": "candidate",
+      "result": {
+        "workers": "8",
+        "pass": "presync-cold",
+        "headers": "800000",
+        "seconds": "71.0438",
+        "headers_per_second": "11260.7",
+        "yespower_calls": "162848",
+        "yespower_thread_wall_seconds": "unavailable",
+        "yespower_thread_cpu_seconds": "unavailable",
+        "unique_fixture_headers": "100000",
+        "proof_capacity_bytes": "3670016",
+        "proof_storage_bytes": "3677184",
+        "tiers": "6",
+        "phase_cpu_seconds": "517.154"
+      },
+      "process_resource": {
+        "User time (seconds)": 517.56,
+        "System time (seconds)": 0.65,
+        "Maximum resident set size (kbytes)": 99996.0,
+        "Major (requiring I/O) page faults": 0.0,
+        "Minor (reclaiming a frame) page faults": 14654.0,
+        "Voluntary context switches": 177575.0,
+        "Involuntary context switches": 7930.0,
+        "Swaps": 0.0
+      }
+    },
+    {
+      "scenario": "grown-4",
+      "index": 6,
+      "mode": "candidate",
+      "result": {
+        "workers": "8",
+        "pass": "presync-cold",
+        "headers": "800000",
+        "seconds": "71.94",
+        "headers_per_second": "11120.4",
+        "yespower_calls": "163090",
+        "yespower_thread_wall_seconds": "unavailable",
+        "yespower_thread_cpu_seconds": "unavailable",
+        "unique_fixture_headers": "100000",
+        "proof_capacity_bytes": "3670016",
+        "proof_storage_bytes": "3677184",
+        "tiers": "6",
+        "phase_cpu_seconds": "515.655"
+      },
+      "process_resource": {
+        "User time (seconds)": 515.88,
+        "System time (seconds)": 0.75,
+        "Maximum resident set size (kbytes)": 99952.0,
+        "Major (requiring I/O) page faults": 0.0,
+        "Minor (reclaiming a frame) page faults": 14651.0,
+        "Voluntary context switches": 179386.0,
+        "Involuntary context switches": 8060.0,
+        "Swaps": 0.0
+      }
+    },
+    {
+      "scenario": "grown-4",
+      "index": 7,
+      "mode": "baseline",
+      "result": {
+        "workers": "8",
+        "pass": "presync-cold",
+        "headers": "800000",
+        "seconds": "64.4933",
+        "headers_per_second": "12404.4",
+        "yespower_calls": "135686",
+        "yespower_thread_wall_seconds": "unavailable",
+        "yespower_thread_cpu_seconds": "unavailable",
+        "unique_fixture_headers": "100000",
+        "proof_capacity_bytes": "2322432",
+        "proof_storage_bytes": "2326968",
+        "tiers": "5",
+        "phase_cpu_seconds": "445.628"
+      },
+      "process_resource": {
+        "User time (seconds)": 445.88,
+        "System time (seconds)": 0.71,
+        "Maximum resident set size (kbytes)": 99324.0,
+        "Major (requiring I/O) page faults": 0.0,
+        "Minor (reclaiming a frame) page faults": 14366.0,
+        "Voluntary context switches": 147928.0,
+        "Involuntary context switches": 6798.0,
+        "Swaps": 0.0
+      }
+    },
+    {
+      "scenario": "delayed-4",
+      "index": 0,
+      "mode": "baseline",
+      "results": [
+        {
+          "workers": "8",
+          "pass": "cold",
+          "headers": "100000",
+          "seconds": "43.4045",
+          "headers_per_second": "2303.91",
+          "yespower_calls": "100000",
+          "yespower_thread_wall_seconds": "unavailable",
+          "yespower_thread_cpu_seconds": "unavailable",
+          "unique_fixture_headers": "100000"
+        },
+        {
+          "workers": "8",
+          "pass": "repeat",
+          "headers": "100000",
+          "seconds": "35.8842",
+          "headers_per_second": "2786.74",
+          "yespower_calls": "85255",
+          "yespower_thread_wall_seconds": "unavailable",
+          "yespower_thread_cpu_seconds": "unavailable",
+          "unique_fixture_headers": "100000"
+        }
+      ],
+      "process_resource": {
+        "User time (seconds)": 584.01,
+        "System time (seconds)": 0.73,
+        "Maximum resident set size (kbytes)": 99412.0,
+        "Major (requiring I/O) page faults": 0.0,
+        "Minor (reclaiming a frame) page faults": 14355.0,
+        "Voluntary context switches": 201690.0,
+        "Involuntary context switches": 9009.0,
+        "Swaps": 0.0
+      }
+    },
+    {
+      "scenario": "delayed-4",
+      "index": 1,
+      "mode": "candidate",
+      "results": [
+        {
+          "workers": "8",
+          "pass": "cold",
+          "headers": "100000",
+          "seconds": "43.5575",
+          "headers_per_second": "2295.82",
+          "yespower_calls": "100000",
+          "yespower_thread_wall_seconds": "unavailable",
+          "yespower_thread_cpu_seconds": "unavailable",
+          "unique_fixture_headers": "100000"
+        },
+        {
+          "workers": "8",
+          "pass": "repeat",
+          "headers": "100000",
+          "seconds": "27.2223",
+          "headers_per_second": "3673.46",
+          "yespower_calls": "62114",
+          "yespower_thread_wall_seconds": "unavailable",
+          "yespower_thread_cpu_seconds": "unavailable",
+          "unique_fixture_headers": "100000"
+        }
+      ],
+      "process_resource": {
+        "User time (seconds)": 521.08,
+        "System time (seconds)": 0.74,
+        "Maximum resident set size (kbytes)": 99960.0,
+        "Major (requiring I/O) page faults": 0.0,
+        "Minor (reclaiming a frame) page faults": 14712.0,
+        "Voluntary context switches": 178521.0,
+        "Involuntary context switches": 8129.0,
+        "Swaps": 0.0
+      }
+    },
+    {
+      "scenario": "delayed-4",
+      "index": 2,
+      "mode": "candidate",
+      "results": [
+        {
+          "workers": "8",
+          "pass": "cold",
+          "headers": "100000",
+          "seconds": "42.2818",
+          "headers_per_second": "2365.09",
+          "yespower_calls": "100000",
+          "yespower_thread_wall_seconds": "unavailable",
+          "yespower_thread_cpu_seconds": "unavailable",
+          "unique_fixture_headers": "100000"
+        },
+        {
+          "workers": "8",
+          "pass": "repeat",
+          "headers": "100000",
+          "seconds": "26.4375",
+          "headers_per_second": "3782.51",
+          "yespower_calls": "62218",
+          "yespower_thread_wall_seconds": "unavailable",
+          "yespower_thread_cpu_seconds": "unavailable",
+          "unique_fixture_headers": "100000"
+        }
+      ],
+      "process_resource": {
+        "User time (seconds)": 509.61,
+        "System time (seconds)": 0.8,
+        "Maximum resident set size (kbytes)": 99384.0,
+        "Major (requiring I/O) page faults": 0.0,
+        "Minor (reclaiming a frame) page faults": 14645.0,
+        "Voluntary context switches": 178668.0,
+        "Involuntary context switches": 7550.0,
+        "Swaps": 0.0
+      }
+    },
+    {
+      "scenario": "delayed-4",
+      "index": 3,
+      "mode": "baseline",
+      "results": [
+        {
+          "workers": "8",
+          "pass": "cold",
+          "headers": "100000",
+          "seconds": "44.2376",
+          "headers_per_second": "2260.52",
+          "yespower_calls": "100000",
+          "yespower_thread_wall_seconds": "unavailable",
+          "yespower_thread_cpu_seconds": "unavailable",
+          "unique_fixture_headers": "100000"
+        },
+        {
+          "workers": "8",
+          "pass": "repeat",
+          "headers": "100000",
+          "seconds": "36.2197",
+          "headers_per_second": "2760.93",
+          "yespower_calls": "85183",
+          "yespower_thread_wall_seconds": "unavailable",
+          "yespower_thread_cpu_seconds": "unavailable",
+          "unique_fixture_headers": "100000"
+        }
+      ],
+      "process_resource": {
+        "User time (seconds)": 588.57,
+        "System time (seconds)": 0.9,
+        "Maximum resident set size (kbytes)": 99464.0,
+        "Major (requiring I/O) page faults": 0.0,
+        "Minor (reclaiming a frame) page faults": 14375.0,
+        "Voluntary context switches": 200142.0,
+        "Involuntary context switches": 9295.0,
+        "Swaps": 0.0
+      }
+    }
+  ],
+  "summary": {
+    "early-2048": {
+      "arms": {
+        "baseline": {
+          "n": 4,
+          "mean_seconds": 17.92295,
+          "median_seconds": 17.725099999999998,
+          "mean_hash_calls": 40000,
+          "mean_phase_cpu_seconds": 128.303,
+          "mean_phase_cpu_percent": 716.3277309005573,
+          "median_peak_rss_mib": 96.5,
+          "tiers": [
+            1
+          ],
+          "proof_capacity_bytes": [
+            16760832
+          ]
+        },
+        "candidate": {
+          "n": 4,
+          "mean_seconds": 17.542724999999997,
+          "median_seconds": 17.4015,
+          "mean_hash_calls": 40000,
+          "mean_phase_cpu_seconds": 126.937,
+          "mean_phase_cpu_percent": 723.6634571992478,
+          "median_peak_rss_mib": 96.64453125,
+          "tiers": [
+            1
+          ],
+          "proof_capacity_bytes": [
+            16760832
+          ]
+        }
+      },
+      "ABBA": [
+        {
+          "group": 1,
+          "baseline": 18.1208,
+          "candidate": 17.7473,
+          "candidate_time_change_percent": -2.0611672773828915
+        },
+        {
+          "group": 2,
+          "baseline": 17.725099999999998,
+          "candidate": 17.33815,
+          "candidate_time_change_percent": -2.1830624368832874
+        }
+      ],
+      "median_time_change_percent": -1.8256596577734374
+    },
+    "grown-4": {
+      "arms": {
+        "baseline": {
+          "n": 4,
+          "mean_seconds": 61.7173,
+          "median_seconds": 61.06935,
+          "mean_hash_calls": 135368.5,
+          "mean_phase_cpu_seconds": 437.508,
+          "mean_phase_cpu_percent": 709.2093637158918,
+          "median_peak_rss_mib": 96.984375,
+          "tiers": [
+            5
+          ],
+          "proof_capacity_bytes": [
+            2322432
+          ]
+        },
+        "candidate": {
+          "n": 4,
+          "mean_seconds": 72.30735,
+          "median_seconds": 71.63125,
+          "mean_hash_calls": 162834.25,
+          "mean_phase_cpu_seconds": 520.028,
+          "mean_phase_cpu_percent": 719.3695649926328,
+          "median_peak_rss_mib": 97.630859375,
+          "tiers": [
+            6
+          ],
+          "proof_capacity_bytes": [
+            3670016
+          ]
+        }
+      },
+      "ABBA": [
+        {
+          "group": 1,
+          "baseline": 61.06935,
+          "candidate": 73.12280000000001,
+          "candidate_time_change_percent": 19.73731503610241
+        },
+        {
+          "group": 2,
+          "baseline": 62.36525,
+          "candidate": 71.4919,
+          "candidate_time_change_percent": 14.634191316478319
+        }
+      ],
+      "median_time_change_percent": 17.294927815671855
+    },
+    "delayed-4": {
+      "baseline": {
+        "n": 2,
+        "cold_mean_seconds": 43.82105,
+        "repeat_mean_seconds": 36.051950000000005,
+        "repeat_mean_hash_calls": 85219,
+        "median_peak_rss_mib": 97.107421875
+      },
+      "candidate": {
+        "n": 2,
+        "cold_mean_seconds": 42.91965,
+        "repeat_mean_seconds": 26.829900000000002,
+        "repeat_mean_hash_calls": 62166,
+        "median_peak_rss_mib": 97.3359375
+      }
+    }
+  },
+  "allocation_only": {
+    "baseline": {
+      "entries": 21000000,
+      "proof_capacity_bytes": 1357627392,
+      "proof_storage_bytes": 1360279008,
+      "tiers": 5,
+      "probes": 216495,
+      "hits": 216495,
+      "false_hits": 0,
+      "peak_rss_kib": 1349896
+    },
+    "candidate": {
+      "entries": 21000000,
+      "proof_capacity_bytes": 2145386496,
+      "proof_storage_bytes": 2149572608,
+      "tiers": 6,
+      "probes": 216495,
+      "hits": 216495,
+      "false_hits": 0,
+      "peak_rss_kib": 2129928
+    }
+  },
+  "unit_tests": {
+    "guarded_candidate": "33 cases / 55009 assertions passed",
+    "baseline_focused": "4 cases / 157 assertions passed",
+    "naive_candidate": "32 passed, 1 failed; 55008 / 55009 assertions passed. Not adopted."
+  },
+  "artifacts_sha256": {
+    "pow-baseline.cpp": "29fc8665a2ce33bbad00f99e29cf4a7b15eafe273ed151c5ffb2c08d72646096",
+    "pow-candidate.cpp": "f678c0dc406eb195ed12e11ed85f50726ad047fe70d42372a4fe83e523ec752d",
+    "pow-naive.cpp": "8f757540e721be5490882948b4b52993b1aaa2ae25f7a6827bea5fdfd46d2d08",
+    "header_pow_cold.cpp": "b126d243ca225b14c6a0caaf699634f5a8adaa6e6d8c5dcca341129dc35c197a",
+    "bench-cold-baseline": "cc376dedb4d66fc8ed4b22b039bb104fc5e759e99d68f246e6c247f7521bc32d",
+    "bench-cold-candidate": "adbc48180d8ec73d84911f3a49a0a9b21ee559738528f58557158c65ad747adf"
+  },
+  "fixture_prefix_sha256": {
+    "40000": "f68ef2e58dc8bac7ed58ed027c7a86ec0725673ba9f7039867050e7e105c3ed7",
+    "100000": "f64a65677abdfa525b67d9a09291868fbfd1f9fb0d4089cdfafc3b2718dd07dd"
+  },
+  "runtime_preservation_checks_passed": true
+}

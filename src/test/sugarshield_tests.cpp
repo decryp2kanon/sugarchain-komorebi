@@ -213,6 +213,45 @@ BOOST_AUTO_TEST_CASE(target_division_matches_generic_arithmetic)
     }
 }
 
+BOOST_AUTO_TEST_CASE(combined_target_divisor_preserves_rounding_and_fallback)
+{
+    FastRandomContext rng{true};
+    // Include UINT32_MAX and its successor, and products on either side of
+    // the combined-divisor boundary. The oracle retains two generic divisions.
+    for (const auto [window, spacing] : std::array<std::pair<int64_t, int64_t>, 7>{{
+             {1, 4294967295LL}, {1, 4294967296LL}, {65535, 1}, {65536, 1},
+             {29308, 5}, {29309, 5}, {510, 5}}}) {
+        auto rules{params};
+        rules.nPowAveragingWindow = window;
+        rules.nPowTargetSpacing = spacing;
+        const int64_t expected_span{rules.AveragingWindowTimespan()};
+        const arith_uint256 divisor{uint64_t(window * expected_span)};
+        for (const uint256 limit : {params.powLimit, ArithToUint256(~arith_uint256{0})}) {
+            rules.powLimit = limit;
+            for (const int64_t span : {-expected_span, int64_t{0}, expected_span, 5 * expected_span}) {
+                const auto check = [&](const arith_uint256& total) {
+                    int64_t adjusted{expected_span + (span - expected_span) / 4};
+                    adjusted = std::clamp(adjusted, rules.MinActualTimespan(), rules.MaxActualTimespan());
+                    arith_uint256 reference{total / arith_uint256{uint64_t(window)}};
+                    reference /= arith_uint256{uint64_t(expected_span)};
+                    reference *= adjusted;
+                    if (reference > UintToArith256(limit)) reference = UintToArith256(limit);
+                    BOOST_CHECK_EQUAL(CalculateSugarShieldWorkRequired(total, span, rules), reference.GetCompact());
+                };
+                check(arith_uint256{0});
+                check(~arith_uint256{0});
+                for (unsigned bit{0}; bit < 220; bit += 7) {
+                    const arith_uint256 multiple{divisor * (arith_uint256{1} << bit)};
+                    check(multiple - 1);
+                    check(multiple);
+                    check(multiple + 1);
+                }
+                for (unsigned i{0}; i < 256; ++i) check(UintToArith256(rng.rand256()));
+            }
+        }
+    }
+}
+
 BOOST_AUTO_TEST_CASE(calculation_vectors)
 {
     BOOST_CHECK_EQUAL(params.nPowAveragingWindow, 510);
@@ -375,6 +414,62 @@ BOOST_AUTO_TEST_CASE(rolling_targets_match_full_history_with_irregular_times)
             // The actual rolling checker must accept every full-history target,
             // including initial context, reset and thousands of pop_front calls.
             CheckRoundTrip(chain, start, synthetic, {1, 521}, 17);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(cached_mtp_matches_full_history_with_duplicate_and_decreasing_times)
+{
+    const auto synthetic{SyntheticParams()};
+    HeaderChain chain{SyntheticGenesis()};
+    constexpr std::array<int64_t, 13> offsets{0, 0, 4, 4, -1, 4, -1, 5, 0, 5, -1, 4, 9};
+    for (size_t height{1}; height <= 1800; ++height) {
+        CBlockHeader header;
+        header.nVersion = 1;
+        header.hashPrevBlock = chain.hashes.back();
+        header.nTime = static_cast<uint32_t>(chain.headers.front().GetBlockTime() + 5 * static_cast<int64_t>(height) + offsets[height % offsets.size()]);
+        // Duplicates and backwards steps are permitted while time exceeds MTP.
+        BOOST_REQUIRE_GT(header.GetBlockTime(), chain.index.back().GetMedianTimePast());
+        // Full ancestry and its sorted median remain the independent oracle
+        // for the bounded checker's retained endpoint values.
+        header.nBits = GetNextWorkRequired(&chain.index.back(), &header, synthetic);
+        MineHeader(header, synthetic);
+        chain.Append(header);
+    }
+    BOOST_REQUIRE(std::adjacent_find(chain.headers.begin(), chain.headers.end(),
+        [](const auto& a, const auto& b) { return a.nTime == b.nTime; }) != chain.headers.end());
+    BOOST_REQUIRE(std::adjacent_find(chain.headers.begin(), chain.headers.end(),
+        [](const auto& a, const auto& b) { return a.nTime > b.nTime; }) != chain.headers.end());
+    for (const size_t start : {0U, 1U, 2U, 9U, 10U, 509U, 510U, 511U, 519U, 520U, 521U, 522U, 1400U}) {
+        BOOST_TEST_CONTEXT("start=" << start) {
+            // Covers short/genesis upper medians, both window boundaries,
+            // eviction, non-genesis initialization and the REDOWNLOAD reset.
+            CheckRoundTrip(chain, start, synthetic, {1, 521}, 17);
+        }
+    }
+    for (const size_t start : {0U, 520U, 1400U}) {
+        const size_t bad_height{start + 17};
+        auto bad{chain.headers[bad_height]};
+        --bad.nBits;
+        MineHeader(bad, synthetic);
+        BOOST_REQUIRE(CheckBlockProofOfWork(bad, synthetic));
+        BOOST_REQUIRE_NE(bad.nBits, GetNextWorkRequired(&chain.index[bad_height - 1], &bad, synthetic));
+        for (const bool redownload : {false, true}) {
+            BOOST_TEST_CONTEXT("start=" << start << " redownload=" << redownload) {
+                HeadersSyncState sync{0, synthetic, {1, 15218}, chain.index[start], chain.index.back().nChainWork};
+                if (redownload) {
+                    BOOST_REQUIRE(sync.ProcessNextHeaders(std::span{chain.headers}.subspan(start + 1), true).success);
+                    BOOST_REQUIRE(sync.GetState() == State::REDOWNLOAD);
+                }
+                BOOST_REQUIRE(sync.ProcessNextHeaders(std::span{chain.headers}.subspan(start + 1, 16), true).success);
+                ASSERT_DEBUG_LOG("invalid difficulty transition at height=" + std::to_string(bad_height) +
+                                 (redownload ? " (redownload phase)" : " (presync phase)"));
+                const auto result{sync.ProcessNextHeaders(std::span{&bad, 1}, true)};
+                BOOST_CHECK(!result.success);
+                BOOST_CHECK(!result.request_more);
+                BOOST_CHECK(result.pow_validated_headers.empty());
+                BOOST_CHECK(sync.GetState() == State::FINAL);
+            }
         }
     }
 }

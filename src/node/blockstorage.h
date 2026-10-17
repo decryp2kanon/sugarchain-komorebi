@@ -34,6 +34,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <memory_resource>
 #include <optional>
 #include <set>
 #include <span>
@@ -54,6 +55,11 @@ class SignalInterrupt;
 } // namespace util
 
 namespace kernel {
+struct HistoricalPoWStats {
+    enum State { DISABLED, RUNNING, COMPLETE, INTERRUPTED, FAILED };
+    std::atomic<State> state{DISABLED};
+    std::atomic<uint64_t> total{0}, processed{0}, verified{0}, reused{0};
+};
 class CBlockFileInfo
 {
 public:
@@ -98,9 +104,19 @@ public:
 /** Access to the block database (blocks/index/) */
 class BlockTreeDB : public CDBWrapper
 {
+    void PopulateBatch(CDBBatch& batch, const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo,
+        int nLastFile, const std::vector<const CBlockIndex*>& blockinfo, const Consensus::Params* consensus);
+
 public:
     using CDBWrapper::CDBWrapper;
-    void WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, const std::vector<const CBlockIndex*>& blockinfo);
+    void WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, const std::vector<const CBlockIndex*>& blockinfo, const Consensus::Params* consensus = nullptr);
+    /** Consume a temporary pointer vector after serialization, before DB insertion. */
+    void WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, std::vector<const CBlockIndex*>&& blockinfo, const Consensus::Params* consensus = nullptr);
+    bool HasYespowerEvidence(const CBlockHeader& header, const Consensus::Params& consensus) const;
+    /** Bounded background DB scan; caller keeps this DB alive until joined. */
+    std::optional<std::string> VerifyHistoricalPoW(const Consensus::Params& consensus,
+        const util::SignalInterrupt& interrupt, HistoricalPoWStats& stats, unsigned pause_ms,
+        const std::function<bool(const CBlockHeader&)>& live_verified = {}, int pow_workers = 1);
     bool ReadBlockFileInfo(int nFile, CBlockFileInfo& info);
     bool ReadLastBlockFile(int& nFile);
     void WriteReindexing(bool fReindexing);
@@ -304,8 +320,33 @@ private:
 protected:
     std::vector<CBlockFileInfo> m_blockfile_info;
 
-    /** Dirty block index entries. */
-    std::set<CBlockIndex*> m_dirty_blockindex;
+    // Preserve std::set ordering and uniqueness while pooling its small nodes.
+    // The resource address remains stable when the empty set releases its pool.
+    class DirtyBlockIndexMemoryResource final : public std::pmr::memory_resource {
+        std::unique_ptr<PoolResource<64, 8>> m_pool;
+
+        void* do_allocate(size_t bytes, size_t alignment) override
+        {
+            if (!m_pool) m_pool = std::make_unique<PoolResource<64, 8>>();
+            return m_pool->Allocate(bytes, alignment);
+        }
+        void do_deallocate(void* pointer, size_t bytes, size_t alignment) override
+        {
+            m_pool->Deallocate(pointer, bytes, alignment);
+        }
+        bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override
+        {
+            return this == &other;
+        }
+
+    public:
+        // Call only after all set nodes have been erased.
+        void Release() noexcept { m_pool.reset(); }
+    };
+    DirtyBlockIndexMemoryResource m_dirty_blockindex_resource;
+
+    /** Dirty block index entries. Destroy the set before its resource. */
+    std::pmr::set<CBlockIndex*> m_dirty_blockindex{&m_dirty_blockindex_resource};
 
     /** Dirty block file entries. */
     std::set<int> m_dirty_fileinfo;
@@ -317,6 +358,8 @@ public:
     explicit BlockManager(const util::SignalInterrupt& interrupt, Options opts);
 
     const util::SignalInterrupt& m_interrupt;
+    kernel::HistoricalPoWStats m_historical_pow;
+    bool UsesHistoricalPoWTrust() const { return m_opts.fast_startup; }
     std::atomic<bool> m_importing{false};
 
     /**
@@ -352,6 +395,27 @@ public:
     std::multimap<CBlockIndex*, CBlockIndex*> m_blocks_unlinked;
 
     std::unique_ptr<BlockTreeDB> m_block_tree_db GUARDED_BY(::cs_main);
+
+    // Bound dirty-header accumulation before the first block arrives. This is
+    // a scheduling threshold, not a limit on resident indexes or batch bytes.
+    // Keep the atomic batch small as LevelDB may temporarily exceed its write
+    // buffer budget while inserting an entire batch into the memtable.
+    // Benchmarks compared 262144, 65536, 32768, 16384 and 8192 entries. At 12M
+    // synthetic inputs, 32768 reduced write-phase peak RSS by 20.42% versus
+    // 262144, but increased ingest/flush time by 148.02%. In the 4M screening,
+    // 16384 saved only another 55.48 MiB of whole-helper peak RSS while nearly
+    // doubling ingest/flush time, so retain 32768 as the measured compromise.
+    // These are component results, not whole-IBD performance guarantees. See
+    // doc/ibd-rss-management.md#follow-up-32768-entry-persistence-threshold
+    // for setup, repeated measurements, private-node comparisons and limits.
+    // Benchmark permalink:
+    // https://github.com/decryp2kanon/sugarchain-komorebi/blob/c6ad3c0c5f/doc/ibd-rss-management.md#follow-up-32768-entry-persistence-threshold
+    static constexpr size_t MAX_DIRTY_BLOCK_INDEX{32768};
+    bool BlockIndexWriteDue() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main)
+    {
+        AssertLockHeld(::cs_main);
+        return m_dirty_blockindex.size() >= MAX_DIRTY_BLOCK_INDEX;
+    }
 
     void WriteBlockIndexDB() EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
     /** On success, optionally return all indexes in height order for this load. */

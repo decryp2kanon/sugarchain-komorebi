@@ -67,18 +67,20 @@ void HeadersSyncState::ResetDifficultyHistory()
     // copy only the available ancestors, as the normal chain traversal would do.
     const CBlockIndex* index = &m_chain_start;
     while (index && m_difficulty_history.size() < limit) {
-        m_difficulty_history.emplace_front(index->GetBlockHeader());
-        m_difficulty_history.front().nHeight = index->nHeight;
+        // Read the original ancestors before truncating the copied history.
+        // In particular, a non-genesis start must not cache shortened medians.
+        m_difficulty_history.emplace_front(index->GetBlockHeader(), index->GetMedianTimePast());
+        m_difficulty_history.front().index.nHeight = index->nHeight;
         index = index->pprev;
     }
-    // Link the copies so the unchanged endpoint MTP calculation can follow pprev.
+    // Link the copies so newly appended endpoints can use the unchanged MTP calculation.
     CBlockIndex* previous = nullptr;
     for (auto& entry : m_difficulty_history) {
-        entry.pprev = previous;
-        previous = &entry;
+        entry.index.pprev = previous;
+        previous = &entry.index;
     }
     for (size_t i{0}; i < std::min(size_t(m_consensus_params.nPowAveragingWindow), m_difficulty_history.size()); ++i) {
-        m_difficulty_target_sum += arith_uint256{}.SetCompact(m_difficulty_history[m_difficulty_history.size() - 1 - i].nBits);
+        m_difficulty_target_sum += arith_uint256{}.SetCompact(m_difficulty_history[m_difficulty_history.size() - 1 - i].index.nBits);
     }
 }
 
@@ -89,25 +91,26 @@ bool HeadersSyncState::CheckDifficultyAndAppend(const CBlockHeader& header)
     // Reuse the same target sum and MTP endpoints as full-history GetNextWorkRequired().
     const size_t size{m_difficulty_history.size()};
     const size_t window{size_t(m_consensus_params.nPowAveragingWindow)};
-    auto* previous = &m_difficulty_history.back();
+    auto* previous = &m_difficulty_history.back().index;
     const auto expected{size > window ? CalculateSugarShieldWorkRequired(m_difficulty_target_sum,
-        previous->GetMedianTimePast() - m_difficulty_history[size - window - 1].GetMedianTimePast(), m_consensus_params)
+        m_difficulty_history.back().median_time_past - m_difficulty_history[size - window - 1].median_time_past, m_consensus_params)
         : UintToArith256(m_consensus_params.powLimit).GetCompact()};
     if (header.nBits != expected) return false;
     // Append the accepted header and connect its predecessor and height.
     m_difficulty_history.emplace_back(header);
     auto& entry = m_difficulty_history.back();
-    entry.pprev = previous;
-    entry.nHeight = previous->nHeight + 1;
+    entry.index.pprev = previous;
+    entry.index.nHeight = previous->nHeight + 1;
+    entry.median_time_past = entry.index.GetMedianTimePast();
     // Exact unsigned arithmetic: replace only the outgoing target, not the MTP history.
-    if (size >= window) m_difficulty_target_sum -= arith_uint256{}.SetCompact(m_difficulty_history[size - window].nBits);
+    if (size >= window) m_difficulty_target_sum -= arith_uint256{}.SetCompact(m_difficulty_history[size - window].index.nBits);
     m_difficulty_target_sum += arith_uint256{}.SetCompact(header.nBits);
     // Keep the same 510 targets + 11 older MTP entries needed for the next check.
     const size_t limit = m_consensus_params.nPowAveragingWindow + CBlockIndex::nMedianTimeSpan;
     if (m_difficulty_history.size() > limit) {
         // Drop the oldest entry and remove the now-dangling link to it.
         m_difficulty_history.pop_front();
-        m_difficulty_history.front().pprev = nullptr;
+        m_difficulty_history.front().index.pprev = nullptr;
     }
     return true;
 }
@@ -276,7 +279,9 @@ bool HeadersSyncState::ValidateAndProcessSingleHeader(const CBlockHeader& curren
         }
     }
 
-    m_current_chain_work += GetBlockProof(current);
+    // Reuse the exact compact-target fast path; unsupported encodings retain
+    // the original 256-bit calculation. This does not trust or skip any PoW.
+    m_current_chain_work += GetBitsProof(current.nBits, /*fast_startup=*/true);
     m_last_header_received = current;
     m_current_height = next_height;
 
@@ -314,7 +319,7 @@ bool HeadersSyncState::ValidateAndStoreRedownloadedHeader(const CBlockHeader& he
     }
 
     // Track work on the redownloaded chain
-    m_redownload_chain_work += GetBlockProof(header);
+    m_redownload_chain_work += GetBitsProof(header.nBits, /*fast_startup=*/true);
 
     if (m_redownload_chain_work >= m_minimum_required_work) {
         m_process_all_remaining_headers = true;

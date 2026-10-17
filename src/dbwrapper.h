@@ -142,6 +142,8 @@ public:
     ~CDBIterator();
 
     bool Valid() const;
+    /** Throw on iterator I/O/corruption errors instead of treating them as EOF. */
+    void CheckStatus() const;
 
     /** Inspect a serialized key without copying or deserializing it. */
     bool KeyHasPrefix(uint8_t prefix, size_t min_size = 1) const;

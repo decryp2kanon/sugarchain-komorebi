@@ -35,4 +35,3 @@ void ApplyArgsManOptions(const ArgsManager& argsman, PeerManager::Options& optio
 }
 
 } // namespace node
-

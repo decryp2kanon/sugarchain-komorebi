@@ -35,9 +35,12 @@ unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, int64_t nF
 unsigned int CalculateSugarShieldWorkRequired(const arith_uint256& target_sum, int64_t mtp_span, const Consensus::Params&);
 
 /** Check whether a block hash satisfies the proof-of-work requirement specified by nBits */
-bool CheckBlockProofOfWork(const CBlockHeader& header, const Consensus::Params& params);
+bool CheckBlockProofOfWork(const CBlockHeader& header, const Consensus::Params& params, bool cache_result = true);
 bool CheckProofOfWork(uint256 hash, unsigned int nBits, const Consensus::Params&);
 bool CheckProofOfWorkImpl(uint256 hash, unsigned int nBits, const Consensus::Params&);
+/** Domain of local persisted results; not a cryptographic proof of execution. */
+uint256 GetYespowerEvidenceRulesHash(const Consensus::Params& params);
+uint256 GetYespowerEvidenceDigest(const CBlockHeader& header, const Consensus::Params& params);
 
 inline constexpr size_t DEFAULT_YESPOWER_CACHE_BYTES{16 << 20};
 // Also keeps CuckooCache's uint32_t epoch-size arithmetic below overflow.
@@ -46,6 +49,19 @@ inline constexpr size_t MAX_YESPOWER_CACHE_BYTES{size_t{2048} << 20};
  * In fast startup, grow the cache within the same budget as proofs accumulate.
  */
 void InitYespowerVerificationCache(size_t bytes, bool grow_on_demand = false);
+
+/** Proof storage only: excludes hash flags, allocator overhead and batch-cache metadata. */
+struct YespowerCacheUsage {
+    size_t budget_bytes{};
+    size_t proof_capacity_bytes{};
+    size_t proof_storage_bytes{};
+    size_t tiers{};
+};
+YespowerCacheUsage GetYespowerVerificationCacheUsage();
+/** Drop IBD-era RAM evidence, preserving the configured budget and verification policy.
+ * Must be called outside cs_main. Old storage is destroyed outside the cache lock.
+ */
+bool ShrinkYespowerVerificationCache();
 
 /** With cs_main held, restore an evicted proof from a genuinely checked live index. */
 void CacheVerifiedBlockIndexProof(const CBlockIndex& index, const Consensus::Params& params);
@@ -65,7 +81,8 @@ public:
     HeaderPoWVerifier& operator=(const HeaderPoWVerifier&) = delete;
     bool Check(std::span<const CBlockHeader> headers, const Consensus::Params& params);
     /** Check every header once, including on warm-cache hits; used for startup block-index validation. */
-    bool CheckEach(std::span<const CBlockHeader> headers, const Consensus::Params& params);
+    // Background historical scans persist evidence on disk instead of filling the RAM cache.
+    bool CheckEach(std::span<const CBlockHeader> headers, const Consensus::Params& params, bool cache_result = true);
 };
 
 /**

@@ -164,6 +164,12 @@ private:
 
 public:
 
+    bool HasCurrentProcessYespowerEvidence() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main)
+    {
+        AssertLockHeld(::cs_main);
+        return m_checked_yespower;
+    }
+
     explicit CBlockIndex(const CBlockHeader& block)
         : nVersion{block.nVersion},
           hashMerkleRoot{block.hashMerkleRoot},

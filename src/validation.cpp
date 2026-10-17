@@ -77,6 +77,10 @@
 #include <tuple>
 #include <utility>
 
+#if defined(__linux__) && defined(__GLIBC__)
+#include <malloc.h>
+#endif
+
 using kernel::CCoinsStats;
 using kernel::ChainstateRole;
 using kernel::CoinStatsHashType;
@@ -98,6 +102,8 @@ static constexpr auto DATABASE_WRITE_INTERVAL_MIN{50min};
 static constexpr auto DATABASE_WRITE_INTERVAL_MAX{70min};
 /** Maximum age of our tip for us to be considered current for fee estimation */
 static constexpr std::chrono::hours MAX_FEE_ESTIMATION_TIP_AGE{3};
+/** Progress logging only; header batches and GUI notifications keep their own cadence. */
+static constexpr int64_t PRESYNC_LOG_INTERVAL{24'000};
 const std::vector<std::string> CHECKLEVEL_DOC {
     "level 0 reads the blocks from disk",
     "level 1 verifies block validity",
@@ -2774,13 +2780,19 @@ bool Chainstate::FlushStateToDisk(
         bool fCacheCritical = mode == FlushStateMode::IF_NEEDED && cache_state >= CoinsCacheSizeState::CRITICAL;
         // It's been a while since we wrote the block index and chain state to disk. Do this frequently, so we don't need to redownload or reindex after a crash.
         bool fPeriodicWrite = mode == FlushStateMode::PERIODIC && nNow >= m_next_write;
+        // Full-block acceptance and activation also dirty indexes without going
+        // through ProcessNewBlockHeaders. Bound that accumulation at existing
+        // periodic write opportunities, preserving LARGE coin-cache eviction
+        // and leaving NONE/IF_NEEDED unchanged. This schedules an atomic write;
+        // it is not a hard size limit on dirty sets or serialized batches.
+        bool fBlockIndexWrite = mode == FlushStateMode::PERIODIC && m_blockman.BlockIndexWriteDue();
         const auto empty_cache{(mode == FlushStateMode::FORCE_FLUSH) || fCacheLarge || fCacheCritical};
         // Combine all conditions that result in a write to disk.
-        bool should_write = (mode == FlushStateMode::FORCE_SYNC) || empty_cache || fPeriodicWrite || fFlushForPrune;
+        bool should_write = (mode == FlushStateMode::FORCE_SYNC) || empty_cache || fPeriodicWrite || fBlockIndexWrite || fFlushForPrune;
         // Write blocks, block index and best chain related state to disk.
         if (should_write) {
-            LogDebug(BCLog::COINDB, "Writing chainstate to disk: flush mode=%s, prune=%d, large=%d, critical=%d, periodic=%d",
-                     FlushStateModeNames[size_t(mode)], fFlushForPrune, fCacheLarge, fCacheCritical, fPeriodicWrite);
+            LogDebug(BCLog::COINDB, "Writing chainstate to disk: flush mode=%s, prune=%d, large=%d, critical=%d, periodic=%d, index=%d",
+                     FlushStateModeNames[size_t(mode)], fFlushForPrune, fCacheLarge, fCacheCritical, fPeriodicWrite, fBlockIndexWrite);
 
             // Ensure we can write block index
             if (!CheckDiskSpace(m_blockman.m_opts.blocks_dir)) {
@@ -3347,6 +3359,53 @@ void ChainstateManager::UpdateIBDStatus()
     if (!CurrentChainstate().m_chain.IsTipRecent(MinimumChainWork(), m_options.max_tip_age)) return;
     LogInfo("Leaving InitialBlockDownload (latching to false)");
     m_cached_is_ibd.store(false, std::memory_order_relaxed);
+    if (GetConsensus().fYespowerSugar) m_post_ibd_cleanup_pending = true;
+}
+
+bool ChainstateManager::MaybeReleaseIBDCaches(BlockValidationState& state)
+{
+    AssertLockNotHeld(cs_main);
+    size_t coins_before{}, coins_after{};
+    {
+        LOCK(cs_main);
+        if (!m_post_ibd_cleanup_pending || m_interrupt || IsInitialBlockDownload()) return true;
+        // IBD can exit while recent blocks are still arriving. Do not discard
+        // useful caches during catchup or while a snapshot background chainstate
+        // may still need them. A later activation retries this same request.
+        if (m_chainstates.size() != 1 || !ActiveTip() || ActiveTip() != m_best_header) return true;
+        auto& chainstate{ActiveChainstate()};
+        if (!chainstate.CanFlushToDisk()) return true;
+        coins_before = chainstate.CoinsTip().DynamicMemoryUsage();
+        // FORCE_FLUSH preserves block/undo/index/coins ordering and rebuilds the
+        // empty coins pool. Never clear dirty entries before successful writes.
+        if (!chainstate.FlushStateToDisk(state, FlushStateMode::FORCE_FLUSH)) return false;
+        coins_after = chainstate.CoinsTip().DynamicMemoryUsage();
+        m_post_ibd_cleanup_pending = false;
+    }
+    const auto before{GetYespowerVerificationCacheUsage()};
+    bool proof_released{false};
+    try {
+        proof_released = ShrinkYespowerVerificationCache();
+    } catch (const std::bad_alloc&) {
+        // An optional cache reduction must not invalidate a block or punish a
+        // peer. The old cache is unchanged if replacement allocation fails.
+        LogWarning("Post-IBD proof cache reduction skipped: allocation failed");
+    }
+    const auto after{GetYespowerVerificationCacheUsage()};
+    const char* allocator_release{"unsupported"};
+#if defined(__linux__) && defined(__GLIBC__)
+    // Freed IBD pages can remain resident in glibc arenas. Return unused pages
+    // once, after actual cache release and outside both validation/cache locks.
+    // This is not periodic trimming or a substitute for releasing live objects.
+    // See doc/post-ibd-cache-release.md for the isolated retention measurements.
+    allocator_release = "not-needed";
+    if (proof_released || coins_before > coins_after) allocator_release = malloc_trim(0) ? "released" : "no-pages";
+#else
+    (void)proof_released;
+#endif
+    LogInfo("Post-IBD cache cleanup: coins cache before=%u after=%u bytes; proof storage before=%u after=%u bytes (budget=%u unchanged); allocator=%s",
+            coins_before, coins_after, before.proof_storage_bytes, after.proof_storage_bytes, after.budget_bytes, allocator_release);
+    return true;
 }
 
 bool ChainstateManager::NotifyHeaderTip()
@@ -3542,6 +3601,7 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
         if (m_chainman.m_interrupt) break;
     } while (pindexNewTip != pindexMostWork);
 
+    if (!m_chainman.MaybeReleaseIBDCaches(state)) return false;
     m_chainman.CheckBlockIndex();
 
     return true;
@@ -4188,6 +4248,12 @@ static bool ContextualCheckBlockHeader(const CBlockHeader& block, BlockValidatio
  */
 static bool ContextualCheckBlock(const CBlock& block, BlockValidationState& state, const ChainstateManager& chainman, const CBlockIndex* pindexPrev)
 {
+    // The fixed genesis predates height commitments and relative-locktime rules.
+    // Sugarchain activates them at height zero; reindex must still import the
+    // exact configured genesis without dereferencing a nonexistent predecessor.
+    // AcceptBlockHeader and CheckBlock already checked its identity/PoW/body.
+    if (!pindexPrev && block.GetHash() == chainman.GetConsensus().hashGenesisBlock) return true;
+
     const int nHeight = pindexPrev == nullptr ? 0 : pindexPrev->nHeight + 1;
 
     // Enforce BIP113 (Median Time Past).
@@ -4319,6 +4385,14 @@ bool ChainstateManager::ProcessNewBlockHeaders(std::span<const CBlockHeader> hea
             if (ppindex) {
                 *ppindex = pindex;
             }
+            // Headers-first replay can accumulate millions of dirty indexes
+            // without processing a block (and hence without a periodic flush).
+            // Use the existing ordered, atomic persistence path before its
+            // dirty set, serialized batch and memtable become replay-sized.
+            // Check within the loop to also bound large internal submissions.
+            if (m_blockman.BlockIndexWriteDue() && ActiveChainstate().CanFlushToDisk()) {
+                if (!ActiveChainstate().FlushStateToDisk(state, FlushStateMode::FORCE_SYNC)) return false;
+            }
         }
     }
     if (NotifyHeaderTip()) {
@@ -4336,6 +4410,7 @@ bool ChainstateManager::ProcessNewBlockHeaders(std::span<const CBlockHeader> hea
 void ChainstateManager::ReportHeadersPresync(int64_t height, int64_t timestamp)
 {
     AssertLockNotHeld(GetMutex());
+    bool log_progress{false};
     {
         LOCK(GetMutex());
         // Don't report headers presync progress if we already have a post-minchainwork header chain.
@@ -4347,10 +4422,18 @@ void ChainstateManager::ReportHeadersPresync(int64_t height, int64_t timestamp)
         auto now = MockableSteadyClock::now();
         if (now < m_last_presync_update + std::chrono::milliseconds{250}) return;
         m_last_presync_update = now;
+        // Keep GUI notifications responsive, but avoid filling the per-source
+        // log budget with a line for every 2,000-header network message. Report
+        // the first observation and reset the interval if progress goes back.
+        if (!m_last_presync_log_height || height < *m_last_presync_log_height ||
+            height - *m_last_presync_log_height >= PRESYNC_LOG_INTERVAL) {
+            m_last_presync_log_height = height;
+            log_progress = true;
+        }
     }
     bool initial_download = IsInitialBlockDownload();
     GetNotifications().headerTip(GetSynchronizationState(initial_download, m_blockman.m_blockfiles_indexed), height, timestamp, /*presync=*/true);
-    if (initial_download) {
+    if (initial_download && log_progress) {
         int64_t blocks_left{(NodeClock::now() - NodeSeconds{std::chrono::seconds{timestamp}}) / GetConsensus().PowTargetSpacing()};
         blocks_left = std::max<int64_t>(0, blocks_left);
         const double progress{100.0 * height / (height + blocks_left)};
