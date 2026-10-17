@@ -1,0 +1,58 @@
+--- a/src/bench/header_pow.cpp
++++ b/src/bench/header_pow.cpp
+@@ -88,7 +88,7 @@
+ {
+     try {
+         if (argc < 4) throw std::runtime_error("Usage: bench_header_pow RAW_HEADERS COUNT WORKERS (1-8) [CACHE_MIB (1-2048)] [--block-stage] [--grow-cache] [--presync] [--delayed-reuse] [--no-pow-timing] [--stage-timing]");
+-        bool block_stage{false}, grow_cache{false}, presync{false}, delayed_reuse{false}, stage_timing{false};
++        bool block_stage{false}, grow_cache{false}, presync{false}, delayed_reuse{false}, stage_timing{false}, cold_only{false};
+         const bool has_cache_arg{argc >= 5 && !std::string_view{argv[4]}.starts_with("--")};
+         for (int i = has_cache_arg ? 5 : 4; i < argc; ++i) {
+             const std::string_view option{argv[i]};
+@@ -97,6 +97,7 @@
+             else if (option == "--presync") presync = true;
+             else if (option == "--delayed-reuse") delayed_reuse = true;
+             else if (option == "--stage-timing") stage_timing = true;
++            else if (option == "--cold-only") cold_only = true;
+ #ifdef ENABLE_YESPOWER_BENCH_WRAP
+             else if (option == "--no-pow-timing") pow_timing = false;
+ #endif
+@@ -155,10 +156,11 @@
+         const size_t unique_fixture_headers{fixture_ids.size()};
+         std::vector<uint256>().swap(fixture_ids);
+         HeaderPoWVerifier verifier{int(workers)};
+-        std::cout << "workers,pass,headers,seconds,headers_per_second,yespower_calls,yespower_thread_wall_seconds,yespower_thread_cpu_seconds,unique_fixture_headers";
++        std::cout << "workers,pass,headers,seconds,headers_per_second,yespower_calls,yespower_thread_wall_seconds,yespower_thread_cpu_seconds,unique_fixture_headers,proof_capacity_bytes,proof_storage_bytes,tiers,phase_cpu_seconds";
+         if (stage_timing) std::cout << ",verifier_seconds,context_seconds,other_seconds";
+         std::cout << std::endl;
+         for (const auto* pass : {"cold", "repeat"}) {
++            if (cold_only && std::string_view{pass} == "repeat") break;
+ #ifdef ENABLE_YESPOWER_BENCH_WRAP
+             pow_calls = 0;
+             pow_wall_ns = 0;
+@@ -184,6 +186,7 @@
+                 verifier_time += std::chrono::steady_clock::now() - begin;
+                 return valid;
+             };
++            const auto phase_cpu_start{std::clock()};
+             const auto start{std::chrono::steady_clock::now()};
+             if (presync) {
+                 bool pending{true};
+@@ -227,6 +230,7 @@
+                 }
+             }
+             const double seconds{std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count()};
++            const double phase_cpu{double(std::clock() - phase_cpu_start) / CLOCKS_PER_SEC};
+             const size_t processed{headers.size() * (presync ? peers : 1)};
+             std::cout << workers << ',' << (presync ? "presync-" : "") << pass << ',' << processed << ',' << seconds << ','
+                       << processed / seconds << ',';
+@@ -235,7 +239,8 @@
+ #else
+             std::cout << "unavailable,unavailable,unavailable";
+ #endif
+-            std::cout << ',' << unique_fixture_headers;
++            const auto usage{GetYespowerVerificationCacheUsage()};
++            std::cout << ',' << unique_fixture_headers << ',' << usage.proof_capacity_bytes << ',' << usage.proof_storage_bytes << ',' << usage.tiers << ',' << phase_cpu;
+             if (stage_timing) {
+                 // These caller-thread intervals never overlap. Summed PoW
+                 // thread timings above are a separate diagnostic, not addends.
