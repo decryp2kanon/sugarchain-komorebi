@@ -47,6 +47,8 @@ class FastStartupTest(BitcoinTestFramework):
             with node.assert_debug_log(messages, unexpected_msgs=forbidden):
                 self.start_node(0, args)
             actual = node.getblockchaininfo()
+            assert_equal(actual["historicalpow"]["state"], "disabled")  # regtest uses SHA256d
+            assert_equal(actual["historicalpow"]["historical_trust"], False)
             for key in ["blocks", "headers", "bestblockhash", "chainwork"]:
                 assert_equal(actual[key], expected[key])
             assert node.verifychain(3, 6)
@@ -58,6 +60,14 @@ class FastStartupTest(BitcoinTestFramework):
         node.assert_start_raises_init_error(
             ["-fast-startup=1", "-reindex=1"],
             "-fast-startup=1 cannot be used with -reindex", match=ErrorMatch.PARTIAL_REGEX)
+
+        for workers in [0, 9, -1]:
+            node.assert_start_raises_init_error(
+                [f"-background-pow-workers={workers}"], "-background-pow-workers must be between 1 and 8", match=ErrorMatch.PARTIAL_REGEX)
+
+        for pause in [-1, 1001]:
+            node.assert_start_raises_init_error(
+                [f"-background-pow-pause={pause}"], "-background-pow-pause must be between 0 and 1000", match=ErrorMatch.PARTIAL_REGEX)
 
         # Rename only this test's private file and restore it even on failure.
         block_file = node.blocks_path / "blk00000.dat"

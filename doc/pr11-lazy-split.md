@@ -36,4 +36,23 @@ The separated build passed `header_pow_tests`. Detailed owned logs are retained 
 under `~/.local/state/pr11-split-20261019/`. These checks are not new mainnet
 benchmarks. Additional whole-PR/functional validation is recorded in the PR.
 
+## L3: integrate audit lifecycle, failure shutdown, RPC and progress
+
+Sources: `045a30e05f`, `8d3c39f636`, `40c15bb360`, final logging changes
+`5c45e871db` through `32bab122fe`, and mode-boundary tests from `aec27f2405`.
+Preserve default fast-startup=0 full startup verification. Mode 1 retains the
+explicit historical trust window. Start only after readiness; join before DB
+destruction, distinguish storage/resource errors from confirmed invalid PoW and
+request mandatory shutdown. Include RPC, worker/pause validation, immediate zero
+progress and batch-boundary monotonic ten-second logging.
+The reverted both-mode asynchronous-startup policy is not reintroduced. The
+existing full-mainnet completion is evidence of one scan, not all failure cases.
+Regtest functional checks do not run genuine mainnet Yespower auditing.
+
+### Split validation for L3
+
+The separated build passed `header_pow_tests`. Detailed owned logs are retained privately
+under `~/.local/state/pr11-split-20261019/`. These checks are not new mainnet
+benchmarks. Additional whole-PR/functional validation is recorded in the PR.
+
 EOF
