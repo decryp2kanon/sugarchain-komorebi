@@ -320,6 +320,9 @@ private:
     }
 
 public:
+    /** Read-only storage accounting; callers must provide the usual external lock. */
+    const Storage& GetStorage() const { return table; }
+
     /** You must always construct a cache with some elements via a subsequent
      * call to setup or setup_bytes, otherwise operations may segfault.
      */

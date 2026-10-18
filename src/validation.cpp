@@ -77,6 +77,10 @@
 #include <tuple>
 #include <utility>
 
+#if defined(__linux__) && defined(__GLIBC__)
+#include <malloc.h>
+#endif
+
 using kernel::CCoinsStats;
 using kernel::ChainstateRole;
 using kernel::CoinStatsHashType;
@@ -3353,6 +3357,53 @@ void ChainstateManager::UpdateIBDStatus()
     if (!CurrentChainstate().m_chain.IsTipRecent(MinimumChainWork(), m_options.max_tip_age)) return;
     LogInfo("Leaving InitialBlockDownload (latching to false)");
     m_cached_is_ibd.store(false, std::memory_order_relaxed);
+    if (GetConsensus().fYespowerSugar) m_post_ibd_cleanup_pending = true;
+}
+
+bool ChainstateManager::MaybeReleaseIBDCaches(BlockValidationState& state)
+{
+    AssertLockNotHeld(cs_main);
+    size_t coins_before{}, coins_after{};
+    {
+        LOCK(cs_main);
+        if (!m_post_ibd_cleanup_pending || m_interrupt || IsInitialBlockDownload()) return true;
+        // IBD can exit while recent blocks are still arriving. Do not discard
+        // useful caches during catchup or while a snapshot background chainstate
+        // may still need them. A later activation retries this same request.
+        if (m_chainstates.size() != 1 || !ActiveTip() || ActiveTip() != m_best_header) return true;
+        auto& chainstate{ActiveChainstate()};
+        if (!chainstate.CanFlushToDisk()) return true;
+        coins_before = chainstate.CoinsTip().DynamicMemoryUsage();
+        // FORCE_FLUSH preserves block/undo/index/coins ordering and rebuilds the
+        // empty coins pool. Never clear dirty entries before successful writes.
+        if (!chainstate.FlushStateToDisk(state, FlushStateMode::FORCE_FLUSH)) return false;
+        coins_after = chainstate.CoinsTip().DynamicMemoryUsage();
+        m_post_ibd_cleanup_pending = false;
+    }
+    const auto before{GetYespowerVerificationCacheUsage()};
+    bool proof_released{false};
+    try {
+        proof_released = ShrinkYespowerVerificationCache();
+    } catch (const std::bad_alloc&) {
+        // An optional cache reduction must not invalidate a block or punish a
+        // peer. The old cache is unchanged if replacement allocation fails.
+        LogWarning("Post-IBD proof cache reduction skipped: allocation failed");
+    }
+    const auto after{GetYespowerVerificationCacheUsage()};
+    const char* allocator_release{"unsupported"};
+#if defined(__linux__) && defined(__GLIBC__)
+    // Freed IBD pages can remain resident in glibc arenas. Return unused pages
+    // once, after actual cache release and outside both validation/cache locks.
+    // This is not periodic trimming or a substitute for releasing live objects.
+    // See doc/post-ibd-cache-release.md for the isolated retention measurements.
+    allocator_release = "not-needed";
+    if (proof_released || coins_before > coins_after) allocator_release = malloc_trim(0) ? "released" : "no-pages";
+#else
+    (void)proof_released;
+#endif
+    LogInfo("Post-IBD cache cleanup: coins cache before=%u after=%u bytes; proof storage before=%u after=%u bytes (budget=%u unchanged); allocator=%s",
+            coins_before, coins_after, before.proof_storage_bytes, after.proof_storage_bytes, after.budget_bytes, allocator_release);
+    return true;
 }
 
 bool ChainstateManager::NotifyHeaderTip()
@@ -3548,6 +3599,7 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
         if (m_chainman.m_interrupt) break;
     } while (pindexNewTip != pindexMostWork);
 
+    if (!m_chainman.MaybeReleaseIBDCaches(state)) return false;
     m_chainman.CheckBlockIndex();
 
     return true;

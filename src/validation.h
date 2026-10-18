@@ -1048,6 +1048,8 @@ public:
      * enough work and is recent.
      */
     std::atomic_bool m_cached_is_ibd{true};
+    //! One-shot cleanup, requested on IBD exit and deferred until header-tip catchup.
+    bool m_post_ibd_cleanup_pending GUARDED_BY(::cs_main){false};
 
     /**
      * Every received block is assigned a unique and increasing identifier, so we
@@ -1180,6 +1182,10 @@ public:
      * `ImportBlocks()` finishes).
      */
     void UpdateIBDStatus() EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+    /** Release IBD-era caches after relay, outside cs_main on entry.
+     * Returns false on the existing fatal chainstate-persistence failure path.
+     */
+    bool MaybeReleaseIBDCaches(BlockValidationState& state) LOCKS_EXCLUDED(cs_main);
 
     node::BlockMap& BlockIndex() EXCLUSIVE_LOCKS_REQUIRED(::cs_main)
     {

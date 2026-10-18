@@ -82,4 +82,23 @@ The separated build passed `chainstate_write_tests,validation_flush_tests`. Deta
 under `~/.local/state/pr11-split-20261019/`. These checks are not new mainnet
 benchmarks. Additional whole-PR/functional validation is recorded in the PR.
 
+## M6: release IBD-era caches once after catchup
+
+Sources: `966d63b1e1`, `cd9b07f977`, `b243458883`. Include the proof-usage/shrink
+API, coins forced-flush integration and conditional allocator return as one
+lifecycle optimization. Preserve lock ordering, replacement failure semantics,
+budget, salt and the ability to regrow. Defer cleanup until actual header-tip
+catchup with one chainstate. Cover real proof recomputation, concurrent checks,
+on-disk coins reopen, one-shot behavior and later blocks.
+See [isolated measurements](post-ibd-cache-release.md); they do not establish a
+new mainnet peak or guarantee allocator residency on other platforms.
+
+Whole-PR checks: daemon/GUI/CLI/test/bench builds and the private-node `feature_fast_startup.py` functional fixture passed. No operating node was restarted.
+
+### Split validation for M6
+
+The separated build passed `header_pow_tests/post_ibd*,validation_chainstatemanager_tests`. Detailed owned logs are retained privately
+under `~/.local/state/pr11-split-20261019/`. These checks are not new mainnet
+benchmarks. Additional whole-PR/functional validation is recorded in the PR.
+
 EOF
