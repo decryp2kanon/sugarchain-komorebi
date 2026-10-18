@@ -20,6 +20,7 @@
 #include <util/check.h>
 #include <util/hasher.h>
 
+#include <array>
 #include <mutex>
 #include <exception>
 #include <limits>
@@ -48,12 +49,37 @@ static_assert(MAX_YESPOWER_CACHE_BYTES / sizeof(uint256) <= std::numeric_limits<
 // As with the signature cache, store only successful verification, under a
 // salted digest of the entire input. This is bounded, process-local evidence:
 // neither a peer nor a persisted block-index status can populate it.
+// Construct initialized proof objects only on writes. Untouched pages behave
+// exactly like a contiguous zero-initialized table, without touching its whole
+// entry budget during tier growth. All access uses the enclosing cache lock.
+class PagedYespowerProofs {
+    static constexpr size_t PAGE_ITEMS{128};
+    using Page = std::array<uint256, PAGE_ITEMS>;
+    std::vector<std::unique_ptr<Page>> m_pages;
+
+public:
+    void resize(size_t size) { m_pages.resize((size + PAGE_ITEMS - 1) / PAGE_ITEMS); }
+    const uint256& operator[](size_t index) const
+    {
+        static const uint256 empty{};
+        const auto& page{m_pages[index / PAGE_ITEMS]};
+        return page ? (*page)[index % PAGE_ITEMS] : empty;
+    }
+    uint256& operator[](size_t index)
+    {
+        auto& page{m_pages[index / PAGE_ITEMS]};
+        if (!page) page = std::make_unique<Page>();
+        return (*page)[index % PAGE_ITEMS];
+    }
+};
+
 class YespowerVerificationCache {
     using Cache = CuckooCache::cache<uint256, SignatureCacheHasher>;
+    using GrowingProofCache = CuckooCache::cache<uint256, SignatureCacheHasher, PagedYespowerProofs>;
     // Only the fast backend owns tier metadata. The legacy backend remains
     // the original single CuckooCache with eager configured-budget allocation.
     struct GrowingCache {
-        std::vector<std::unique_ptr<Cache>> valid;
+        std::vector<std::unique_ptr<GrowingProofCache>> valid;
         size_t budget;
         size_t allocated;
         uint32_t active_slots;
@@ -63,7 +89,7 @@ class YespowerVerificationCache {
         explicit GrowingCache(size_t valid_budget) : budget{valid_budget}
         {
             allocated = std::min(budget, std::min(DEFAULT_YESPOWER_CACHE_BYTES, std::max(size_t{64}, budget / 128)));
-            auto initial{std::make_unique<Cache>()};
+            auto initial{std::make_unique<GrowingProofCache>()};
             active_slots = initial->setup_bytes(allocated).first;
             valid.push_back(std::move(initial));
         }
@@ -83,7 +109,7 @@ class YespowerVerificationCache {
                 const size_t next_bytes{std::min(allocated * 2, remaining)};
                 if (next_bytes >= allocated) {
                     try {
-                        auto next{std::make_unique<Cache>()};
+                        auto next{std::make_unique<GrowingProofCache>()};
                         const auto [slots, _]{next->setup_bytes(next_bytes)};
                         valid.push_back(std::move(next));
                         allocated += next_bytes;

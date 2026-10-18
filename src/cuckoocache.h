@@ -152,17 +152,19 @@ public:
  *   - The name "allow_erase" is used because the real discard happens later.
  *   - The name "please_keep" is used because elements may be erased anyways on insert.
  *
+ * @tparam Storage provides resize and const/mutable indexed access; the default
+ * retains the original contiguous storage.
  * @tparam Element should be a movable and copyable type
  * @tparam Hash should be a function/callable which takes a template parameter
  * hash_select and an Element and extracts a hash from it. Should return
  * high-entropy uint32_t hashes for `Hash h; h<0>(e) ... h<7>(e)`.
  */
-template <typename Element, typename Hash>
+template <typename Element, typename Hash, typename Storage = std::vector<Element>>
 class cache
 {
 private:
     /** table stores all the elements */
-    std::vector<Element> table;
+    Storage table;
 
     /** size stores the total available slots in the hash table */
     uint32_t size{0};
@@ -403,7 +405,7 @@ public:
         // Make sure we have not already inserted this element
         // If we have, make sure that it does not get deleted
         for (const uint32_t loc : locs)
-            if (table[loc] == e) {
+            if (std::as_const(table)[loc] == e) {
                 please_keep(loc);
                 epoch_flags[loc] = last_epoch;
                 return;
@@ -475,7 +477,7 @@ public:
     {
         std::array<uint32_t, 8> locs = compute_hashes(e);
         for (const uint32_t loc : locs)
-            if (table[loc] == e) {
+            if (std::as_const(table)[loc] == e) {
                 if (erase)
                     allow_erase(loc);
                 return true;
