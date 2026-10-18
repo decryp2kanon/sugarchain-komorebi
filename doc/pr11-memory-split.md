@@ -50,4 +50,18 @@ The separated build passed `header_pow_tests/block_index_owned_batch_survives_re
 under `~/.local/state/pr11-split-20261019/`. These checks are not new mainnet
 benchmarks. Additional whole-PR/functional validation is recorded in the PR.
 
+## M4: bound header-replay dirty-index accumulation
+
+Sources: `bf9eb5ce8d`, `c6ad3c0c5f`, `e7b8a79370`. Keep the final 32768 scheduling
+threshold, documented costs and headers-only count-boundary crash/restart checks
+in both startup modes. Do not publish the superseded 262144 intermediate policy.
+The existing fixture uses private SHA256d regtest nodes, not historical Yespower
+evidence or power-loss injection. Full-block PERIODIC writes follow in M5.
+
+### Split validation for M4
+
+The separated build passed `blockmanager_tests`. Detailed owned logs are retained privately
+under `~/.local/state/pr11-split-20261019/`. These checks are not new mainnet
+benchmarks. Additional whole-PR/functional validation is recorded in the PR.
+
 EOF
