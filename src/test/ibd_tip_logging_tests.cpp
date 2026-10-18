@@ -2,6 +2,8 @@
 // Distributed under the MIT software license, see the accompanying file COPYING.
 
 #include <consensus/validation.h>
+#include <kernel/chainparams.h>
+#include <kernel/notifications_interface.h>
 #include <logging.h>
 #include <test/util/logging.h>
 #include <test/util/setup_common.h>
@@ -137,6 +139,75 @@ BOOST_AUTO_TEST_CASE(catch_up_keeps_the_final_tip)
     BOOST_REQUIRE(chainstate.m_chain.Tip() == manager.m_best_header);
     (chainstate.*TipLogAccess::Update)(chainstate.m_chain.Tip());
     BOOST_CHECK_EQUAL(lines.load(), 2U);
+}
+
+BOOST_AUTO_TEST_CASE(presync_logs_every_24000_headers_without_throttling_notifications)
+{
+    struct Notifications : kernel::Notifications {
+        unsigned calls{0};
+        void headerTip(SynchronizationState, int64_t, int64_t, bool presync) override
+        {
+            BOOST_CHECK(presync);
+            ++calls;
+        }
+    } notifications;
+    // Regtest's built-in minimum work is zero, so use real mainnet parameters
+    // with a local empty header tip to exercise the presync reporting path.
+    const auto params{CChainParams::Main()};
+    CBlockIndex best;
+    fs::create_directories(m_path_root / "presync" / "blocks");
+    ChainstateManager manager{m_interrupt,
+        {.chainparams = *params, .datadir = m_path_root / "presync",
+         .notifications = notifications, .script_execution_cache_bytes = 0,
+         .signature_cache_bytes = 0},
+        {.chainparams = *params, .blocks_dir = m_path_root / "presync" / "blocks",
+         .notifications = notifications,
+         .block_tree_db_params = {.path = m_path_root / "presync" / "index", .cache_bytes = 0, .memory_only = true}}};
+    {
+        LOCK(cs_main);
+        manager.m_best_header = &best;
+    }
+    std::atomic<unsigned> lines{0};
+    DebugLogHelper log{"Pre-synchronizing blockheaders, height:", [&](const std::string* line) {
+        if (line) ++lines;
+        return false;
+    }};
+    auto report = [&](int64_t height) {
+        *this += 250ms;
+        manager.ReportHeadersPresync(height, 1);
+    };
+    report(2000); // Preserve the first available observation.
+    for (int64_t height{4000}; height <= 24000; height += 2000) report(height);
+    report(25999);
+    BOOST_CHECK_EQUAL(lines.load(), 1U);
+    BOOST_CHECK_EQUAL(notifications.calls, 13U);
+    manager.ReportHeadersPresync(26000, 1); // Original 250ms gate still applies.
+    BOOST_CHECK_EQUAL(notifications.calls, 13U);
+    report(26000);
+    BOOST_CHECK_EQUAL(lines.load(), 2U);
+    report(26000); // Repeated heights must not consume the log budget.
+    BOOST_CHECK_EQUAL(lines.load(), 2U);
+    report(1000); // A lower restart/peer height resets the logging interval.
+    BOOST_CHECK_EQUAL(lines.load(), 3U);
+    report(25000);
+    BOOST_CHECK_EQUAL(lines.load(), 4U);
+    BOOST_CHECK_EQUAL(notifications.calls, 17U);
+    {
+        LOCK(cs_main);
+        BOOST_CHECK(manager.m_best_header == &best);
+        BOOST_CHECK_EQUAL(best.nHeight, 0);
+    }
+    manager.m_cached_is_ibd = false;
+    report(49000);
+    BOOST_CHECK_EQUAL(lines.load(), 4U);
+    BOOST_CHECK_EQUAL(notifications.calls, 18U);
+    {
+        LOCK(cs_main);
+        best.nChainWork = UintToArith256(params->GetConsensus().nMinimumChainWork);
+    }
+    report(73000); // Keep the existing post-minchainwork early return.
+    BOOST_CHECK_EQUAL(lines.load(), 4U);
+    BOOST_CHECK_EQUAL(notifications.calls, 18U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

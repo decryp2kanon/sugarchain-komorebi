@@ -98,6 +98,8 @@ static constexpr auto DATABASE_WRITE_INTERVAL_MIN{50min};
 static constexpr auto DATABASE_WRITE_INTERVAL_MAX{70min};
 /** Maximum age of our tip for us to be considered current for fee estimation */
 static constexpr std::chrono::hours MAX_FEE_ESTIMATION_TIP_AGE{3};
+/** Progress logging only; header batches and GUI notifications keep their own cadence. */
+static constexpr int64_t PRESYNC_LOG_INTERVAL{24'000};
 const std::vector<std::string> CHECKLEVEL_DOC {
     "level 0 reads the blocks from disk",
     "level 1 verifies block validity",
@@ -4336,6 +4338,7 @@ bool ChainstateManager::ProcessNewBlockHeaders(std::span<const CBlockHeader> hea
 void ChainstateManager::ReportHeadersPresync(int64_t height, int64_t timestamp)
 {
     AssertLockNotHeld(GetMutex());
+    bool log_progress{false};
     {
         LOCK(GetMutex());
         // Don't report headers presync progress if we already have a post-minchainwork header chain.
@@ -4347,10 +4350,18 @@ void ChainstateManager::ReportHeadersPresync(int64_t height, int64_t timestamp)
         auto now = MockableSteadyClock::now();
         if (now < m_last_presync_update + std::chrono::milliseconds{250}) return;
         m_last_presync_update = now;
+        // Keep GUI notifications responsive, but avoid filling the per-source
+        // log budget with a line for every 2,000-header network message. Report
+        // the first observation and reset the interval if progress goes back.
+        if (!m_last_presync_log_height || height < *m_last_presync_log_height ||
+            height - *m_last_presync_log_height >= PRESYNC_LOG_INTERVAL) {
+            m_last_presync_log_height = height;
+            log_progress = true;
+        }
     }
     bool initial_download = IsInitialBlockDownload();
     GetNotifications().headerTip(GetSynchronizationState(initial_download, m_blockman.m_blockfiles_indexed), height, timestamp, /*presync=*/true);
-    if (initial_download) {
+    if (initial_download && log_progress) {
         int64_t blocks_left{(NodeClock::now() - NodeSeconds{std::chrono::seconds{timestamp}}) / GetConsensus().PowTargetSpacing()};
         blocks_left = std::max<int64_t>(0, blocks_left);
         const double progress{100.0 * height / (height + blocks_left)};

@@ -49,4 +49,19 @@ The separated build passed `sugarshield_tests`. Detailed owned logs are retained
 under `~/.local/state/pr11-split-20261019/`. These checks are not new mainnet
 benchmarks. Additional whole-PR/functional validation is recorded in the PR.
 
+## P4: separate 24000-header progress logs from GUI updates
+
+Source: `a63275b21c`. Preserve existing GUI notification rate while logging the
+first observation, height rollback and each 24000-header advance. Keep the
+mock-clock state/notification regression in the same commit. This is log-volume
+control, not a measured presync throughput improvement.
+
+Whole-PR checks: all configured build targets and bounded one-run smoke checks of `bench_headers_sync` and `bench_header_pow --presync` passed. These are reproducibility checks, not new A/B speedup measurements.
+
+### Split validation for P4
+
+The separated build passed `ibd_tip_logging_tests`. Detailed owned logs are retained privately
+under `~/.local/state/pr11-split-20261019/`. These checks are not new mainnet
+benchmarks. Additional whole-PR/functional validation is recorded in the PR.
+
 EOF
