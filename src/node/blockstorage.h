@@ -100,13 +100,14 @@ public:
 class BlockTreeDB : public CDBWrapper
 {
     void PopulateBatch(CDBBatch& batch, const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo,
-        int nLastFile, const std::vector<const CBlockIndex*>& blockinfo);
+        int nLastFile, const std::vector<const CBlockIndex*>& blockinfo, const Consensus::Params* consensus);
 
 public:
     using CDBWrapper::CDBWrapper;
-    void WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, const std::vector<const CBlockIndex*>& blockinfo);
+    void WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, const std::vector<const CBlockIndex*>& blockinfo, const Consensus::Params* consensus = nullptr);
+    bool HasYespowerEvidence(const CBlockHeader& header, const Consensus::Params& consensus) const;
     /** Consume a temporary pointer vector after serialization, before DB insertion. */
-    void WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, std::vector<const CBlockIndex*>&& blockinfo);
+    void WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, std::vector<const CBlockIndex*>&& blockinfo, const Consensus::Params* consensus = nullptr);
     bool ReadBlockFileInfo(int nFile, CBlockFileInfo& info);
     bool ReadLastBlockFile(int& nFile);
     void WriteReindexing(bool fReindexing);

@@ -111,7 +111,7 @@ bool BlockTreeDB::ReadLastBlockFile(int& nFile)
     return Read(DB_LAST_BLOCK, nFile);
 }
 
-void BlockTreeDB::PopulateBatch(CDBBatch& batch, const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, const std::vector<const CBlockIndex*>& blockinfo)
+void BlockTreeDB::PopulateBatch(CDBBatch& batch, const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, const std::vector<const CBlockIndex*>& blockinfo, const Consensus::Params* consensus)
 {
     for (const auto& [file, info] : fileInfo) {
         batch.Write(std::make_pair(DB_BLOCK_FILES, file), *info);
@@ -119,25 +119,41 @@ void BlockTreeDB::PopulateBatch(CDBBatch& batch, const std::vector<std::pair<int
     batch.Write(DB_LAST_BLOCK, nLastFile);
     for (const CBlockIndex* bi : blockinfo) {
         batch.Write(std::make_pair(DB_BLOCK_INDEX, bi->GetBlockHash()), CDiskBlockIndex{bi});
-
+        if (consensus && consensus->fYespowerSugar && !EnableFuzzDeterminism()) {
+            AssertLockHeld(::cs_main);
+            if (!bi->m_checked_yespower) continue;
+            const auto header{bi->GetBlockHeader()};
+            if (header.GetHash() == bi->GetBlockHash() && DeriveTarget(header.nBits, consensus->powLimit)) {
+                batch.Write(std::make_pair(uint8_t{'y'}, header.GetHash()),
+                    std::make_pair(uint8_t{2}, GetYespowerEvidenceDigest(header, *consensus)));
+            }
+        }
     }
 }
 
-void BlockTreeDB::WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, const std::vector<const CBlockIndex*>& blockinfo)
+void BlockTreeDB::WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, const std::vector<const CBlockIndex*>& blockinfo, const Consensus::Params* consensus)
 {
     CDBBatch batch(*this);
-    PopulateBatch(batch, fileInfo, nLastFile, blockinfo);
+    PopulateBatch(batch, fileInfo, nLastFile, blockinfo, consensus);
     WriteBatch(batch, true);
 }
 
-void BlockTreeDB::WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, std::vector<const CBlockIndex*>&& blockinfo)
+void BlockTreeDB::WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, std::vector<const CBlockIndex*>&& blockinfo, const Consensus::Params* consensus)
 {
     CDBBatch batch(*this);
-    PopulateBatch(batch, fileInfo, nLastFile, blockinfo);
+    PopulateBatch(batch, fileInfo, nLastFile, blockinfo, consensus);
     // The serialized batch no longer needs the input pointer array. Return it
     // before LevelDB allocates its memtable for this same atomic write.
     std::vector<const CBlockIndex*>{}.swap(blockinfo);
     WriteBatch(batch, true);
+}
+
+bool BlockTreeDB::HasYespowerEvidence(const CBlockHeader& header, const Consensus::Params& consensus) const
+{
+    if (!consensus.fYespowerSugar || EnableFuzzDeterminism() || !DeriveTarget(header.nBits, consensus.powLimit)) return false;
+    std::pair<uint8_t, uint256> evidence;
+    return Read(std::make_pair(uint8_t{'y'}, header.GetHash()), evidence) &&
+        evidence.first == 2 && evidence.second == GetYespowerEvidenceDigest(header, consensus);
 }
 
 
@@ -804,7 +820,7 @@ void BlockManager::WriteBlockIndexDB()
     // until another index becomes dirty. Avoid retaining a replay-sized pool.
     m_dirty_blockindex_resource.Release();
     int max_blockfile = WITH_LOCK(cs_LastBlockFile, return this->MaxBlockfileNum());
-    m_block_tree_db->WriteBatchSync(vFiles, max_blockfile, std::move(vBlocks));
+    m_block_tree_db->WriteBatchSync(vFiles, max_blockfile, std::move(vBlocks), &GetConsensus());
 }
 
 bool BlockManager::LoadBlockIndexDB(const std::optional<uint256>& snapshot_blockhash, std::vector<CBlockIndex*>* sorted_indices)

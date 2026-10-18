@@ -1279,4 +1279,24 @@ BOOST_AUTO_TEST_CASE(post_ibd_shrink_is_safe_during_parallel_checks)
     BOOST_CHECK_EQUAL(GetYespowerVerificationCacheUsage().budget_bytes, 1U << 20);
 }
 
+BOOST_AUTO_TEST_CASE(persistent_evidence_records_bind_header_rules_and_version)
+{
+    const auto header{Headers(802, 1).front()};
+    const auto hash{header.GetHash()};
+    CBlockIndex index{header}; index.phashBlock = &hash; index.nStatus = BLOCK_VALID_TREE;
+    kernel::BlockTreeDB db{DBParams{.path = "", .cache_bytes = 1 << 20, .memory_only = true}};
+    WITH_LOCK(cs_main, db.WriteBatchSync({}, 0, {&index}, &params));
+    BOOST_CHECK(!db.HasYespowerEvidence(header, params)); // Disk validity is not genuine proof.
+    db.Write(std::make_pair(uint8_t{'y'}, hash), std::make_pair(uint8_t{2}, GetYespowerEvidenceDigest(header, params)), true);
+    BOOST_CHECK(db.HasYespowerEvidence(header, params));
+    auto other{params}; other.hashGenesisBlock = uint256{123};
+    BOOST_CHECK(!db.HasYespowerEvidence(header, other));
+    auto changed{header}; ++changed.nNonce;
+    BOOST_CHECK(!db.HasYespowerEvidence(changed, params));
+    db.Write(std::make_pair(uint8_t{'y'}, hash), std::make_pair(uint8_t{99}, uint256{}), true);
+    BOOST_CHECK(!db.HasYespowerEvidence(header, params));
+    db.Write(std::make_pair(uint8_t{'y'}, hash), uint8_t{2}, true);
+    BOOST_CHECK(!db.HasYespowerEvidence(header, params));
+}
+
 BOOST_AUTO_TEST_SUITE_END()
