@@ -31,4 +31,22 @@ The separated build passed `sugarshield_tests`. Detailed owned logs are retained
 under `~/.local/state/pr11-split-20261019/`. These checks are not new mainnet
 benchmarks. Additional whole-PR/functional validation is recorded in the PR.
 
+## P3: retain immutable bounded-history endpoint medians
+
+Sources: `b1d23b402e`, `a57c29924d`; research provenance remains in original PR11
+commits `49b9f7ed78` through `5866c6540a` and `1e2507af39` through `90faec5afb`.
+Keep non-genesis initialization, history reset/eviction and difficulty outcomes
+identical; do not enlarge global CBlockIndex. The duplicate/decreasing-time MTP
+regression belongs to this commit.
+The arithmetic+MTP component result is about 4.01% shorter; real P2P results are
+inconclusive. Two mainnet runs had presync 1.43% longer, not a demonstrated
+seven-hour reduction. No adopted worker/prefetch/final-remainder growth policy
+is added. Candidate .patch files are explicitly un-applied historical artifacts.
+
+### Split validation for P3
+
+The separated build passed `sugarshield_tests`. Detailed owned logs are retained privately
+under `~/.local/state/pr11-split-20261019/`. These checks are not new mainnet
+benchmarks. Additional whole-PR/functional validation is recorded in the PR.
+
 EOF

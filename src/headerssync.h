@@ -194,7 +194,16 @@ private:
     // Keep bounded history for the current pass; commitments/redownload stay unchanged.
     void ResetDifficultyHistory();
     bool CheckDifficultyAndAppend(const CBlockHeader& header);
-    std::deque<CBlockIndex> m_difficulty_history;
+    struct DifficultyEntry {
+        CBlockIndex index;
+        // An endpoint's median is immutable as the history advances. Keep it
+        // beside its temporary index, without enlarging the global block index.
+        int64_t median_time_past;
+
+        explicit DifficultyEntry(const CBlockHeader& header, int64_t mtp = 0)
+            : index{header}, median_time_past{mtp} {}
+    };
+    std::deque<DifficultyEntry> m_difficulty_history;
     // Sum of the newest averaging-window targets (all available targets near genesis).
     arith_uint256 m_difficulty_target_sum{0};
 

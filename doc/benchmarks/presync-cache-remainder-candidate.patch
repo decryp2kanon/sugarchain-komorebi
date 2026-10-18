@@ -1,0 +1,14 @@
+--- a/src/pow.cpp
++++ b/src/pow.cpp
+@@ -113,7 +113,10 @@
+             if (!growth_disabled && active_inserts >= active_slots * 45 / 100 && allocated < budget) {
+                 const size_t remaining{budget - allocated};
+                 const size_t next_bytes{std::min(allocated * 2, remaining)};
+-                if (next_bytes >= allocated) {
++                // Do not retire the active tier into a remainder that cannot
++                // even hold its current stage's insertion count. This also
++                // preserves the tiny-cache evidence-retention contract.
++                if (next_bytes / sizeof(uint256) >= std::max<size_t>(2, active_inserts)) {
+                     try {
+                         auto next{std::make_unique<GrowingProofCache>()};
+                         const auto [slots, _]{next->setup_bytes(next_bytes)};
