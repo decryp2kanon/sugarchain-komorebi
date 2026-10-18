@@ -465,7 +465,11 @@ BOOST_AUTO_TEST_CASE(blockmanager_flush_block_file)
             .cache_bytes = 0,
         },
     };
-    BlockManager blockman{*Assert(m_node.shutdown_signal), blockman_opts};
+    struct DirtyBlockManager : BlockManager {
+        using BlockManager::BlockManager;
+        using BlockManager::m_dirty_blockindex;
+    };
+    DirtyBlockManager blockman{*Assert(m_node.shutdown_signal), blockman_opts};
 
     // Test blocks with no transactions, not even a coinbase
     CBlock block1;
@@ -520,6 +524,39 @@ BOOST_AUTO_TEST_CASE(blockmanager_flush_block_file)
     // Block 2 was not overwritten:
     BOOST_CHECK(!blockman.ReadBlock(read_block, pos2, {}));
     BOOST_CHECK_EQUAL(read_block.nVersion, 2);
+
+    // Exercise real index persistence across pool release and subsequent reuse.
+    // AddToBlockIndex alone does not establish genuine Yespower evidence.
+    LOCK(cs_main);
+    CBlockIndex* best_header{nullptr};
+    CBlockHeader header{Params().GenesisBlock()};
+    std::vector<std::pair<uint256, CBlockIndex*>> saved;
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        for (int i = 0; i < 1000; ++i) {
+            if (!saved.empty()) header.hashPrevBlock = saved.back().first;
+            ++header.nNonce;
+            auto* index{blockman.AddToBlockIndex(header, best_header)};
+            const auto dirty_size{blockman.m_dirty_blockindex.size()};
+            BOOST_CHECK(blockman.AddToBlockIndex(header, best_header) == index);
+            BOOST_CHECK_EQUAL(blockman.m_dirty_blockindex.size(), dirty_size);
+            saved.emplace_back(header.GetHash(), index);
+        }
+        BOOST_CHECK_EQUAL(blockman.m_dirty_blockindex.size(), 1000U);
+        blockman.WriteBlockIndexDB();
+        BOOST_CHECK(blockman.m_dirty_blockindex.empty());
+        blockman.WriteBlockIndexDB(); // Releasing an already-empty pool is safe.
+    }
+    // Reopen the persisted DB after all dirty set nodes have been freed.
+    blockman.m_block_tree_db.reset();
+    blockman.m_block_tree_db = std::make_unique<kernel::BlockTreeDB>(blockman_opts.block_tree_db_params);
+    for (const auto& [hash, index] : saved) {
+        CDiskBlockIndex disk;
+        BOOST_REQUIRE(blockman.m_block_tree_db->Read(std::make_pair(uint8_t{'b'}, hash), disk));
+        BOOST_CHECK(disk.ConstructBlockHash() == hash);
+        BOOST_CHECK_EQUAL(disk.nHeight, index->nHeight);
+        BOOST_CHECK_EQUAL(disk.nStatus, index->nStatus);
+        BOOST_CHECK(disk.hashPrev == (index->pprev ? index->pprev->GetBlockHash() : uint256{}));
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

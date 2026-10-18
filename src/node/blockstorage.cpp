@@ -779,10 +779,13 @@ void BlockManager::WriteBlockIndexDB()
     }
     std::vector<const CBlockIndex*> vBlocks;
     vBlocks.reserve(m_dirty_blockindex.size());
-    for (std::set<CBlockIndex*>::iterator it = m_dirty_blockindex.begin(); it != m_dirty_blockindex.end();) {
+    for (auto it = m_dirty_blockindex.begin(); it != m_dirty_blockindex.end();) {
         vBlocks.push_back(*it);
         m_dirty_blockindex.erase(it++);
     }
+    // vBlocks owns index pointers, not set nodes; no pool allocation is needed
+    // until another index becomes dirty. Avoid retaining a replay-sized pool.
+    m_dirty_blockindex_resource.Release();
     int max_blockfile = WITH_LOCK(cs_LastBlockFile, return this->MaxBlockfileNum());
     m_block_tree_db->WriteBatchSync(vFiles, max_blockfile, vBlocks);
 }
