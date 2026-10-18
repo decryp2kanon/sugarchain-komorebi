@@ -36,4 +36,18 @@ The separated build passed `blockmanager_tests`. Detailed owned logs are retaine
 under `~/.local/state/pr11-split-20261019/`. These checks are not new mainnet
 benchmarks. Additional whole-PR/functional validation is recorded in the PR.
 
+## M3: release the serialized batch input before DB insertion
+
+Source: `0e31c20cbf`. Extract the rvalue write overload without Lazy consensus or
+evidence arguments. Borrowed callers keep their vector; owned storage is freed
+after serialization and before the existing synchronous atomic DB write.
+The standalone reopen test extracts the owned-vector assertions from the original
+mixed historical-evidence fixture. The full fixture remains in the later Lazy PR.
+
+### Split validation for M3
+
+The separated build passed `header_pow_tests/block_index_owned_batch_survives_reopen`. Detailed owned logs are retained privately
+under `~/.local/state/pr11-split-20261019/`. These checks are not new mainnet
+benchmarks. Additional whole-PR/functional validation is recorded in the PR.
+
 EOF

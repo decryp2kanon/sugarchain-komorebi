@@ -99,9 +99,14 @@ public:
 /** Access to the block database (blocks/index/) */
 class BlockTreeDB : public CDBWrapper
 {
+    void PopulateBatch(CDBBatch& batch, const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo,
+        int nLastFile, const std::vector<const CBlockIndex*>& blockinfo);
+
 public:
     using CDBWrapper::CDBWrapper;
     void WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, const std::vector<const CBlockIndex*>& blockinfo);
+    /** Consume a temporary pointer vector after serialization, before DB insertion. */
+    void WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, std::vector<const CBlockIndex*>&& blockinfo);
     bool ReadBlockFileInfo(int nFile, CBlockFileInfo& info);
     bool ReadLastBlockFile(int& nFile);
     void WriteReindexing(bool fReindexing);

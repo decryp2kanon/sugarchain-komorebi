@@ -1181,4 +1181,28 @@ BOOST_AUTO_TEST_CASE(startup_progress_gui_updates_are_not_all_logged)
     BOOST_CHECK(logged[3].find("128 / 170 (75%)") != std::string::npos);
 }
 
+BOOST_AUTO_TEST_CASE(block_index_owned_batch_survives_reopen)
+{
+    const auto header{Headers(803, 1).front()};
+    const auto hash{header.GetHash()};
+    const fs::path path{m_path_root / "owned-index-batch"};
+    CBlockIndex index{header}; index.phashBlock = &hash; index.nStatus = BLOCK_VALID_TREE;
+    {
+        kernel::BlockTreeDB db{DBParams{.path = path, .cache_bytes = 1 << 20}};
+        const std::vector<const CBlockIndex*> borrowed{&index};
+        db.WriteBatchSync({}, 0, borrowed);
+        BOOST_CHECK_EQUAL(borrowed.size(), 1U);
+        std::vector<const CBlockIndex*> owned{&index};
+        db.WriteBatchSync({}, 0, std::move(owned));
+        BOOST_CHECK(owned.empty());
+    }
+    {
+        kernel::BlockTreeDB db{DBParams{.path = path, .cache_bytes = 1 << 20}};
+        CDiskBlockIndex saved;
+        BOOST_REQUIRE(db.Read(std::make_pair(uint8_t{'b'}, hash), saved));
+        BOOST_CHECK(saved.ConstructBlockHash() == hash);
+        BOOST_CHECK_EQUAL(saved.nStatus, index.nStatus);
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
