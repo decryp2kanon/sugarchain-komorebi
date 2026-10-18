@@ -119,7 +119,6 @@ void BlockTreeDB::PopulateBatch(CDBBatch& batch, const std::vector<std::pair<int
     batch.Write(DB_LAST_BLOCK, nLastFile);
     for (const CBlockIndex* bi : blockinfo) {
         batch.Write(std::make_pair(DB_BLOCK_INDEX, bi->GetBlockHash()), CDiskBlockIndex{bi});
-
     }
 }
 
@@ -139,7 +138,6 @@ void BlockTreeDB::WriteBatchSync(const std::vector<std::pair<int, const CBlockFi
     std::vector<const CBlockIndex*>{}.swap(blockinfo);
     WriteBatch(batch, true);
 }
-
 
 void BlockTreeDB::WriteFlag(const std::string& name, bool fValue)
 {
