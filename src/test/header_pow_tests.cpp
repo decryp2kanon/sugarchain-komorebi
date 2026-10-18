@@ -882,7 +882,6 @@ BOOST_AUTO_TEST_CASE(growing_cache_retains_verified_proofs_and_rejects_invalid_h
         wrong_limit.powLimit = uint256{};
         BOOST_CHECK(!CheckBlockProofOfWork(real_headers.front(), wrong_limit));
     }
-
 }
 
 BOOST_AUTO_TEST_CASE(cache_backend_mode_changes_reset_evidence_and_keep_rejection)

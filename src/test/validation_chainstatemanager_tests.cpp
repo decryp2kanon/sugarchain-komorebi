@@ -55,7 +55,6 @@ BOOST_FIXTURE_TEST_CASE(reimport_genesis_with_height_zero_deployments, ChainTest
     BOOST_CHECK_EQUAL(index->GetBlockHash(), manager.GetConsensus().hashGenesisBlock);
 }
 
-
 //! Basic tests for ChainstateManager.
 //!
 //! First create a legacy (IBD) chainstate, then create a snapshot chainstate.
