@@ -240,8 +240,18 @@ unsigned int CalculateSugarShieldWorkRequired(const arith_uint256& total, int64_
     const arith_uint256 limit = UintToArith256(params.powLimit);
     span = params.AveragingWindowTimespan() + (span - params.AveragingWindowTimespan()) / 4;
     span = std::clamp(span, params.MinActualTimespan(), params.MaxActualTimespan());
-    arith_uint256 next = DivideSugarShieldTarget(total, params.nPowAveragingWindow);
-    next = DivideSugarShieldTarget(next, params.AveragingWindowTimespan());
+    const int64_t window{params.nPowAveragingWindow};
+    const int64_t timespan{params.AveragingWindowTimespan()};
+    arith_uint256 next;
+    // For positive b/c, floor(floor(a / b) / c) == floor(a / (b * c)).
+    // Check the product before multiplying; keep the generic two-stage path
+    // for other parameters. The later span multiplication must stay after division.
+    if (window > 0 && timespan > 0 && uint64_t(window) <= UINT32_MAX / uint64_t(timespan)) {
+        next = DivideSugarShieldTarget(total, window * timespan);
+    } else {
+        next = DivideSugarShieldTarget(total, window);
+        next = DivideSugarShieldTarget(next, timespan);
+    }
     next *= span;
     if (next > limit) next = limit;
     return next.GetCompact();

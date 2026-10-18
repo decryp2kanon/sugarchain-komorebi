@@ -17,4 +17,18 @@ The separated build passed `sugarshield_tests:yespower_tests`. Detailed owned lo
 under `~/.local/state/pr11-split-20261019/`. These checks are not new mainnet
 benchmarks. Additional whole-PR/functional validation is recorded in the PR.
 
+## P2: combine exact positive target divisions
+
+Source: `51f13a2c25`. Preserve floor rounding, product guard, generic fallback,
+subsequent multiplication and clamp. Include the rounding/fallback regression
+case in this same optimization commit. No consensus outcome change is intended.
+The combined measurement series is published with P3; do not assign the combined
+percentage to this optimization alone.
+
+### Split validation for P2
+
+The separated build passed `sugarshield_tests`. Detailed owned logs are retained privately
+under `~/.local/state/pr11-split-20261019/`. These checks are not new mainnet
+benchmarks. Additional whole-PR/functional validation is recorded in the PR.
+
 EOF
