@@ -4246,6 +4246,12 @@ static bool ContextualCheckBlockHeader(const CBlockHeader& block, BlockValidatio
  */
 static bool ContextualCheckBlock(const CBlock& block, BlockValidationState& state, const ChainstateManager& chainman, const CBlockIndex* pindexPrev)
 {
+    // The fixed genesis predates height commitments and relative-locktime rules.
+    // Sugarchain activates them at height zero; reindex must still import the
+    // exact configured genesis without dereferencing a nonexistent predecessor.
+    // AcceptBlockHeader and CheckBlock already checked its identity/PoW/body.
+    if (!pindexPrev && block.GetHash() == chainman.GetConsensus().hashGenesisBlock) return true;
+
     const int nHeight = pindexPrev == nullptr ? 0 : pindexPrev->nHeight + 1;
 
     // Enforce BIP113 (Median Time Past).

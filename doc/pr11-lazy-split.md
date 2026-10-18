@@ -55,4 +55,20 @@ The separated build passed `header_pow_tests`. Detailed owned logs are retained 
 under `~/.local/state/pr11-split-20261019/`. These checks are not new mainnet
 benchmarks. Additional whole-PR/functional validation is recorded in the PR.
 
+## L4: reimport the exact fixed genesis during recovery
+
+Source: `bb75efd1ce`. The configured genesis predates contextual commitments;
+keep the exact identity exception without bypassing earlier header/PoW/body
+checks for arbitrary blocks. Include the original contextual regression test.
+This is a recovery correction required by the documented reindex path, not a
+new general exemption or startup-speed claim.
+
+Whole-PR checks: daemon/GUI/CLI/test/bench builds and the private-node `feature_fast_startup.py` functional fixture passed. No operating node was restarted.
+
+### Split validation for L4
+
+The separated build passed `validation_chainstatemanager_tests`. Detailed owned logs are retained privately
+under `~/.local/state/pr11-split-20261019/`. These checks are not new mainnet
+benchmarks. Additional whole-PR/functional validation is recorded in the PR.
+
 EOF
