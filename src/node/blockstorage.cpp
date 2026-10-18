@@ -48,6 +48,7 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <thread>
 #include <cmath>
 #include <compare>
 #include <cstddef>
@@ -156,6 +157,137 @@ bool BlockTreeDB::HasYespowerEvidence(const CBlockHeader& header, const Consensu
         evidence.first == 2 && evidence.second == GetYespowerEvidenceDigest(header, consensus);
 }
 
+std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Params& consensus,
+    const util::SignalInterrupt& interrupt, HistoricalPoWStats& stats, unsigned pause_ms,
+    const std::function<bool(const CBlockHeader&)>& live_verified, int pow_workers)
+{
+    stats.state = HistoricalPoWStats::RUNNING;
+    const int workers{std::clamp(pow_workers, 1, MAX_HEADER_POW_WORKERS)};
+    HeaderPoWVerifier verifier{workers};
+    std::optional<uint256> last;
+    LogInfo("Lazy PoW workers: %d, pause between computed DB batches: %u ms\n", workers, pause_ms);
+    LogInfo("Lazy PoW started: %u entries\n", stats.total.load());
+    LogInfo("Lazy PoW: 0/%u (0%%) checked, 0 verified, 0 reused\n", stats.total.load());
+    auto last_progress_log{std::chrono::steady_clock::now()};
+    // Short-lived DB snapshots avoid pinning obsolete table files for hours.
+    // Keys are block identities, not heights; forks are checked independently.
+    while (!interrupt) {
+        std::vector<std::pair<uint256, CDiskBlockIndex>> entries;
+        entries.reserve(512);
+        {
+            std::unique_ptr<CDBIterator> cursor{NewIterator()};
+            cursor->Seek(std::make_pair(DB_BLOCK_INDEX, last.value_or(uint256{})));
+            while (cursor->Valid() && cursor->KeyHasPrefix(DB_BLOCK_INDEX)) {
+                std::pair<uint8_t, uint256> key;
+                CDiskBlockIndex disk;
+                if (!cursor->GetKey(key) || !cursor->GetValue(disk, true)) {
+                    stats.state = HistoricalPoWStats::FAILED;
+                    return "Lazy PoW: unreadable block-index entry (not a PoW failure).";
+                }
+                if (!last || key.second != *last) entries.emplace_back(key.second, std::move(disk));
+                cursor->Next();
+                if (entries.size() == 512) break;
+            }
+            cursor->CheckStatus();
+        }
+        if (entries.empty()) {
+            stats.total = stats.processed.load();
+            stats.state = HistoricalPoWStats::COMPLETE;
+            LogInfo("Lazy PoW complete: %u entries, %u verified, %u reused\n",
+                stats.processed.load(), stats.verified.load(), stats.reused.load());
+            return std::nullopt;
+        }
+        // The fast-mode DB has no retained table cache. Read evidence through
+        // one short-lived iterator per batch instead of reopening table files
+        // for every point lookup. No snapshot remains alive during hashing.
+        std::vector<std::pair<uint8_t, uint256>> evidence(entries.size());
+        {
+            std::unique_ptr<CDBIterator> proofs{NewIterator()};
+            for (size_t i{0}; i < entries.size(); ++i) {
+                const auto expected{std::make_pair(uint8_t{'y'}, entries[i].first)};
+                proofs->Seek(expected);
+                std::pair<uint8_t, uint256> key;
+                if (proofs->Valid() && proofs->GetKey(key) && key == expected) {
+                    if (!proofs->GetValue(evidence[i])) evidence[i] = {};
+                }
+            }
+            proofs->CheckStatus();
+        }
+        // Owned header copies survive all queue work. No DB iterator or index
+        // pointer is retained while workers compute. A batch is at most 512.
+        std::vector<CBlockHeader> headers;
+        std::vector<CBlockHeader> missing;
+        std::vector<bool> reused;
+        std::vector<bool> live;
+        headers.reserve(entries.size());
+        missing.reserve(entries.size());
+        for (size_t i{0}; i < entries.size() && !interrupt; ++i) {
+            const auto& [hash, disk]{entries[i]};
+            auto header{disk.GetBlockHeader()};
+            header.hashPrevBlock = disk.hashPrev;
+            if (header.GetHash() != hash) {
+                stats.state = HistoricalPoWStats::FAILED;
+                return strprintf("Lazy PoW: block-index identity mismatch at height %d, hash %s. Back up data and recover with -fast-startup=0 -reindex.", disk.nHeight, hash.ToString());
+            }
+            const auto& saved{evidence[i]};
+            const bool saved_valid{consensus.fYespowerSugar && !EnableFuzzDeterminism() &&
+                DeriveTarget(header.nBits, consensus.powLimit) && saved.first == 2 &&
+                saved.second == GetYespowerEvidenceDigest(header, consensus)};
+            const bool live_valid{!saved_valid && live_verified && live_verified(header)};
+            headers.push_back(header);
+            reused.push_back(saved_valid);
+            live.push_back(live_valid);
+            if (!saved_valid && !live_valid) missing.push_back(header);
+        }
+        // Finish this bounded batch even if shutdown arrived while classifying.
+        // The queue joins its tasks before returning; committed successes survive.
+        const bool batch_valid{missing.empty() || verifier.CheckEach(missing, consensus, /*cache_result=*/false)};
+        CDBBatch batch{*this};
+        bool dirty{false};
+        for (size_t i{0}; i < headers.size(); ++i) {
+            const auto& header{headers[i]};
+            const auto& [hash, disk]{entries[i]};
+            if (reused[i]) {
+                ++stats.reused;
+            } else {
+                // A failed queue batch is not evidence for every member. Locate
+                // its failure individually; cache hits are genuine prior checks.
+                if (!live[i] && !batch_valid && !CheckBlockProofOfWork(header, consensus, /*cache_result=*/false)) {
+                    if (dirty) WriteBatch(batch, true);
+                    stats.state = HistoricalPoWStats::FAILED;
+                    return strprintf("Lazy PoW failed at height %d, hash %s. Shutting down. Back up data and recover with -fast-startup=0 -reindex. Reindexing cannot repair invalid PoW or damaged block files.", disk.nHeight, hash.ToString());
+                }
+                if (consensus.fYespowerSugar && !EnableFuzzDeterminism()) {
+                    batch.Write(std::make_pair(uint8_t{'y'}, hash),
+                        std::make_pair(uint8_t{2}, GetYespowerEvidenceDigest(header, consensus)));
+                    dirty = true;
+                }
+                ++stats.verified;
+            }
+            ++stats.processed;
+            last = hash;
+        }
+        if (dirty) WriteBatch(batch, true);
+        // Rate-limit progress only; zero, completion, interruption and errors
+        // are emitted separately. Check the clock per DB batch, not per header.
+        const auto now{std::chrono::steady_clock::now()};
+        if (now - last_progress_log >= std::chrono::seconds{10}) {
+            const auto processed{stats.processed.load()};
+            const auto total{std::max(stats.total.load(), processed)};
+            const double percent{total ? 100.0 * static_cast<double>(processed) / static_cast<double>(total) : 0.0};
+            LogInfo("Lazy PoW: %u/%u (%.2f%%) checked, %u verified, %u reused\n",
+                processed, total, percent, stats.verified.load(), stats.reused.load());
+            last_progress_log = now;
+        }
+        // Optional throttling is per DB batch, never per header or warm reuse.
+        for (unsigned elapsed{0}; !missing.empty() && elapsed < pause_ms && !interrupt; ++elapsed) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        }
+    }
+    stats.state = HistoricalPoWStats::INTERRUPTED;
+    LogInfo("Lazy PoW interrupted; committed evidence retained\n");
+    return std::nullopt;
+}
 
 void BlockTreeDB::WriteFlag(const std::string& name, bool fValue)
 {

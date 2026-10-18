@@ -84,6 +84,8 @@ BOOST_FIXTURE_TEST_CASE(write_during_multiblock_activation, DiskChain100Setup)
     auto& chainstate{chainman.ActiveChainstate()};
     auto& blockman{chainman.m_blockman};
     BlockValidationState state_dummy{};
+    // This fixture exercises strict startup without historical disk-PoW trust.
+    BOOST_CHECK(!blockman.UsesHistoricalPoWTrust());
 
     const CBlockIndex* tip{chainstate.m_chain.Tip()};
     CBlockIndex* second_from_tip{tip->pprev};
@@ -131,6 +133,7 @@ BOOST_FIXTURE_TEST_CASE(write_during_multiblock_activation, DiskChain100Setup)
             do { ++header.nNonce; } while (!CheckBlockProofOfWork(header, chainman.GetConsensus()));
             const auto* index{blockman.AddToBlockIndex(header, best_header)};
             BOOST_REQUIRE_EQUAL(index->nHeight, 1);
+            BOOST_CHECK(!index->HasCurrentProcessYespowerEvidence());
             side_hashes.push_back(index->GetBlockHash());
         };
         for (size_t i = 0; i < node::BlockManager::MAX_DIRTY_BLOCK_INDEX - 1; ++i) {

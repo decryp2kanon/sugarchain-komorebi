@@ -19,4 +19,21 @@ The separated build passed `header_pow_tests/persistent_evidence_records*:blockm
 under `~/.local/state/pr11-split-20261019/`. These checks are not new mainnet
 benchmarks. Additional whole-PR/functional validation is recorded in the PR.
 
+## L2: scan bounded DB batches with parallel genuine verification
+
+Sources: `e11aec48ff`, `aec27f2405`, `885e3afb07`, `dc2d162464`, `6318aa53e0`,
+`038893787d`. Keep final short-lived iterators, at most 512 owned records,
+parallel results, current-process reuse, sync persistence, partial-failure and
+interruption handling. Exclude historical scan insertions into the foreground
+RAM cache without disabling ordinary header cache use.
+Migration/restart, rules mismatch, unknown/truncated records, failure/interruption,
+durable reopen/reindex and real recomputation assertions are included here.
+Statistics are library-level until node/RPC integration in L3.
+
+### Split validation for L2
+
+The separated build passed `header_pow_tests`. Detailed owned logs are retained privately
+under `~/.local/state/pr11-split-20261019/`. These checks are not new mainnet
+benchmarks. Additional whole-PR/functional validation is recorded in the PR.
+
 EOF

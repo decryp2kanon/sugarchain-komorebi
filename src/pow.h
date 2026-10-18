@@ -35,7 +35,7 @@ unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, int64_t nF
 unsigned int CalculateSugarShieldWorkRequired(const arith_uint256& target_sum, int64_t mtp_span, const Consensus::Params&);
 
 /** Check whether a block hash satisfies the proof-of-work requirement specified by nBits */
-bool CheckBlockProofOfWork(const CBlockHeader& header, const Consensus::Params& params);
+bool CheckBlockProofOfWork(const CBlockHeader& header, const Consensus::Params& params, bool cache_result = true);
 bool CheckProofOfWork(uint256 hash, unsigned int nBits, const Consensus::Params&);
 bool CheckProofOfWorkImpl(uint256 hash, unsigned int nBits, const Consensus::Params&);
 /** Domain of local persisted results; not a cryptographic proof of execution. */
@@ -81,7 +81,8 @@ public:
     HeaderPoWVerifier& operator=(const HeaderPoWVerifier&) = delete;
     bool Check(std::span<const CBlockHeader> headers, const Consensus::Params& params);
     /** Check every header once, including on warm-cache hits; used for startup block-index validation. */
-    bool CheckEach(std::span<const CBlockHeader> headers, const Consensus::Params& params);
+    // Background historical scans persist evidence on disk instead of filling the RAM cache.
+    bool CheckEach(std::span<const CBlockHeader> headers, const Consensus::Params& params, bool cache_result = true);
 };
 
 /**
