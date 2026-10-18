@@ -64,4 +64,22 @@ The separated build passed `blockmanager_tests`. Detailed owned logs are retaine
 under `~/.local/state/pr11-split-20261019/`. These checks are not new mainnet
 benchmarks. Additional whole-PR/functional validation is recorded in the PR.
 
+## M5: persist count-bounded index updates during ordinary block writes
+
+Sources: `9d7fd7d17b`, `57a01e07e0`, `b21a634307`. Use existing PERIODIC write
+opportunities as well as the headers-first path. Preserve NONE/IF_NEEDED coin
+cache semantics. The full-block-only fixture avoids header announcements, fixes
+mocktime to exclude timer flushes, then checks index/UTXO reopen and reacceptance
+after an owned-node crash. Unit checks cover modes and persistence ordering.
+
+The initial separated compile exposed two Lazy-only assertions in the original
+write fixture. Their evidence/trust API checks move to L2; all index/coins
+persistence assertions remain here. The initial failure log is retained.
+
+### Split validation for M5
+
+The separated build passed `chainstate_write_tests,validation_flush_tests`. Detailed owned logs are retained privately
+under `~/.local/state/pr11-split-20261019/`. These checks are not new mainnet
+benchmarks. Additional whole-PR/functional validation is recorded in the PR.
+
 EOF

@@ -2774,13 +2774,19 @@ bool Chainstate::FlushStateToDisk(
         bool fCacheCritical = mode == FlushStateMode::IF_NEEDED && cache_state >= CoinsCacheSizeState::CRITICAL;
         // It's been a while since we wrote the block index and chain state to disk. Do this frequently, so we don't need to redownload or reindex after a crash.
         bool fPeriodicWrite = mode == FlushStateMode::PERIODIC && nNow >= m_next_write;
+        // Full-block acceptance and activation also dirty indexes without going
+        // through ProcessNewBlockHeaders. Bound that accumulation at existing
+        // periodic write opportunities, preserving LARGE coin-cache eviction
+        // and leaving NONE/IF_NEEDED unchanged. This schedules an atomic write;
+        // it is not a hard size limit on dirty sets or serialized batches.
+        bool fBlockIndexWrite = mode == FlushStateMode::PERIODIC && m_blockman.BlockIndexWriteDue();
         const auto empty_cache{(mode == FlushStateMode::FORCE_FLUSH) || fCacheLarge || fCacheCritical};
         // Combine all conditions that result in a write to disk.
-        bool should_write = (mode == FlushStateMode::FORCE_SYNC) || empty_cache || fPeriodicWrite || fFlushForPrune;
+        bool should_write = (mode == FlushStateMode::FORCE_SYNC) || empty_cache || fPeriodicWrite || fBlockIndexWrite || fFlushForPrune;
         // Write blocks, block index and best chain related state to disk.
         if (should_write) {
-            LogDebug(BCLog::COINDB, "Writing chainstate to disk: flush mode=%s, prune=%d, large=%d, critical=%d, periodic=%d",
-                     FlushStateModeNames[size_t(mode)], fFlushForPrune, fCacheLarge, fCacheCritical, fPeriodicWrite);
+            LogDebug(BCLog::COINDB, "Writing chainstate to disk: flush mode=%s, prune=%d, large=%d, critical=%d, periodic=%d, index=%d",
+                     FlushStateModeNames[size_t(mode)], fFlushForPrune, fCacheLarge, fCacheCritical, fPeriodicWrite, fBlockIndexWrite);
 
             // Ensure we can write block index
             if (!CheckDiskSpace(m_blockman.m_opts.blocks_dir)) {
