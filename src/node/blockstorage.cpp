@@ -197,17 +197,15 @@ std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Par
                 stats.processed.load(), stats.verified.load(), stats.reused.load());
             return std::nullopt;
         }
-        // The fast-mode DB has no retained table cache. Read evidence through
-        // one short-lived iterator per batch instead of reopening table files
-        // for every point lookup. No snapshot remains alive during hashing.
+        // Retain table handles only for this batch. Exact seeks treat deleted
+        // evidence as a miss without scanning the remaining tombstone range.
+        // No snapshot remains alive during hashing.
         std::vector<std::pair<uint8_t, uint256>> evidence(entries.size());
         {
             std::unique_ptr<CDBIterator> proofs{NewIterator()};
             for (size_t i{0}; i < entries.size(); ++i) {
                 const auto expected{std::make_pair(uint8_t{'y'}, entries[i].first)};
-                proofs->Seek(expected);
-                std::pair<uint8_t, uint256> key;
-                if (proofs->Valid() && proofs->GetKey(key) && key == expected) {
+                if (proofs->SeekExact(expected)) {
                     if (!proofs->GetValue(evidence[i])) evidence[i] = {};
                 }
             }

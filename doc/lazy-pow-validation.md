@@ -277,4 +277,17 @@ The earlier 2026-10-15 log completed with zero checked entries after a genesis-o
 start. That fresh-IBD observation is not a full historical background audit and
 is not counted as another 44.9-million-entry completion.
 
+## Deleted evidence lookup
+
+The scanner uses exact-key iterator seeks for evidence. A snapshot-visible
+value is returned only for the requested key; a deletion or another user key is
+an immediate miss. Missing, malformed or mismatched evidence still requires
+real PoW verification. Iterator read errors remain fatal to the scan.
+
+This avoids repeatedly walking a large deleted evidence range while retaining
+the existing batch-scoped table handles. Ordinary iterator seeks, the 512-entry
+batch limit, cache budgets and the evidence format are unchanged. No iterator
+snapshot survives into hashing. Targeted lookup measurements do not establish a
+new full-mainnet scan duration.
+
 EOF

@@ -1276,6 +1276,56 @@ BOOST_AUTO_TEST_CASE(persistent_historical_evidence_migration_and_restart)
     }
 }
 
+BOOST_AUTO_TEST_CASE(deleted_historical_evidence_is_reverified_with_reclaimed_cache)
+{
+    CacheBudget budget{1 << 20};
+    const auto headers{Headers(804, 64)};
+    const auto path{m_path_root / "deleted-evidence"};
+    std::vector<uint256> hashes;
+    std::deque<CBlockIndex> indexes;
+    hashes.reserve(headers.size());
+    for (const auto& header : headers) {
+        hashes.push_back(header.GetHash());
+        indexes.emplace_back(header);
+        indexes.back().phashBlock = &hashes.back();
+        indexes.back().nStatus = BLOCK_VALID_TREE;
+    }
+    util::SignalInterrupt stop;
+    {
+        kernel::BlockTreeDB db{DBParams{.path = path, .cache_bytes = 1 << 20, .reclaim_read_cache = true}};
+        std::vector<const CBlockIndex*> entries;
+        for (const auto& index : indexes) entries.push_back(&index);
+        db.WriteBatchSync({}, 0, entries);
+        kernel::HistoricalPoWStats cold;
+        BOOST_REQUIRE(!db.VerifyHistoricalPoW(params, stop, cold, 0, {}, 8));
+        BOOST_CHECK_EQUAL(cold.verified.load(), headers.size());
+        CDBBatch erased{db};
+        for (const auto& hash : hashes) erased.Erase(std::make_pair(uint8_t{'y'}, hash));
+        db.WriteBatch(erased, true);
+    }
+    InitYespowerVerificationCache(1 << 20);
+    {
+        kernel::BlockTreeDB db{DBParams{.path = path, .cache_bytes = 1 << 20, .reclaim_read_cache = true}};
+        kernel::HistoricalPoWStats repaired;
+        BOOST_REQUIRE(!db.VerifyHistoricalPoW(params, stop, repaired, 0, {}, 8));
+        BOOST_CHECK(repaired.state == kernel::HistoricalPoWStats::COMPLETE);
+        BOOST_CHECK_EQUAL(repaired.processed.load(), headers.size());
+        BOOST_CHECK_EQUAL(repaired.verified.load(), headers.size());
+        BOOST_CHECK_EQUAL(repaired.reused.load(), 0U);
+        for (const auto& header : headers) BOOST_CHECK(db.HasYespowerEvidence(header, params));
+        InitYespowerVerificationCache(1 << 20);
+        kernel::HistoricalPoWStats warm;
+        BOOST_REQUIRE(!db.VerifyHistoricalPoW(params, stop, warm, 0, {}, 8));
+        BOOST_CHECK_EQUAL(warm.verified.load(), 0U);
+        BOOST_CHECK_EQUAL(warm.reused.load(), headers.size());
+        for (size_t i{0}; i < hashes.size(); i += 2) db.Erase(std::make_pair(uint8_t{'y'}, hashes[i]));
+        kernel::HistoricalPoWStats mixed;
+        BOOST_REQUIRE(!db.VerifyHistoricalPoW(params, stop, mixed, 0, {}, 8));
+        BOOST_CHECK_EQUAL(mixed.verified.load(), headers.size() / 2);
+        BOOST_CHECK_EQUAL(mixed.reused.load(), headers.size() / 2);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(background_historical_failure_and_interruption)
 {
     for (const int workers : {1, 8}) {

@@ -47,6 +47,13 @@ class LEVELDB_EXPORT Iterator {
   // an entry that comes at or past target.
   virtual void Seek(const Slice& target) = 0;
 
+  // Return whether target exists. DB iterators avoid scanning later user keys;
+  // the generic fallback preserves other iterator implementations.
+  virtual bool SeekExact(const Slice& target) {
+    Seek(target);
+    return Valid() && key() == target;
+  }
+
   // Moves to the next entry in the source.  After this call, Valid() is
   // true iff the iterator was not positioned at the last entry in the source.
   // REQUIRES: Valid()

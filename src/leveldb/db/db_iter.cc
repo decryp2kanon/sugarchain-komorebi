@@ -80,6 +80,7 @@ class DBIter : public Iterator {
   void Next() override;
   void Prev() override;
   void Seek(const Slice& target) override;
+  bool SeekExact(const Slice& target) override;
   void SeekToFirst() override;
   void SeekToLast() override;
 
@@ -287,6 +288,22 @@ void DBIter::Seek(const Slice& target) {
   } else {
     valid_ = false;
   }
+}
+
+bool DBIter::SeekExact(const Slice& target) {
+  direction_ = kForward;
+  ClearSavedValue();
+  saved_key_.clear();
+  AppendInternalKey(&saved_key_,
+                    ParsedInternalKey(target, sequence_, kValueTypeForSeek));
+  iter_->Seek(saved_key_);
+  ParsedInternalKey key;
+  // Internal ordering places the newest snapshot-visible version first.
+  // A deletion or a different user key is an immediate miss, not a scan.
+  valid_ = iter_->Valid() && ParseKey(&key) && key.sequence <= sequence_ &&
+           key.type == kTypeValue && user_comparator_->Compare(key.user_key, ExtractUserKey(saved_key_)) == 0;
+  saved_key_.clear();
+  return valid_;
 }
 
 void DBIter::SeekToFirst() {

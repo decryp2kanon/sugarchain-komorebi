@@ -129,6 +129,7 @@ private:
     const std::unique_ptr<IteratorImpl> m_impl_iter;
 
     void SeekImpl(std::span<const std::byte> key);
+    bool SeekExactImpl(std::span<const std::byte> key);
     std::span<const std::byte> GetKeyImpl() const;
     std::span<const std::byte> GetValueImpl() const;
 
@@ -155,6 +156,14 @@ public:
         ssKey.reserve(DBWRAPPER_PREALLOC_KEY_SIZE);
         ssKey << key;
         SeekImpl(ssKey);
+    }
+
+    /** Exact-key lookup within this iterator's snapshot; does not scan later keys. */
+    template<typename K> bool SeekExact(const K& key) {
+        DataStream ssKey{};
+        ssKey.reserve(DBWRAPPER_PREALLOC_KEY_SIZE);
+        ssKey << key;
+        return SeekExactImpl(ssKey);
     }
 
     void Next();

@@ -430,6 +430,13 @@ CDBIterator* CDBWrapper::NewIterator()
     return new CDBIterator{*this, std::make_unique<CDBIterator::IteratorImpl>(DBContext().pdb->NewIterator(DBContext().iteroptions))};
 }
 
+bool CDBIterator::SeekExactImpl(std::span<const std::byte> key)
+{
+    const bool found{m_impl_iter->iter->SeekExact(leveldb::Slice(CharCast(key.data()), key.size()))};
+    CheckStatus();
+    return found;
+}
+
 void CDBIterator::SeekImpl(std::span<const std::byte> key)
 {
     leveldb::Slice slKey(CharCast(key.data()), key.size());
