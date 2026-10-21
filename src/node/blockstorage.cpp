@@ -164,6 +164,11 @@ std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Par
     stats.state = HistoricalPoWStats::RUNNING;
     const int workers{std::clamp(pow_workers, 1, MAX_HEADER_POW_WORKERS)};
     HeaderPoWVerifier verifier{workers};
+    // Rules are fixed for this scan; keep the persisted evidence format intact.
+    const auto rules_hash{GetYespowerEvidenceRulesHash(consensus)};
+    const auto evidence_digest = [&](const CBlockHeader& header) {
+        return (HashWriter{} << rules_hash << header).GetHash();
+    };
     std::optional<uint256> last;
     LogInfo("Lazy PoW workers: %d, pause between computed DB batches: %u ms\n", workers, pause_ms);
     LogInfo("Lazy PoW started: %u entries\n", stats.total.load());
@@ -233,7 +238,7 @@ std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Par
             const auto& saved{evidence[i]};
             const bool saved_valid{consensus.fYespowerSugar && !EnableFuzzDeterminism() &&
                 DeriveTarget(header.nBits, consensus.powLimit) && saved.first == 2 &&
-                saved.second == GetYespowerEvidenceDigest(header, consensus)};
+                saved.second == evidence_digest(header)};
             const bool live_valid{!saved_valid && live_verified && live_verified(header)};
             headers.push_back(header);
             reused.push_back(saved_valid);
@@ -268,7 +273,7 @@ std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Par
                 }
                 if (consensus.fYespowerSugar && !EnableFuzzDeterminism()) {
                     batch.Write(std::make_pair(uint8_t{'y'}, hash),
-                        std::make_pair(uint8_t{2}, GetYespowerEvidenceDigest(header, consensus)));
+                        std::make_pair(uint8_t{2}, evidence_digest(header)));
                     dirty = true;
                 }
                 ++stats.verified;

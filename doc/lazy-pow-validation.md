@@ -304,4 +304,19 @@ limit, worker settings, queue and DB lifetime/join rules are unchanged. Individu
 hashes, reads and synchronous writes are not forcibly cancelled; their duration
 and other shutdown tasks can still delay whole-node termination.
 
+## Scan-local evidence rules
+
+Each scan computes its immutable rules digest once and reuses it when checking
+or writing evidence. The version-2 record bytes, target checks and per-header
+verification requirements are unchanged; the digest is not shared across scans.
+
+An isolated Linux fixture used 6,000 genuine mainnet headers and eight workers.
+Across four repetitions, 300 evidence-only scans (1.8 million reused entries per
+repetition) had median elapsed times of 2.268 -> 1.810 seconds and process CPU
+times of 2.325 -> 1.841 seconds. Fresh verification of all 6,000 headers took
+7.524 -> 7.484 seconds, within run-to-run variation. Sampled RSS ranges overlapped.
+These measurements demonstrate lower evidence-reuse overhead, not a full-mainnet
+fresh-verification speedup or an RSS reduction. Worker counts, cache budgets,
+512-entry batches and synchronous evidence writes remain unchanged.
+
 EOF

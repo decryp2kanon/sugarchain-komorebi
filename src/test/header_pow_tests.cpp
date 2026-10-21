@@ -1740,4 +1740,31 @@ BOOST_AUTO_TEST_CASE(persistent_evidence_records_bind_header_rules_and_version)
     BOOST_CHECK(!db.HasYespowerEvidence(header, params));
 }
 
+BOOST_AUTO_TEST_CASE(historical_evidence_rules_are_scoped_to_each_scan)
+{
+    CacheBudget budget{1 << 20};
+    const auto header{Headers(809, 1).front()};
+    const auto hash{header.GetHash()};
+    CBlockIndex index{header};
+    index.phashBlock = &hash;
+    index.nStatus = BLOCK_VALID_TREE;
+    kernel::BlockTreeDB db{DBParams{.path = "", .cache_bytes = 1 << 20, .memory_only = true}};
+    db.WriteBatchSync({}, 0, {&index});
+    auto other{params};
+    other.hashGenesisBlock = uint256{123};
+    util::SignalInterrupt stop;
+    for (const auto* rules : {&params, &other, &params}) {
+        kernel::HistoricalPoWStats stats;
+        BOOST_REQUIRE(!db.VerifyHistoricalPoW(*rules, stop, stats, 0));
+        BOOST_CHECK(stats.state == kernel::HistoricalPoWStats::COMPLETE);
+        BOOST_CHECK_EQUAL(stats.verified.load(), 1U);
+        BOOST_CHECK_EQUAL(stats.reused.load(), 0U);
+        BOOST_CHECK(db.HasYespowerEvidence(header, *rules));
+    }
+    kernel::HistoricalPoWStats warm;
+    BOOST_REQUIRE(!db.VerifyHistoricalPoW(params, stop, warm, 0));
+    BOOST_CHECK_EQUAL(warm.verified.load(), 0U);
+    BOOST_CHECK_EQUAL(warm.reused.load(), 1U);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
