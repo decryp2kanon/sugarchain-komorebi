@@ -760,13 +760,16 @@ BOOST_AUTO_TEST_CASE(cache_budget_eviction_and_reset_only_trigger_reverification
     const auto headers{Headers(90, 25)};
     CacheBudget budget{64}; // Two entries: force eviction without a large fixture.
     HeaderPoWVerifier verifier{8};
-    BOOST_REQUIRE(verifier.Check(headers, params));
-    {
-        Observation observation;
+    for (const bool growing : {false, true}) {
+        InitYespowerVerificationCache(64, growing);
         BOOST_REQUIRE(verifier.Check(headers, params));
+        {
+            Observation observation;
+            BOOST_REQUIRE(verifier.Check(headers, params));
 #ifdef ENABLE_YESPOWER_TEST_WRAP
-        BOOST_CHECK_GE(calls.load(), headers.size() - 2);
+            BOOST_CHECK_GE(calls.load(), headers.size() - 2);
 #endif
+        }
     }
     InitYespowerVerificationCache(1 << 20);
     {
@@ -813,6 +816,45 @@ BOOST_AUTO_TEST_CASE(growing_cache_retains_verified_proofs_and_rejects_invalid_h
 #ifdef ENABLE_YESPOWER_TEST_WRAP
         BOOST_CHECK_EQUAL(calls.load(), 1U); // Failed proofs must never become cache hits.
 #endif
+    }
+    DataStream stream{test::data::sugarchain_headers};
+    std::vector<CBlockHeader> real_headers(6000);
+    for (auto& header : real_headers) stream >> header;
+    BOOST_REQUIRE(stream.empty());
+    auto bad{real_headers.front()};
+    Invalidate(bad);
+    HeaderPoWVerifier verifier{8};
+    // Scale budgets down to force genuine eviction with a small real fixture.
+    for (const size_t bytes : {size_t{64 << 10}, size_t{128 << 10},
+                               size_t{256 << 10}, size_t{2 << 20}}) {
+        CacheBudget budget{bytes};
+        InitYespowerVerificationCache(bytes, /*grow_on_demand=*/true);
+        {
+            const auto benchmark_start{std::chrono::steady_clock::now()};
+            Observation observation;
+            BOOST_REQUIRE(verifier.CheckEach(real_headers, params));
+            BOOST_TEST_MESSAGE("Cache cold budget=" << bytes << " seconds=" << std::chrono::duration<double>(std::chrono::steady_clock::now() - benchmark_start).count());
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+            BOOST_CHECK_EQUAL(calls.load(), real_headers.size());
+#endif
+        }
+        {
+            const auto benchmark_start{std::chrono::steady_clock::now()};
+            Observation observation;
+            // Delay re-use until the complete fixture filled the cache; a miss
+            // must recompute a real proof instead of silently trusting it.
+            BOOST_REQUIRE(verifier.CheckEach(real_headers, params));
+            BOOST_TEST_MESSAGE("Cache delayed budget=" << bytes << " seconds=" << std::chrono::duration<double>(std::chrono::steady_clock::now() - benchmark_start).count());
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+            BOOST_TEST_MESSAGE("Scaled cache budget=" << bytes << " second-pass real proofs=" << calls.load());
+            if (bytes == (2 << 20)) BOOST_CHECK_EQUAL(calls.load(), 0U);
+            else BOOST_CHECK_GT(calls.load(), 0U);
+#endif
+        }
+        BOOST_CHECK(!CheckBlockProofOfWork(bad, params));
+        auto wrong_limit{params};
+        wrong_limit.powLimit = uint256{};
+        BOOST_CHECK(!CheckBlockProofOfWork(real_headers.front(), wrong_limit));
     }
 }
 
@@ -1136,6 +1178,104 @@ BOOST_AUTO_TEST_CASE(startup_progress_gui_updates_are_not_all_logged)
     }
     BOOST_CHECK(logged[1].find("43 / 170 (25%)") != std::string::npos);
     BOOST_CHECK(logged[3].find("128 / 170 (75%)") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(block_index_owned_batch_survives_reopen)
+{
+    const auto header{Headers(803, 1).front()};
+    const auto hash{header.GetHash()};
+    const fs::path path{m_path_root / "owned-index-batch"};
+    CBlockIndex index{header}; index.phashBlock = &hash; index.nStatus = BLOCK_VALID_TREE;
+    {
+        kernel::BlockTreeDB db{DBParams{.path = path, .cache_bytes = 1 << 20}};
+        const std::vector<const CBlockIndex*> borrowed{&index};
+        db.WriteBatchSync({}, 0, borrowed);
+        BOOST_CHECK_EQUAL(borrowed.size(), 1U);
+        std::vector<const CBlockIndex*> owned{&index};
+        db.WriteBatchSync({}, 0, std::move(owned));
+        BOOST_CHECK(owned.empty());
+    }
+    {
+        kernel::BlockTreeDB db{DBParams{.path = path, .cache_bytes = 1 << 20}};
+        CDiskBlockIndex saved;
+        BOOST_REQUIRE(db.Read(std::make_pair(uint8_t{'b'}, hash), saved));
+        BOOST_CHECK(saved.ConstructBlockHash() == hash);
+        BOOST_CHECK_EQUAL(saved.nStatus, index.nStatus);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(post_ibd_shrink_discards_only_ram_evidence)
+{
+    CacheBudget restore{DEFAULT_YESPOWER_CACHE_BYTES};
+    InitYespowerVerificationCache(1 << 20, true);
+    auto headers{Headers(920, 1024)};
+    HeaderPoWVerifier verifier{8};
+    BOOST_REQUIRE(verifier.CheckEach(headers, params));
+    const auto before{GetYespowerVerificationCacheUsage()};
+    BOOST_REQUIRE_GT(before.tiers, 1U);
+    {
+        Observation observation;
+        BOOST_REQUIRE(CheckBlockProofOfWork(headers.back(), params));
+        BOOST_CHECK_EQUAL(calls.load(), 0U);
+    }
+    BOOST_REQUIRE(ShrinkYespowerVerificationCache());
+    const auto after{GetYespowerVerificationCacheUsage()};
+    BOOST_CHECK_EQUAL(after.budget_bytes, before.budget_bytes);
+    BOOST_CHECK_EQUAL(after.tiers, 1U);
+    BOOST_CHECK_LT(after.proof_storage_bytes, before.proof_storage_bytes);
+    BOOST_CHECK(!ShrinkYespowerVerificationCache());
+    {
+        Observation observation;
+        BOOST_REQUIRE(CheckBlockProofOfWork(headers.back(), params));
+        BOOST_CHECK_EQUAL(calls.load(), 1U);
+        auto invalid{headers.back()};
+        invalid.nBits = 0;
+        BOOST_CHECK(!CheckBlockProofOfWork(invalid, params));
+    }
+    InitYespowerVerificationCache(1 << 20, false);
+    BOOST_REQUIRE(CheckBlockProofOfWork(headers.back(), params));
+    BOOST_CHECK(!ShrinkYespowerVerificationCache());
+    {
+        Observation observation;
+        BOOST_REQUIRE(CheckBlockProofOfWork(headers.back(), params));
+        BOOST_CHECK_EQUAL(calls.load(), 0U);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(post_ibd_shrink_is_safe_during_parallel_checks)
+{
+    CacheBudget restore{DEFAULT_YESPOWER_CACHE_BYTES};
+    InitYespowerVerificationCache(1 << 20, true);
+    auto headers{Headers(921, 256)};
+    HeaderPoWVerifier initial{2};
+    BOOST_REQUIRE(initial.CheckEach(headers, params));
+    std::atomic<unsigned> failures{0}, ready{0}, shrinks{0};
+    std::atomic<bool> start{false};
+    {
+        std::jthread shrinking{[&] {
+            while (ready.load() != 2) std::this_thread::yield();
+            start = true;
+            for (int i{0}; i < 100; ++i) {
+                if (ShrinkYespowerVerificationCache()) ++shrinks;
+                GetYespowerVerificationCacheUsage();
+            }
+        }};
+        std::vector<std::jthread> readers;
+        for (int n{0}; n < 2; ++n) readers.emplace_back([&] {
+            HeaderPoWVerifier verifier{2};
+            ++ready;
+            while (!start.load()) std::this_thread::yield();
+            for (int i{0}; i < 8; ++i) {
+                if (!verifier.CheckEach(headers, params)) ++failures;
+                auto invalid{headers.back()};
+                invalid.nBits = 0;
+                if (CheckBlockProofOfWork(invalid, params)) ++failures;
+            }
+        });
+    }
+    BOOST_CHECK_EQUAL(failures.load(), 0U);
+    BOOST_CHECK_GT(shrinks.load(), 0U);
+    BOOST_CHECK_EQUAL(GetYespowerVerificationCacheUsage().budget_bytes, 1U << 20);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

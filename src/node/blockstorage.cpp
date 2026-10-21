@@ -111,9 +111,8 @@ bool BlockTreeDB::ReadLastBlockFile(int& nFile)
     return Read(DB_LAST_BLOCK, nFile);
 }
 
-void BlockTreeDB::WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, const std::vector<const CBlockIndex*>& blockinfo)
+void BlockTreeDB::PopulateBatch(CDBBatch& batch, const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, const std::vector<const CBlockIndex*>& blockinfo)
 {
-    CDBBatch batch(*this);
     for (const auto& [file, info] : fileInfo) {
         batch.Write(std::make_pair(DB_BLOCK_FILES, file), *info);
     }
@@ -121,6 +120,22 @@ void BlockTreeDB::WriteBatchSync(const std::vector<std::pair<int, const CBlockFi
     for (const CBlockIndex* bi : blockinfo) {
         batch.Write(std::make_pair(DB_BLOCK_INDEX, bi->GetBlockHash()), CDiskBlockIndex{bi});
     }
+}
+
+void BlockTreeDB::WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, const std::vector<const CBlockIndex*>& blockinfo)
+{
+    CDBBatch batch(*this);
+    PopulateBatch(batch, fileInfo, nLastFile, blockinfo);
+    WriteBatch(batch, true);
+}
+
+void BlockTreeDB::WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, std::vector<const CBlockIndex*>&& blockinfo)
+{
+    CDBBatch batch(*this);
+    PopulateBatch(batch, fileInfo, nLastFile, blockinfo);
+    // The serialized batch no longer needs the input pointer array. Return it
+    // before LevelDB allocates its memtable for this same atomic write.
+    std::vector<const CBlockIndex*>{}.swap(blockinfo);
     WriteBatch(batch, true);
 }
 
@@ -779,12 +794,15 @@ void BlockManager::WriteBlockIndexDB()
     }
     std::vector<const CBlockIndex*> vBlocks;
     vBlocks.reserve(m_dirty_blockindex.size());
-    for (std::set<CBlockIndex*>::iterator it = m_dirty_blockindex.begin(); it != m_dirty_blockindex.end();) {
+    for (auto it = m_dirty_blockindex.begin(); it != m_dirty_blockindex.end();) {
         vBlocks.push_back(*it);
         m_dirty_blockindex.erase(it++);
     }
+    // vBlocks owns index pointers, not set nodes; no pool allocation is needed
+    // until another index becomes dirty. Avoid retaining a replay-sized pool.
+    m_dirty_blockindex_resource.Release();
     int max_blockfile = WITH_LOCK(cs_LastBlockFile, return this->MaxBlockfileNum());
-    m_block_tree_db->WriteBatchSync(vFiles, max_blockfile, vBlocks);
+    m_block_tree_db->WriteBatchSync(vFiles, max_blockfile, std::move(vBlocks));
 }
 
 bool BlockManager::LoadBlockIndexDB(const std::optional<uint256>& snapshot_blockhash, std::vector<CBlockIndex*>* sorted_indices)
