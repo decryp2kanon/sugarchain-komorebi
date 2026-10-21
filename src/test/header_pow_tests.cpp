@@ -11,6 +11,7 @@
 #include <primitives/block.h>
 #include <streams.h>
 #include <test/data/sugarchain_headers.raw.h>
+#include <test/historical_pow_crash.h>
 #include <test/util/setup_common.h>
 #include <test/util/net.h>
 #include <test/util/logging.h>
@@ -27,26 +28,54 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <exception>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
+#include <deque>
 
 namespace {
 std::atomic<bool> observing{false};
 std::atomic<unsigned> calls{0}, active{0}, peak{0}, fail_call{0};
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+std::atomic<util::SignalInterrupt*> stop_on_proof{nullptr}, interrupt_target{nullptr};
+std::atomic<unsigned> interrupt_checks{0}, interrupt_boundary{0};
+std::atomic<int64_t> proof_stop_ns{0};
+struct InterruptAtCheck {
+    InterruptAtCheck(util::SignalInterrupt& signal, unsigned boundary) {
+        interrupt_checks = 0;
+        interrupt_boundary = boundary;
+        interrupt_target = &signal;
+    }
+    ~InterruptAtCheck() { interrupt_target = nullptr; }
+};
+#endif
 
 struct Observation {
-    explicit Observation(unsigned fail = 0)
+    explicit Observation(unsigned fail = 0, util::SignalInterrupt* stop = nullptr)
     {
         BOOST_REQUIRE_EQUAL(active.load(), 0U);
         calls = peak = 0;
         fail_call = fail;
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        stop_on_proof = stop;
+        proof_stop_ns = 0;
+#else
+        (void)stop;
+#endif
         observing = true;
     }
-    ~Observation() { observing = false; }
+    ~Observation() {
+        observing = false;
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        stop_on_proof = nullptr;
+#endif
+    }
 };
 
 struct CacheBudget {
@@ -138,12 +167,31 @@ struct HeaderPoWSetup : BasicTestingSetup {
 } // namespace
 
 #ifdef ENABLE_YESPOWER_TEST_WRAP
+extern "C" bool __real__ZNK4util15SignalInterruptcvbEv(const util::SignalInterrupt*);
+extern "C" bool __wrap__ZNK4util15SignalInterruptcvbEv(const util::SignalInterrupt* signal)
+{
+    if (signal == interrupt_target.load() && ++interrupt_checks == interrupt_boundary.load()) {
+        (void)(*interrupt_target.load())();
+    }
+    return __real__ZNK4util15SignalInterruptcvbEv(signal);
+}
 extern "C" int __real_yespower(yespower_local_t*, const uint8_t*, size_t, const yespower_params_t*, yespower_binary_t*);
 extern "C" int __wrap_yespower(yespower_local_t* local, const uint8_t* input, size_t size,
                              const yespower_params_t* params, yespower_binary_t* output)
 {
-    if (!observing.load()) return __real_yespower(local, input, size, params, output);
+    if (!observing.load()) {
+        const int result{__real_yespower(local, input, size, params, output)};
+        HistoricalPoWCrashProof(input, size, result);
+        return result;
+    }
     const auto ordinal{++calls};
+    if (ordinal == 1) {
+        if (auto* stop = stop_on_proof.load()) {
+            proof_stop_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            (void)(*stop)();
+        }
+    }
     const auto concurrent{++active};
     auto maximum{peak.load()};
     while (maximum < concurrent && !peak.compare_exchange_weak(maximum, concurrent)) {}
@@ -218,6 +266,131 @@ BOOST_FIXTURE_TEST_CASE(indexed_header_messages_after_cache_eviction, TestingSet
     m_node.peerman->FinalizeNode(peer);
 }
 
+BOOST_FIXTURE_TEST_CASE(historical_scan_survives_invalid_headers_flood, TestingSetup)
+{
+    // Exercise the real HEADERS handler without sockets or an operating datadir.
+    // Each fresh peer hides one nonce-mutated header behind 1,999 known headers.
+    CacheBudget budget{1 << 20};
+    auto& chainman{*m_node.chainman};
+    const auto& consensus{chainman.GetConsensus()};
+    DataStream stream{test::data::sugarchain_headers};
+    std::vector<CBlockHeader> headers(2000);
+    for (auto& header : headers) stream >> header;
+    HeaderPoWVerifier verifier{8};
+    BOOST_REQUIRE(verifier.Check(headers, consensus));
+    BlockValidationState state;
+    // Isolate admitted history; do not lower the P2P minimum-chainwork rule.
+    BOOST_REQUIRE(chainman.ProcessNewBlockHeaders(headers, true, state, nullptr));
+    const auto index_size{WITH_LOCK(cs_main, return chainman.m_blockman.m_block_index.size())};
+
+    constexpr unsigned peers{64};
+    std::vector<CBlockHeader> forged;
+    for (unsigned i{0}; i < peers; ++i) {
+        auto bad{forged.empty() ? headers.back() : forged.back()};
+        do { ++bad.nNonce; } while (CheckProofOfWorkImpl(bad.GetPoWHash(), bad.nBits, consensus));
+        forged.push_back(bad);
+    }
+    kernel::BlockTreeDB db{DBParams{.path = "", .cache_bytes = 1 << 20, .memory_only = true}};
+    {
+        LOCK(cs_main);
+        std::vector<const CBlockIndex*> entries;
+        for (const auto& header : headers) entries.push_back(chainman.m_blockman.LookupBlockIndex(header.GetHash()));
+        db.WriteBatchSync({}, 0, entries); // No persisted evidence in this DB.
+    }
+    InitYespowerVerificationCache(1 << 20);
+    kernel::HistoricalPoWStats stats;
+    stats.total = headers.size();
+    util::SignalInterrupt interrupt;
+    std::mutex mutex;
+    std::condition_variable_any gate;
+    bool scanning{false}, first_attack_processed{false}, attack_finished{false};
+    size_t classified{0};
+    std::optional<std::string> error;
+    std::exception_ptr failure;
+    std::jthread scan{[&](std::stop_token stop) {
+        // Also release/cancel on a failed assertion in the driving thread.
+        std::stop_callback cancel{stop, [&] { (void)interrupt(); }};
+        try {
+            error = db.VerifyHistoricalPoW(consensus, interrupt, stats, 0, [&](const CBlockHeader&) {
+                std::unique_lock lock{mutex};
+                scanning = true;
+                gate.notify_all();
+                // Guarantee that an attack reaches the handler during the scan.
+                gate.wait(lock, stop, [&] { return first_attack_processed; });
+                // Keep the final batch pending until the entire flood has been
+                // handled. Deterministic interleaving, not a throughput benchmark.
+                if (++classified == headers.size()) {
+                    gate.wait(lock, stop, [&] { return attack_finished; });
+                }
+                return false;
+            }, 8);
+        } catch (...) {
+            failure = std::current_exception();
+        }
+    }};
+    {
+        std::unique_lock lock{mutex};
+        BOOST_REQUIRE(gate.wait_for(lock, std::chrono::seconds{30}, [&] { return scanning; }));
+    }
+    auto& connman{static_cast<ConnmanTestMsg&>(*m_node.connman)};
+    unsigned attacks_during_scan{0};
+    for (unsigned i{0}; i < peers; ++i) {
+        LOCK(NetEventsInterface::g_msgproc_mutex);
+        CNode peer{static_cast<NodeId>(i), nullptr, CAddress{}, 0, 0, CService{}, "", ConnectionType::INBOUND, false, 0};
+        connman.Handshake(peer, true, ServiceFlags(NODE_NETWORK | NODE_WITNESS), NODE_NETWORK, PROTOCOL_VERSION, true);
+        BOOST_REQUIRE(peer.fSuccessfullyConnected);
+        connman.FlushSendBuffer(peer);
+        auto message{NetMsg::Make(NetMsgType::HEADERS)};
+        VectorWriter writer{message.data, 0};
+        WriteCompactSize(writer, headers.size());
+        for (size_t n{0}; n + 1 < headers.size(); ++n) writer << headers[n] << uint8_t{0};
+        writer << forged[i] << uint8_t{0};
+        {
+            ASSERT_DEBUG_LOG("header with invalid proof of work");
+            BOOST_REQUIRE(connman.ReceiveMsgFrom(peer, std::move(message)));
+            peer.fPauseSend = false;
+            connman.ProcessMessagesOnce(peer);
+        }
+        if (stats.state == kernel::HistoricalPoWStats::RUNNING) ++attacks_during_scan;
+        if (i == 0) {
+            BOOST_CHECK(stats.state == kernel::HistoricalPoWStats::RUNNING);
+            {
+                std::lock_guard lock{mutex};
+                first_attack_processed = true;
+            }
+            gate.notify_all();
+        }
+        m_node.peerman->FinalizeNode(peer);
+    }
+    {
+        std::lock_guard lock{mutex};
+        attack_finished = true;
+    }
+    gate.notify_all();
+    scan.join();
+    if (failure) std::rethrow_exception(failure);
+    BOOST_CHECK(!error);
+    BOOST_CHECK(stats.state == kernel::HistoricalPoWStats::COMPLETE);
+    BOOST_CHECK_EQUAL(stats.processed.load(), headers.size());
+    BOOST_CHECK_EQUAL(stats.verified.load(), headers.size());
+    BOOST_CHECK_EQUAL(stats.reused.load(), 0U);
+    BOOST_CHECK_EQUAL(attacks_during_scan, peers);
+    BOOST_CHECK_EQUAL(WITH_LOCK(cs_main, return chainman.m_blockman.m_block_index.size()), index_size);
+    const auto usage{GetYespowerVerificationCacheUsage()};
+    BOOST_CHECK_EQUAL(usage.budget_bytes, 1U << 20);
+    BOOST_CHECK_LE(usage.proof_storage_bytes, usage.budget_bytes);
+    for (const auto& header : headers) BOOST_CHECK(db.HasYespowerEvidence(header, consensus));
+    for (const auto& bad : forged) {
+        BOOST_CHECK(!WITH_LOCK(cs_main, return chainman.m_blockman.LookupBlockIndex(bad.GetHash())));
+        BOOST_CHECK(!db.HasYespowerEvidence(bad, consensus));
+        // Invalid work must not become a successful RAM-cache hit either.
+        BOOST_CHECK(!CheckBlockProofOfWork(bad, consensus));
+    }
+    BOOST_TEST_MESSAGE("Lazy scan completed while handling " << peers * headers.size()
+                       << " HEADERS entries from " << peers << " simulated peers; "
+                       << attacks_during_scan << " messages processed before scan completion");
+}
+
 BOOST_FIXTURE_TEST_CASE(indexed_proofs_survive_eviction_but_not_disk_copies, TestingSetup)
 {
     CacheBudget budget{DEFAULT_YESPOWER_CACHE_BYTES};
@@ -233,6 +406,10 @@ BOOST_FIXTURE_TEST_CASE(indexed_proofs_survive_eviction_but_not_disk_copies, Tes
     // the caller's chainwork precondition without lowering the mainnet value.
     BOOST_REQUIRE(chainman.ProcessNewBlockHeaders(headers, true, state, nullptr));
     LOCK(cs_main);
+    // Ordinary index flushes save only the genuine results set by header validation.
+    chainman.m_blockman.WriteBlockIndexDB();
+    BOOST_CHECK(chainman.m_blockman.m_block_tree_db->HasYespowerEvidence(headers.front(), params));
+    BOOST_CHECK(chainman.m_blockman.m_block_tree_db->HasYespowerEvidence(headers.back(), params));
     InitYespowerVerificationCache(64);
     {
         Observation observation;
@@ -484,8 +661,29 @@ BOOST_AUTO_TEST_CASE(startup_checks_each_header_with_configured_workers)
             BOOST_CHECK_EQUAL(calls.load(), 0U); // Every check still consults verified process-local evidence.
 #endif
         }
+        // Lazy-style scans must really verify cold headers without retaining
+        // millions of old proofs in the foreground RAM cache.
+        InitYespowerVerificationCache(1 << 20);
+        for (int repeat = 0; repeat < 2; ++repeat) {
+            Observation observation;
+            BOOST_REQUIRE(verifier.CheckEach(headers, params, /*cache_result=*/false));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+            BOOST_CHECK_EQUAL(calls.load(), headers.size());
+            BOOST_CHECK_LE(peak.load(), static_cast<unsigned>(workers));
+#endif
+        }
         auto invalid{headers};
         Invalidate(invalid[12]);
+        BOOST_CHECK(!verifier.CheckEach(invalid, params, /*cache_result=*/false));
+        // Normal foreground checks still populate and reuse the cache.
+        BOOST_REQUIRE(verifier.CheckEach(headers, params));
+        {
+            Observation observation;
+            BOOST_REQUIRE(verifier.CheckEach(headers, params, /*cache_result=*/false));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+            BOOST_CHECK_EQUAL(calls.load(), 0U);
+#endif
+        }
         BOOST_CHECK(!verifier.CheckEach(invalid, params));
     }
 }
@@ -1180,27 +1378,380 @@ BOOST_AUTO_TEST_CASE(startup_progress_gui_updates_are_not_all_logged)
     BOOST_CHECK(logged[3].find("128 / 170 (75%)") != std::string::npos);
 }
 
-BOOST_AUTO_TEST_CASE(block_index_owned_batch_survives_reopen)
+BOOST_AUTO_TEST_CASE(persistent_historical_evidence_migration_and_restart)
 {
+    for (const int workers : {1, 2, 4, 8}) {
+        CacheBudget budget{1 << 20};
+        const auto headers{Headers(800, 1025)};
+        kernel::BlockTreeDB db{DBParams{.path = "", .cache_bytes = 1 << 20, .memory_only = true}};
+        std::vector<uint256> hashes;
+        std::deque<CBlockIndex> indexes;
+        hashes.reserve(headers.size());
+        for (const auto& header : headers) {
+            hashes.push_back(header.GetHash());
+            indexes.emplace_back(header);
+            indexes.back().phashBlock = &hashes.back();
+            indexes.back().nStatus = BLOCK_VALID_TREE; // Disk trust alone is not evidence.
+        }
+        std::vector<const CBlockIndex*> entries;
+        for (const auto& index : indexes) entries.push_back(&index);
+        WITH_LOCK(cs_main, db.WriteBatchSync({}, 0, entries, &params));
+        for (const auto& header : headers) BOOST_CHECK(!db.HasYespowerEvidence(header, params));
+        kernel::HistoricalPoWStats first;
+        util::SignalInterrupt stop;
+        const auto cold_start{std::chrono::steady_clock::now()};
+        {
+            Observation observation;
+            BOOST_CHECK(!db.VerifyHistoricalPoW(params, stop, first, 0, {}, workers));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+            BOOST_CHECK_EQUAL(calls.load(), headers.size());
+            BOOST_CHECK_LE(peak.load(), static_cast<unsigned>(workers));
+            if (workers > 1) BOOST_CHECK_GT(peak.load(), 1U);
+#endif
+        }
+        BOOST_TEST_MESSAGE("Historical evidence cold scan seconds=" << std::chrono::duration<double>(std::chrono::steady_clock::now() - cold_start).count());
+        BOOST_CHECK(first.state == kernel::HistoricalPoWStats::COMPLETE);
+        BOOST_CHECK_EQUAL(first.verified.load(), headers.size());
+        for (const auto& header : headers) BOOST_CHECK(db.HasYespowerEvidence(header, params));
+        // A new RAM cache represents a restart; saved results never set live flags.
+        InitYespowerVerificationCache(1 << 20);
+        kernel::HistoricalPoWStats warm;
+        const auto warm_start{std::chrono::steady_clock::now()};
+        {
+            Observation observation;
+            BOOST_CHECK(!db.VerifyHistoricalPoW(params, stop, warm, 0, {}, workers));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+            BOOST_CHECK_EQUAL(calls.load(), 0U);
+#endif
+        }
+        BOOST_TEST_MESSAGE("Historical evidence warm scan seconds=" << std::chrono::duration<double>(std::chrono::steady_clock::now() - warm_start).count());
+        BOOST_CHECK_EQUAL(warm.reused.load(), headers.size());
+        for (const auto& index : indexes) BOOST_CHECK(!WITH_LOCK(cs_main, return index.HasCurrentProcessYespowerEvidence()));
+        auto other{params}; other.hashGenesisBlock = uint256{123};
+        BOOST_CHECK(!db.HasYespowerEvidence(headers.front(), other));
+        auto changed{headers.front()}; ++changed.nNonce;
+        BOOST_CHECK(!db.HasYespowerEvidence(changed, params));
+        db.Write(std::make_pair(uint8_t{'y'}, headers.front().GetHash()), std::make_pair(uint8_t{99}, uint256{}), true);
+        BOOST_CHECK(!db.HasYespowerEvidence(headers.front(), params));
+        InitYespowerVerificationCache(1 << 20);
+        kernel::HistoricalPoWStats repaired;
+        BOOST_CHECK(!db.VerifyHistoricalPoW(params, stop, repaired, 0, {}, workers));
+        BOOST_CHECK_EQUAL(repaired.verified.load(), 1U);
+        BOOST_CHECK(db.HasYespowerEvidence(headers.front(), params));
+        // Mode zero ignores saved evidence and must compute all headers again.
+        InitYespowerVerificationCache(1 << 20);
+        Observation full;
+        BOOST_CHECK(LoadStartupHeaders(headers, 1, false, false, BLOCK_VALID_TREE));
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), headers.size());
+#endif
+    }
+}
+
+BOOST_AUTO_TEST_CASE(deleted_historical_evidence_is_reverified_with_reclaimed_cache)
+{
+    CacheBudget budget{1 << 20};
+    const auto headers{Headers(804, 64)};
+    const auto path{m_path_root / "deleted-evidence"};
+    std::vector<uint256> hashes;
+    std::deque<CBlockIndex> indexes;
+    hashes.reserve(headers.size());
+    for (const auto& header : headers) {
+        hashes.push_back(header.GetHash());
+        indexes.emplace_back(header);
+        indexes.back().phashBlock = &hashes.back();
+        indexes.back().nStatus = BLOCK_VALID_TREE;
+    }
+    util::SignalInterrupt stop;
+    {
+        kernel::BlockTreeDB db{DBParams{.path = path, .cache_bytes = 1 << 20, .reclaim_read_cache = true}};
+        std::vector<const CBlockIndex*> entries;
+        for (const auto& index : indexes) entries.push_back(&index);
+        db.WriteBatchSync({}, 0, entries);
+        kernel::HistoricalPoWStats cold;
+        BOOST_REQUIRE(!db.VerifyHistoricalPoW(params, stop, cold, 0, {}, 8));
+        BOOST_CHECK_EQUAL(cold.verified.load(), headers.size());
+        CDBBatch erased{db};
+        for (const auto& hash : hashes) erased.Erase(std::make_pair(uint8_t{'y'}, hash));
+        db.WriteBatch(erased, true);
+    }
+    InitYespowerVerificationCache(1 << 20);
+    {
+        kernel::BlockTreeDB db{DBParams{.path = path, .cache_bytes = 1 << 20, .reclaim_read_cache = true}};
+        kernel::HistoricalPoWStats repaired;
+        BOOST_REQUIRE(!db.VerifyHistoricalPoW(params, stop, repaired, 0, {}, 8));
+        BOOST_CHECK(repaired.state == kernel::HistoricalPoWStats::COMPLETE);
+        BOOST_CHECK_EQUAL(repaired.processed.load(), headers.size());
+        BOOST_CHECK_EQUAL(repaired.verified.load(), headers.size());
+        BOOST_CHECK_EQUAL(repaired.reused.load(), 0U);
+        for (const auto& header : headers) BOOST_CHECK(db.HasYespowerEvidence(header, params));
+        InitYespowerVerificationCache(1 << 20);
+        kernel::HistoricalPoWStats warm;
+        BOOST_REQUIRE(!db.VerifyHistoricalPoW(params, stop, warm, 0, {}, 8));
+        BOOST_CHECK_EQUAL(warm.verified.load(), 0U);
+        BOOST_CHECK_EQUAL(warm.reused.load(), headers.size());
+        for (size_t i{0}; i < hashes.size(); i += 2) db.Erase(std::make_pair(uint8_t{'y'}, hashes[i]));
+        kernel::HistoricalPoWStats mixed;
+        BOOST_REQUIRE(!db.VerifyHistoricalPoW(params, stop, mixed, 0, {}, 8));
+        BOOST_CHECK_EQUAL(mixed.verified.load(), headers.size() / 2);
+        BOOST_CHECK_EQUAL(mixed.reused.load(), headers.size() / 2);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(historical_shutdown_does_not_complete_or_start_partial_work)
+{
+    CacheBudget budget{1 << 20};
+    const auto headers{Headers(805, 8)};
+    kernel::BlockTreeDB db{DBParams{.path = "", .cache_bytes = 1 << 20, .memory_only = true}};
+    util::SignalInterrupt stopped;
+    (void)stopped();
+    kernel::HistoricalPoWStats empty;
+    empty.total = 123;
+    BOOST_REQUIRE(!db.VerifyHistoricalPoW(params, stopped, empty, 0));
+    BOOST_CHECK(empty.state == kernel::HistoricalPoWStats::INTERRUPTED);
+    BOOST_CHECK_EQUAL(empty.total.load(), 123U);
+    BOOST_CHECK_EQUAL(empty.processed.load(), 0U);
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+    // Stop inside the first header-copy loop, before any entry is copied.
+    // Removing the post-read interrupt guard must turn this into a failure.
+    util::SignalInterrupt during_empty_read;
+    kernel::HistoricalPoWStats empty_read;
+    empty_read.total = 123;
+    {
+        InterruptAtCheck inject{during_empty_read, 2};
+        BOOST_REQUIRE(!db.VerifyHistoricalPoW(params, during_empty_read, empty_read, 0));
+    }
+    BOOST_CHECK(empty_read.state == kernel::HistoricalPoWStats::INTERRUPTED);
+    BOOST_CHECK_EQUAL(empty_read.total.load(), 123U);
+#endif
+    // An empty DB with no interruption really is complete.
+    util::SignalInterrupt running;
+    kernel::HistoricalPoWStats eof;
+    BOOST_REQUIRE(!db.VerifyHistoricalPoW(params, running, eof, 0));
+    BOOST_CHECK(eof.state == kernel::HistoricalPoWStats::COMPLETE);
+    BOOST_CHECK_EQUAL(eof.total.load(), 0U);
+    std::vector<uint256> hashes;
+    std::deque<CBlockIndex> indexes;
+    hashes.reserve(headers.size());
+    for (const auto& header : headers) {
+        hashes.push_back(header.GetHash());
+        indexes.emplace_back(header);
+        indexes.back().phashBlock = &hashes.back();
+        indexes.back().nStatus = BLOCK_VALID_TREE;
+    }
+    std::vector<const CBlockIndex*> entries;
+    for (const auto& index : indexes) entries.push_back(&index);
+    db.WriteBatchSync({}, 0, entries);
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+    // Copy, evidence lookup and classification boundaries. Injection is only
+    // linked into this test executable, never the node.
+    for (const unsigned boundary : {3U, 12U, 13U, 21U}) {
+        util::SignalInterrupt stop;
+        kernel::HistoricalPoWStats stats;
+        stats.total = headers.size();
+        {
+            InterruptAtCheck inject{stop, boundary};
+            BOOST_REQUIRE(!db.VerifyHistoricalPoW(params, stop, stats, 0));
+        }
+        BOOST_CHECK(stats.state == kernel::HistoricalPoWStats::INTERRUPTED);
+        BOOST_CHECK_EQUAL(stats.total.load(), headers.size());
+        BOOST_CHECK_EQUAL(stats.processed.load(), 0U);
+        for (const auto& header : headers) BOOST_CHECK(!db.HasYespowerEvidence(header, params));
+    }
+#endif
+    // Stop at different deterministic classification boundaries, including
+    // the last header: no new verification may follow any of these stops.
+    for (const unsigned boundary : {1U, 3U, 8U}) {
+        util::SignalInterrupt stop;
+        kernel::HistoricalPoWStats stats;
+        stats.total = headers.size();
+        unsigned calls{0};
+        DebugLogHelper no_complete{"Lazy PoW complete:", [](const std::string* line) {
+            if (line) BOOST_ERROR("interrupted scan emitted a completion log");
+            return false;
+        }};
+        BOOST_REQUIRE(!db.VerifyHistoricalPoW(params, stop, stats, 0, [&](const CBlockHeader&) {
+            if (++calls == boundary) (void)stop();
+            return false;
+        }, 8));
+        BOOST_CHECK(stats.state == kernel::HistoricalPoWStats::INTERRUPTED);
+        BOOST_CHECK_EQUAL(stats.total.load(), headers.size());
+        BOOST_CHECK_EQUAL(stats.processed.load(), 0U);
+        BOOST_CHECK_EQUAL(stats.verified.load(), 0U);
+        BOOST_CHECK_EQUAL(calls, boundary);
+        for (const auto& header : headers) BOOST_CHECK(!db.HasYespowerEvidence(header, params));
+    }
+}
+
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+BOOST_AUTO_TEST_CASE(historical_shutdown_preserves_finished_batch_and_failure)
+{
+    CacheBudget budget{1 << 20};
+    auto headers{Headers(806, 520)};
+    for (const int workers : {1, 8}) {
+        const auto path{m_path_root / fs::PathFromString(strprintf("shutdown-batch-%d", workers))};
+        auto db{std::make_unique<kernel::BlockTreeDB>(DBParams{.path = path, .cache_bytes = 1 << 20})};
+        std::vector<uint256> hashes;
+        std::deque<CBlockIndex> indexes;
+        hashes.reserve(headers.size());
+        for (const auto& header : headers) {
+            hashes.push_back(header.GetHash());
+            indexes.emplace_back(header);
+            indexes.back().phashBlock = &hashes.back();
+            indexes.back().nStatus = BLOCK_VALID_TREE;
+        }
+        std::vector<const CBlockIndex*> entries;
+        for (const auto& index : indexes) entries.push_back(&index);
+        db->WriteBatchSync({}, 0, entries);
+        util::SignalInterrupt stop;
+        kernel::HistoricalPoWStats stats;
+        stats.total = headers.size();
+        {
+            Observation observation{0, &stop};
+            BOOST_REQUIRE(!db->VerifyHistoricalPoW(params, stop, stats, 0, {}, workers));
+            BOOST_CHECK_EQUAL(calls.load(), 512U);
+        }
+        const auto finished_ns{std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count()};
+        BOOST_REQUIRE_GT(proof_stop_ns.load(), 0);
+        BOOST_TEST_MESSAGE("Lazy shutdown workers=" << workers << " signal-to-return seconds=" << (finished_ns - proof_stop_ns.load()) / 1e9);
+        BOOST_CHECK(stats.state == kernel::HistoricalPoWStats::INTERRUPTED);
+        BOOST_CHECK_EQUAL(stats.total.load(), headers.size());
+        BOOST_CHECK_EQUAL(stats.processed.load(), 512U);
+        size_t saved{0};
+        for (const auto& header : headers) saved += db->HasYespowerEvidence(header, params);
+        BOOST_CHECK_EQUAL(saved, 512U);
+        db.reset();
+        db = std::make_unique<kernel::BlockTreeDB>(DBParams{.path = path, .cache_bytes = 1 << 20});
+        InitYespowerVerificationCache(1 << 20);
+        util::SignalInterrupt resume;
+        kernel::HistoricalPoWStats completed;
+        BOOST_REQUIRE(!db->VerifyHistoricalPoW(params, resume, completed, 0, {}, workers));
+        BOOST_CHECK_EQUAL(completed.reused.load(), 512U);
+        BOOST_CHECK_EQUAL(completed.verified.load(), 8U);
+        // Confirmed invalid work must remain a failure even when shutdown arrives.
+        auto bad{headers.front()};
+        Invalidate(bad);
+        const auto bad_hash{bad.GetHash()};
+        CBlockIndex index{bad}; index.phashBlock = &bad_hash; index.nStatus = BLOCK_VALID_TREE;
+        db->WriteBatchSync({}, 0, {&index});
+        util::SignalInterrupt failed_stop;
+        kernel::HistoricalPoWStats failed;
+        {
+            Observation observation{0, &failed_stop};
+            BOOST_REQUIRE(db->VerifyHistoricalPoW(params, failed_stop, failed, 0, {}, workers));
+        }
+        BOOST_CHECK(failed.state == kernel::HistoricalPoWStats::FAILED);
+        BOOST_CHECK(!db->HasYespowerEvidence(bad, params));
+    }
+}
+#endif
+
+BOOST_AUTO_TEST_CASE(background_historical_failure_and_interruption)
+{
+    for (const int workers : {1, 8}) {
+        CacheBudget budget{1 << 20};
+        auto headers{Headers(801, 8)};
+        kernel::BlockTreeDB db{DBParams{.path = "", .cache_bytes = 1 << 20, .memory_only = true}};
+        std::vector<uint256> hashes;
+        std::deque<CBlockIndex> indexes;
+        hashes.reserve(headers.size());
+        for (const auto& header : headers) {
+            hashes.push_back(header.GetHash()); indexes.emplace_back(header);
+            indexes.back().phashBlock = &hashes.back(); indexes.back().nStatus = BLOCK_VALID_TREE;
+        }
+        std::vector<const CBlockIndex*> entries;
+        for (const auto& index : indexes) entries.push_back(&index);
+        db.WriteBatchSync({}, 0, entries);
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        {
+            util::SignalInterrupt running;
+            kernel::HistoricalPoWStats resource_failure;
+            Observation failure{/*fail=*/2};
+            BOOST_CHECK_THROW(db.VerifyHistoricalPoW(params, running, resource_failure, 0, {}, workers), std::runtime_error);
+            BOOST_CHECK_EQUAL(active.load(), 0U);
+            for (const auto& header : headers) BOOST_CHECK(!db.HasYespowerEvidence(header, params));
+        }
+        InitYespowerVerificationCache(1 << 20);
+#endif
+        util::SignalInterrupt stop;
+        kernel::HistoricalPoWStats interrupted;
+        unsigned seen{0};
+        BOOST_CHECK(!db.VerifyHistoricalPoW(params, stop, interrupted, 0, [&](const CBlockHeader&) {
+            if (++seen == 3) (void)stop();
+            return false;
+        }, workers));
+        BOOST_CHECK(interrupted.state == kernel::HistoricalPoWStats::INTERRUPTED);
+        BOOST_CHECK_EQUAL(interrupted.processed.load(), 0U);
+        BOOST_CHECK_EQUAL(interrupted.verified.load(), 0U);
+        for (const auto& header : headers) BOOST_CHECK(!db.HasYespowerEvidence(header, params));
+        util::SignalInterrupt resume;
+        kernel::HistoricalPoWStats completed;
+        BOOST_CHECK(!db.VerifyHistoricalPoW(params, resume, completed, 0, {}, workers));
+        BOOST_CHECK_EQUAL(completed.reused.load(), 0U);
+        BOOST_CHECK_EQUAL(completed.verified.load(), headers.size());
+        BOOST_CHECK_EQUAL(completed.processed.load(), headers.size());
+        auto bad{Headers(802, 1).front()}; Invalidate(bad);
+        CBlockIndex bad_index{bad}; const uint256 bad_hash{bad.GetHash()};
+        bad_index.phashBlock = &bad_hash; bad_index.nStatus = BLOCK_VALID_TREE;
+        db.WriteBatchSync({}, 0, {&bad_index});
+        kernel::HistoricalPoWStats failed;
+        auto error{db.VerifyHistoricalPoW(params, resume, failed, 0, {}, workers)};
+        BOOST_REQUIRE(error);
+        BOOST_CHECK(error->find("-fast-startup=0 -reindex") != std::string::npos);
+        BOOST_CHECK(error->find(bad_hash.ToString()) != std::string::npos);
+        BOOST_CHECK(!db.HasYespowerEvidence(bad, params));
+        BOOST_CHECK(failed.state == kernel::HistoricalPoWStats::FAILED);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(historical_evidence_durable_reopen_and_reindex)
+{
+    CacheBudget budget{1 << 20};
     const auto header{Headers(803, 1).front()};
     const auto hash{header.GetHash()};
-    const fs::path path{m_path_root / "owned-index-batch"};
+    const fs::path path{m_path_root / "historical-evidence"};
     CBlockIndex index{header}; index.phashBlock = &hash; index.nStatus = BLOCK_VALID_TREE;
+    util::SignalInterrupt stop;
     {
         kernel::BlockTreeDB db{DBParams{.path = path, .cache_bytes = 1 << 20}};
         const std::vector<const CBlockIndex*> borrowed{&index};
         db.WriteBatchSync({}, 0, borrowed);
-        BOOST_CHECK_EQUAL(borrowed.size(), 1U);
+        BOOST_CHECK_EQUAL(borrowed.size(), 1U); // Existing reference callers are unchanged.
         std::vector<const CBlockIndex*> owned{&index};
         db.WriteBatchSync({}, 0, std::move(owned));
-        BOOST_CHECK(owned.empty());
-    }
-    {
-        kernel::BlockTreeDB db{DBParams{.path = path, .cache_bytes = 1 << 20}};
+        BOOST_CHECK(owned.empty()); // Temporary storage is consumed before DB insertion.
         CDiskBlockIndex saved;
         BOOST_REQUIRE(db.Read(std::make_pair(uint8_t{'b'}, hash), saved));
         BOOST_CHECK(saved.ConstructBlockHash() == hash);
-        BOOST_CHECK_EQUAL(saved.nStatus, index.nStatus);
+        BOOST_CHECK(!db.HasYespowerEvidence(header, params));
+        kernel::HistoricalPoWStats first;
+        BOOST_CHECK(!db.VerifyHistoricalPoW(params, stop, first, 0));
+        BOOST_CHECK(db.HasYespowerEvidence(header, params));
+        // A truncated/malformed record is a miss, never genuine live proof.
+        db.Write(std::make_pair(uint8_t{'y'}, hash), uint8_t{2}, true);
+        BOOST_CHECK(!db.HasYespowerEvidence(header, params));
+        kernel::HistoricalPoWStats repair;
+        BOOST_CHECK(!db.VerifyHistoricalPoW(params, stop, repair, 0));
+    }
+    InitYespowerVerificationCache(1 << 20);
+    {
+        kernel::BlockTreeDB db{DBParams{.path = path, .cache_bytes = 1 << 20}};
+        kernel::HistoricalPoWStats reopened;
+        Observation warm;
+        BOOST_CHECK(!db.VerifyHistoricalPoW(params, stop, reopened, 0));
+        BOOST_CHECK_EQUAL(reopened.reused.load(), 1U);
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 0U);
+#endif
+    }
+    {
+        kernel::BlockTreeDB db{DBParams{.path = path, .cache_bytes = 1 << 20, .wipe_data = true}};
+        BOOST_CHECK(!db.HasYespowerEvidence(header, params));
+        db.WriteBatchSync({}, 0, {&index});
+        kernel::HistoricalPoWStats wiped;
+        BOOST_CHECK(!db.VerifyHistoricalPoW(params, stop, wiped, 0));
+        BOOST_CHECK_EQUAL(wiped.reused.load(), 0U);
     }
 }
 
@@ -1276,6 +1827,77 @@ BOOST_AUTO_TEST_CASE(post_ibd_shrink_is_safe_during_parallel_checks)
     BOOST_CHECK_EQUAL(failures.load(), 0U);
     BOOST_CHECK_GT(shrinks.load(), 0U);
     BOOST_CHECK_EQUAL(GetYespowerVerificationCacheUsage().budget_bytes, 1U << 20);
+}
+
+BOOST_AUTO_TEST_CASE(block_index_owned_batch_survives_reopen)
+{
+    const auto header{Headers(803, 1).front()};
+    const auto hash{header.GetHash()};
+    const fs::path path{m_path_root / "owned-index-batch"};
+    CBlockIndex index{header}; index.phashBlock = &hash; index.nStatus = BLOCK_VALID_TREE;
+    {
+        kernel::BlockTreeDB db{DBParams{.path = path, .cache_bytes = 1 << 20}};
+        const std::vector<const CBlockIndex*> borrowed{&index};
+        db.WriteBatchSync({}, 0, borrowed);
+        BOOST_CHECK_EQUAL(borrowed.size(), 1U);
+        std::vector<const CBlockIndex*> owned{&index};
+        db.WriteBatchSync({}, 0, std::move(owned));
+        BOOST_CHECK(owned.empty());
+    }
+    {
+        kernel::BlockTreeDB db{DBParams{.path = path, .cache_bytes = 1 << 20}};
+        CDiskBlockIndex saved;
+        BOOST_REQUIRE(db.Read(std::make_pair(uint8_t{'b'}, hash), saved));
+        BOOST_CHECK(saved.ConstructBlockHash() == hash);
+        BOOST_CHECK_EQUAL(saved.nStatus, index.nStatus);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(persistent_evidence_records_bind_header_rules_and_version)
+{
+    const auto header{Headers(802, 1).front()};
+    const auto hash{header.GetHash()};
+    CBlockIndex index{header}; index.phashBlock = &hash; index.nStatus = BLOCK_VALID_TREE;
+    kernel::BlockTreeDB db{DBParams{.path = "", .cache_bytes = 1 << 20, .memory_only = true}};
+    WITH_LOCK(cs_main, db.WriteBatchSync({}, 0, {&index}, &params));
+    BOOST_CHECK(!db.HasYespowerEvidence(header, params)); // Disk validity is not genuine proof.
+    db.Write(std::make_pair(uint8_t{'y'}, hash), std::make_pair(uint8_t{2}, GetYespowerEvidenceDigest(header, params)), true);
+    BOOST_CHECK(db.HasYespowerEvidence(header, params));
+    auto other{params}; other.hashGenesisBlock = uint256{123};
+    BOOST_CHECK(!db.HasYespowerEvidence(header, other));
+    auto changed{header}; ++changed.nNonce;
+    BOOST_CHECK(!db.HasYespowerEvidence(changed, params));
+    db.Write(std::make_pair(uint8_t{'y'}, hash), std::make_pair(uint8_t{99}, uint256{}), true);
+    BOOST_CHECK(!db.HasYespowerEvidence(header, params));
+    db.Write(std::make_pair(uint8_t{'y'}, hash), uint8_t{2}, true);
+    BOOST_CHECK(!db.HasYespowerEvidence(header, params));
+}
+
+BOOST_AUTO_TEST_CASE(historical_evidence_rules_are_scoped_to_each_scan)
+{
+    CacheBudget budget{1 << 20};
+    const auto header{Headers(809, 1).front()};
+    const auto hash{header.GetHash()};
+    CBlockIndex index{header};
+    index.phashBlock = &hash;
+    index.nStatus = BLOCK_VALID_TREE;
+    kernel::BlockTreeDB db{DBParams{.path = "", .cache_bytes = 1 << 20, .memory_only = true}};
+    db.WriteBatchSync({}, 0, {&index});
+    auto other{params};
+    other.hashGenesisBlock = uint256{123};
+    util::SignalInterrupt stop;
+    for (const auto* rules : {&params, &other, &params}) {
+        kernel::HistoricalPoWStats stats;
+        BOOST_REQUIRE(!db.VerifyHistoricalPoW(*rules, stop, stats, 0));
+        BOOST_CHECK(stats.state == kernel::HistoricalPoWStats::COMPLETE);
+        BOOST_CHECK_EQUAL(stats.verified.load(), 1U);
+        BOOST_CHECK_EQUAL(stats.reused.load(), 0U);
+        BOOST_CHECK(db.HasYespowerEvidence(header, *rules));
+    }
+    kernel::HistoricalPoWStats warm;
+    BOOST_REQUIRE(!db.VerifyHistoricalPoW(params, stop, warm, 0));
+    BOOST_CHECK_EQUAL(warm.verified.load(), 0U);
+    BOOST_CHECK_EQUAL(warm.reused.load(), 1U);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

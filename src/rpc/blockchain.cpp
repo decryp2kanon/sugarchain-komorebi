@@ -1379,6 +1379,15 @@ RPCHelpMan getblockchaininfo()
                 {RPCResult::Type::NUM_TIME, "time", "The block time expressed in " + UNIX_EPOCH_TIME},
                 {RPCResult::Type::NUM_TIME, "mediantime", "The median block time expressed in " + UNIX_EPOCH_TIME},
                 {RPCResult::Type::NUM, "verificationprogress", "estimate of verification progress [0..1]"},
+                {RPCResult::Type::OBJ, "historicalpow", "Local historical Yespower evidence scan (separate from chain synchronization)", {
+                    {RPCResult::Type::STR, "state", "disabled, running, complete, interrupted, or failed"},
+                    {RPCResult::Type::NUM, "total", "Estimated entries; exact scanned count at completion"},
+                    {RPCResult::Type::NUM, "checked", "Entries examined in this scan"},
+                    {RPCResult::Type::NUM, "verified", "Entries with genuine current-process verification, possibly before this scan"},
+                    {RPCResult::Type::NUM, "reused", "Entries with matching local persisted evidence"},
+                    {RPCResult::Type::NUM, "remaining", "Estimated entries remaining"},
+                    {RPCResult::Type::BOOL, "historical_trust", "Fast mode is trusting historical indexes while this scan is unfinished"},
+                }},
                 {RPCResult::Type::BOOL, "initialblockdownload", "(debug information) estimate of whether this node is in Initial Block Download mode"},
                 {RPCResult::Type::STR_HEX, "chainwork", "total amount of work in active chain, in hexadecimal"},
                 {RPCResult::Type::NUM, "size_on_disk", "the estimated size of the block and undo files on disk"},
@@ -1419,6 +1428,20 @@ RPCHelpMan getblockchaininfo()
     obj.pushKV("time", tip.GetBlockTime());
     obj.pushKV("mediantime", tip.GetMedianTimePast());
     obj.pushKV("verificationprogress", chainman.GuessVerificationProgress(&tip));
+    const auto& historical{chainman.m_blockman.m_historical_pow};
+    const auto historical_state{historical.state.load()};
+    const uint64_t total{historical.total.load()}, checked{historical.processed.load()};
+    static constexpr const char* states[]{"disabled", "running", "complete", "interrupted", "failed"};
+    UniValue history{UniValue::VOBJ};
+    history.pushKV("state", states[historical_state]);
+    history.pushKV("total", total);
+    history.pushKV("checked", checked);
+    history.pushKV("verified", historical.verified.load());
+    history.pushKV("reused", historical.reused.load());
+    history.pushKV("remaining", total > checked ? total - checked : 0);
+    history.pushKV("historical_trust", chainman.GetConsensus().fYespowerSugar &&
+        chainman.m_blockman.UsesHistoricalPoWTrust() && historical_state != kernel::HistoricalPoWStats::COMPLETE);
+    obj.pushKV("historicalpow", std::move(history));
     obj.pushKV("initialblockdownload", chainman.IsInitialBlockDownload());
     obj.pushKV("chainwork", tip.nChainWork.GetHex());
     obj.pushKV("size_on_disk", chainman.m_blockman.CalculateCurrentUsage());

@@ -295,6 +295,7 @@ BOOST_FIXTURE_TEST_CASE(blockmanager_loadblockindex_preserves_unpersisted_header
     BOOST_CHECK(disk.ConstructBlockHash() == before_boundary);
     BOOST_CHECK(!WITH_LOCK(cs_main, return blockman.BlockIndexWriteDue()));
     BOOST_CHECK(WITH_LOCK(cs_main, return chainman.ActiveChainstate().CoinsTip().GetBestBlock()) == coins_best);
+    BOOST_CHECK(!WITH_LOCK(cs_main, return blockman.m_block_tree_db->HasYespowerEvidence(header, consensus)));
 
     // A new header after the boundary remains dirty until a later flush.
     next_header();
@@ -602,6 +603,7 @@ BOOST_AUTO_TEST_CASE(blockmanager_flush_block_file)
             const auto dirty_size{blockman.m_dirty_blockindex.size()};
             BOOST_CHECK(blockman.AddToBlockIndex(header, best_header) == index);
             BOOST_CHECK_EQUAL(blockman.m_dirty_blockindex.size(), dirty_size);
+            BOOST_CHECK(!index->HasCurrentProcessYespowerEvidence());
             saved.emplace_back(header.GetHash(), index);
         }
         BOOST_CHECK_EQUAL(blockman.m_dirty_blockindex.size(), 1000U);
@@ -619,6 +621,7 @@ BOOST_AUTO_TEST_CASE(blockmanager_flush_block_file)
         BOOST_CHECK_EQUAL(disk.nHeight, index->nHeight);
         BOOST_CHECK_EQUAL(disk.nStatus, index->nStatus);
         BOOST_CHECK(disk.hashPrev == (index->pprev ? index->pprev->GetBlockHash() : uint256{}));
+        BOOST_CHECK(!blockman.m_block_tree_db->HasYespowerEvidence(index->GetBlockHeader(), Params().GetConsensus()));
     }
 }
 

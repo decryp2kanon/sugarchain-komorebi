@@ -55,6 +55,11 @@ class SignalInterrupt;
 } // namespace util
 
 namespace kernel {
+struct HistoricalPoWStats {
+    enum State { DISABLED, RUNNING, COMPLETE, INTERRUPTED, FAILED };
+    std::atomic<State> state{DISABLED};
+    std::atomic<uint64_t> total{0}, processed{0}, verified{0}, reused{0};
+};
 class CBlockFileInfo
 {
 public:
@@ -100,13 +105,18 @@ public:
 class BlockTreeDB : public CDBWrapper
 {
     void PopulateBatch(CDBBatch& batch, const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo,
-        int nLastFile, const std::vector<const CBlockIndex*>& blockinfo);
+        int nLastFile, const std::vector<const CBlockIndex*>& blockinfo, const Consensus::Params* consensus);
 
 public:
     using CDBWrapper::CDBWrapper;
-    void WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, const std::vector<const CBlockIndex*>& blockinfo);
+    void WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, const std::vector<const CBlockIndex*>& blockinfo, const Consensus::Params* consensus = nullptr);
     /** Consume a temporary pointer vector after serialization, before DB insertion. */
-    void WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, std::vector<const CBlockIndex*>&& blockinfo);
+    void WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*>>& fileInfo, int nLastFile, std::vector<const CBlockIndex*>&& blockinfo, const Consensus::Params* consensus = nullptr);
+    bool HasYespowerEvidence(const CBlockHeader& header, const Consensus::Params& consensus) const;
+    /** Bounded background DB scan; caller keeps this DB alive until joined. */
+    std::optional<std::string> VerifyHistoricalPoW(const Consensus::Params& consensus,
+        const util::SignalInterrupt& interrupt, HistoricalPoWStats& stats, unsigned pause_ms,
+        const std::function<bool(const CBlockHeader&)>& live_verified = {}, int pow_workers = 1);
     bool ReadBlockFileInfo(int nFile, CBlockFileInfo& info);
     bool ReadLastBlockFile(int& nFile);
     void WriteReindexing(bool fReindexing);
@@ -348,6 +358,8 @@ public:
     explicit BlockManager(const util::SignalInterrupt& interrupt, Options opts);
 
     const util::SignalInterrupt& m_interrupt;
+    kernel::HistoricalPoWStats m_historical_pow;
+    bool UsesHistoricalPoWTrust() const { return m_opts.fast_startup; }
     std::atomic<bool> m_importing{false};
 
     /**

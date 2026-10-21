@@ -430,6 +430,13 @@ CDBIterator* CDBWrapper::NewIterator()
     return new CDBIterator{*this, std::make_unique<CDBIterator::IteratorImpl>(DBContext().pdb->NewIterator(DBContext().iteroptions))};
 }
 
+bool CDBIterator::SeekExactImpl(std::span<const std::byte> key)
+{
+    const bool found{m_impl_iter->iter->SeekExact(leveldb::Slice(CharCast(key.data()), key.size()))};
+    CheckStatus();
+    return found;
+}
+
 void CDBIterator::SeekImpl(std::span<const std::byte> key)
 {
     leveldb::Slice slKey(CharCast(key.data()), key.size());
@@ -448,6 +455,7 @@ std::span<const std::byte> CDBIterator::GetValueImpl() const
 
 CDBIterator::~CDBIterator() = default;
 bool CDBIterator::Valid() const { return m_impl_iter->iter->Valid(); }
+void CDBIterator::CheckStatus() const { HandleError(m_impl_iter->iter->status()); }
 bool CDBIterator::KeyHasPrefix(uint8_t prefix, size_t min_size) const
 {
     const auto key{GetKeyImpl()};

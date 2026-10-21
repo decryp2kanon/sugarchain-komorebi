@@ -10,6 +10,7 @@
 #include <util/string.h>
 
 #include <leveldb/db.h>
+#include <leveldb/env.h>
 #include <leveldb/options.h>
 
 #include <memory>
@@ -20,6 +21,71 @@
 using util::ToString;
 
 BOOST_FIXTURE_TEST_SUITE(dbwrapper_tests, BasicTestingSetup)
+
+BOOST_AUTO_TEST_CASE(exact_seek_retains_storage_errors)
+{
+    struct ReadErrorEnv : leveldb::EnvWrapper {
+        bool fail{false};
+        ReadErrorEnv() : EnvWrapper(leveldb::Env::Default()) {}
+        leveldb::Status NewRandomAccessFile(const std::string& name, leveldb::RandomAccessFile** file) override
+        {
+            if (fail) return leveldb::Status::IOError("injected exact-seek read failure");
+            return target()->NewRandomAccessFile(name, file);
+        }
+    } env;
+    leveldb::Options options;
+    options.create_if_missing = true;
+    options.small_table_cache = true;
+    options.max_open_files = 10;
+    options.env = &env;
+    leveldb::DB* raw{nullptr};
+    BOOST_REQUIRE(leveldb::DB::Open(options, fs::PathToString(m_path_root / "exact-seek-error"), &raw).ok());
+    std::unique_ptr<leveldb::DB> db{raw};
+    BOOST_REQUIRE(db->Put(leveldb::WriteOptions{}, "key", "value").ok());
+    db->CompactRange(nullptr, nullptr);
+    env.fail = true;
+    std::unique_ptr<leveldb::Iterator> cursor{db->NewIterator(leveldb::ReadOptions{})};
+    BOOST_CHECK(!cursor->SeekExact("key"));
+    BOOST_CHECK(cursor->status().IsIOError());
+}
+
+BOOST_AUTO_TEST_CASE(exact_seek_preserves_snapshot_and_deleted_key_semantics)
+{
+    for (const bool obfuscate : {false, true}) {
+        CDBWrapper db{{.path = m_args.GetDataDirBase() / "exact-seek", .cache_bytes = 1_MiB,
+                       .memory_only = true, .obfuscate = obfuscate}};
+        db.Write(uint8_t{'a'}, uint64_t{1});
+        db.Write(uint8_t{'c'}, uint64_t{3});
+        std::unique_ptr<CDBIterator> old{db.NewIterator()};
+        db.Write(uint8_t{'a'}, uint64_t{2});
+        db.Write(uint8_t{'b'}, uint64_t{4});
+        db.Erase(uint8_t{'c'});
+        std::unique_ptr<CDBIterator> current{db.NewIterator()};
+        uint64_t value;
+        BOOST_REQUIRE(old->SeekExact(uint8_t{'a'}));
+        BOOST_REQUIRE(old->GetValue(value));
+        BOOST_CHECK_EQUAL(value, 1U);
+        BOOST_CHECK(!old->SeekExact(uint8_t{'b'})); // A later live key must not be a hit.
+        BOOST_REQUIRE(old->SeekExact(uint8_t{'c'})); // Deletion is newer than this snapshot.
+        BOOST_REQUIRE(old->GetValue(value));
+        BOOST_CHECK_EQUAL(value, 3U);
+        BOOST_REQUIRE(current->SeekExact(uint8_t{'a'}));
+        BOOST_REQUIRE(current->GetValue(value));
+        BOOST_CHECK_EQUAL(value, 2U);
+        current->Next();
+        uint8_t key;
+        BOOST_REQUIRE(current->GetKey(key));
+        BOOST_CHECK_EQUAL(key, 'b');
+        BOOST_CHECK(!current->SeekExact(uint8_t{'c'})); // Visible deletion.
+        BOOST_CHECK(!current->SeekExact(uint8_t{'z'})); // End of key space.
+        BOOST_CHECK(!current->SeekExact(uint8_t{'0'})); // Before the first key.
+        current->Seek(uint8_t{'0'}); // Ordinary lower-bound seeks stay unchanged.
+        BOOST_REQUIRE(current->GetKey(key));
+        BOOST_CHECK_EQUAL(key, 'a');
+        old->CheckStatus();
+        current->CheckStatus();
+    }
+}
 
 BOOST_AUTO_TEST_CASE(block_index_key_prefix_preserves_parser_boundaries)
 {
