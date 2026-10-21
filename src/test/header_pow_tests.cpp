@@ -27,7 +27,10 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <exception>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -256,6 +259,131 @@ BOOST_FIXTURE_TEST_CASE(indexed_header_messages_after_cache_eviction, TestingSet
         receive(std::span{&invalid, 1}, 1); // A changed header cannot inherit evidence.
     }
     m_node.peerman->FinalizeNode(peer);
+}
+
+BOOST_FIXTURE_TEST_CASE(historical_scan_survives_invalid_headers_flood, TestingSetup)
+{
+    // Exercise the real HEADERS handler without sockets or an operating datadir.
+    // Each fresh peer hides one nonce-mutated header behind 1,999 known headers.
+    CacheBudget budget{1 << 20};
+    auto& chainman{*m_node.chainman};
+    const auto& consensus{chainman.GetConsensus()};
+    DataStream stream{test::data::sugarchain_headers};
+    std::vector<CBlockHeader> headers(2000);
+    for (auto& header : headers) stream >> header;
+    HeaderPoWVerifier verifier{8};
+    BOOST_REQUIRE(verifier.Check(headers, consensus));
+    BlockValidationState state;
+    // Isolate admitted history; do not lower the P2P minimum-chainwork rule.
+    BOOST_REQUIRE(chainman.ProcessNewBlockHeaders(headers, true, state, nullptr));
+    const auto index_size{WITH_LOCK(cs_main, return chainman.m_blockman.m_block_index.size())};
+
+    constexpr unsigned peers{64};
+    std::vector<CBlockHeader> forged;
+    for (unsigned i{0}; i < peers; ++i) {
+        auto bad{forged.empty() ? headers.back() : forged.back()};
+        do { ++bad.nNonce; } while (CheckProofOfWorkImpl(bad.GetPoWHash(), bad.nBits, consensus));
+        forged.push_back(bad);
+    }
+    kernel::BlockTreeDB db{DBParams{.path = "", .cache_bytes = 1 << 20, .memory_only = true}};
+    {
+        LOCK(cs_main);
+        std::vector<const CBlockIndex*> entries;
+        for (const auto& header : headers) entries.push_back(chainman.m_blockman.LookupBlockIndex(header.GetHash()));
+        db.WriteBatchSync({}, 0, entries); // No persisted evidence in this DB.
+    }
+    InitYespowerVerificationCache(1 << 20);
+    kernel::HistoricalPoWStats stats;
+    stats.total = headers.size();
+    util::SignalInterrupt interrupt;
+    std::mutex mutex;
+    std::condition_variable_any gate;
+    bool scanning{false}, first_attack_processed{false}, attack_finished{false};
+    size_t classified{0};
+    std::optional<std::string> error;
+    std::exception_ptr failure;
+    std::jthread scan{[&](std::stop_token stop) {
+        // Also release/cancel on a failed assertion in the driving thread.
+        std::stop_callback cancel{stop, [&] { (void)interrupt(); }};
+        try {
+            error = db.VerifyHistoricalPoW(consensus, interrupt, stats, 0, [&](const CBlockHeader&) {
+                std::unique_lock lock{mutex};
+                scanning = true;
+                gate.notify_all();
+                // Guarantee that an attack reaches the handler during the scan.
+                gate.wait(lock, stop, [&] { return first_attack_processed; });
+                // Keep the final batch pending until the entire flood has been
+                // handled. Deterministic interleaving, not a throughput benchmark.
+                if (++classified == headers.size()) {
+                    gate.wait(lock, stop, [&] { return attack_finished; });
+                }
+                return false;
+            }, 8);
+        } catch (...) {
+            failure = std::current_exception();
+        }
+    }};
+    {
+        std::unique_lock lock{mutex};
+        BOOST_REQUIRE(gate.wait_for(lock, std::chrono::seconds{30}, [&] { return scanning; }));
+    }
+    auto& connman{static_cast<ConnmanTestMsg&>(*m_node.connman)};
+    unsigned attacks_during_scan{0};
+    for (unsigned i{0}; i < peers; ++i) {
+        LOCK(NetEventsInterface::g_msgproc_mutex);
+        CNode peer{static_cast<NodeId>(i), nullptr, CAddress{}, 0, 0, CService{}, "", ConnectionType::INBOUND, false, 0};
+        connman.Handshake(peer, true, ServiceFlags(NODE_NETWORK | NODE_WITNESS), NODE_NETWORK, PROTOCOL_VERSION, true);
+        BOOST_REQUIRE(peer.fSuccessfullyConnected);
+        connman.FlushSendBuffer(peer);
+        auto message{NetMsg::Make(NetMsgType::HEADERS)};
+        VectorWriter writer{message.data, 0};
+        WriteCompactSize(writer, headers.size());
+        for (size_t n{0}; n + 1 < headers.size(); ++n) writer << headers[n] << uint8_t{0};
+        writer << forged[i] << uint8_t{0};
+        {
+            ASSERT_DEBUG_LOG("header with invalid proof of work");
+            BOOST_REQUIRE(connman.ReceiveMsgFrom(peer, std::move(message)));
+            peer.fPauseSend = false;
+            connman.ProcessMessagesOnce(peer);
+        }
+        if (stats.state == kernel::HistoricalPoWStats::RUNNING) ++attacks_during_scan;
+        if (i == 0) {
+            BOOST_CHECK(stats.state == kernel::HistoricalPoWStats::RUNNING);
+            {
+                std::lock_guard lock{mutex};
+                first_attack_processed = true;
+            }
+            gate.notify_all();
+        }
+        m_node.peerman->FinalizeNode(peer);
+    }
+    {
+        std::lock_guard lock{mutex};
+        attack_finished = true;
+    }
+    gate.notify_all();
+    scan.join();
+    if (failure) std::rethrow_exception(failure);
+    BOOST_CHECK(!error);
+    BOOST_CHECK(stats.state == kernel::HistoricalPoWStats::COMPLETE);
+    BOOST_CHECK_EQUAL(stats.processed.load(), headers.size());
+    BOOST_CHECK_EQUAL(stats.verified.load(), headers.size());
+    BOOST_CHECK_EQUAL(stats.reused.load(), 0U);
+    BOOST_CHECK_EQUAL(attacks_during_scan, peers);
+    BOOST_CHECK_EQUAL(WITH_LOCK(cs_main, return chainman.m_blockman.m_block_index.size()), index_size);
+    const auto usage{GetYespowerVerificationCacheUsage()};
+    BOOST_CHECK_EQUAL(usage.budget_bytes, 1U << 20);
+    BOOST_CHECK_LE(usage.proof_storage_bytes, usage.budget_bytes);
+    for (const auto& header : headers) BOOST_CHECK(db.HasYespowerEvidence(header, consensus));
+    for (const auto& bad : forged) {
+        BOOST_CHECK(!WITH_LOCK(cs_main, return chainman.m_blockman.LookupBlockIndex(bad.GetHash())));
+        BOOST_CHECK(!db.HasYespowerEvidence(bad, consensus));
+        // Invalid work must not become a successful RAM-cache hit either.
+        BOOST_CHECK(!CheckBlockProofOfWork(bad, consensus));
+    }
+    BOOST_TEST_MESSAGE("Lazy scan completed while handling " << peers * headers.size()
+                       << " HEADERS entries from " << peers << " simulated peers; "
+                       << attacks_during_scan << " messages processed before scan completion");
 }
 
 BOOST_FIXTURE_TEST_CASE(indexed_proofs_survive_eviction_but_not_disk_copies, TestingSetup)
