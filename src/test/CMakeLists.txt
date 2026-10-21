@@ -6,6 +6,7 @@
 # SOURCES property is processed to gather test suite macros.
 add_executable(test_bitcoin
   main.cpp
+  historical_pow_crash_tests.cpp
   addrman_tests.cpp
   allocator_tests.cpp
   amount_tests.cpp
@@ -183,7 +184,14 @@ target_link_libraries(test_bitcoin
 # Production libraries/binaries contain no counters or fault-injection hooks.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_compile_definitions(test_bitcoin PRIVATE ENABLE_YESPOWER_TEST_WRAP=1)
-  target_link_options(test_bitcoin PRIVATE "LINKER:--wrap=yespower" "LINKER:--wrap=_ZNK4util15SignalInterruptcvbEv")
+  target_link_options(test_bitcoin PRIVATE "LINKER:--wrap=yespower" "LINKER:--wrap=_ZNK4util15SignalInterruptcvbEv"
+    "LINKER:--wrap=_ZN10CDBWrapper10WriteBatchER8CDBBatchb" "LINKER:--wrap=fdatasync" "LINKER:--wrap=write")
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_Interpreter_FOUND)
+    add_test(NAME lazy_pow_crash_recovery
+      COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/lazy_pow_crash_recovery.py --test-binary $<TARGET_FILE:test_bitcoin>)
+    set_tests_properties(lazy_pow_crash_recovery PROPERTIES TIMEOUT 900)
+  endif()
 endif()
 
 if(ENABLE_WALLET)

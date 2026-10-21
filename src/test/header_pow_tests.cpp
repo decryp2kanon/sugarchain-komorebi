@@ -11,6 +11,7 @@
 #include <primitives/block.h>
 #include <streams.h>
 #include <test/data/sugarchain_headers.raw.h>
+#include <test/historical_pow_crash.h>
 #include <test/util/setup_common.h>
 #include <test/util/net.h>
 #include <test/util/logging.h>
@@ -178,7 +179,11 @@ extern "C" int __real_yespower(yespower_local_t*, const uint8_t*, size_t, const 
 extern "C" int __wrap_yespower(yespower_local_t* local, const uint8_t* input, size_t size,
                              const yespower_params_t* params, yespower_binary_t* output)
 {
-    if (!observing.load()) return __real_yespower(local, input, size, params, output);
+    if (!observing.load()) {
+        const int result{__real_yespower(local, input, size, params, output)};
+        HistoricalPoWCrashProof(input, size, result);
+        return result;
+    }
     const auto ordinal{++calls};
     if (ordinal == 1) {
         if (auto* stop = stop_on_proof.load()) {

@@ -319,4 +319,38 @@ These measurements demonstrate lower evidence-reuse overhead, not a full-mainnet
 fresh-verification speedup or an RSS reduction. Worker counts, cache budgets,
 512-entry batches and synchronous evidence writes remain unchanged.
 
+## SIGKILL recovery regression (Linux)
+
+The test-only subprocess fixture uses 6,000 genuine mainnet headers and a
+private on-disk block-index DB. It observes actual Yespower returns, synchronous
+batch writes, a deliberately truncated WAL write, and the WAL `fdatasync` boundary. At a selected boundary the child
+stops all its threads; the supervisor sends SIGKILL and checks its exit status.
+A fresh process reopens the DB and verifies per-header evidence reuse and real
+recomputation of every missing proof before accepting completion. Both one and
+eight workers, the final partial batch, repeated crashes, malformed evidence
+and invalid headers are covered.
+
+Run the supervisor, not just the child Boost case (which is inert unless armed):
+
+```sh
+python3 test/lazy_pow_crash_recovery.py \
+  --test-binary build/bin/test_bitcoin --repetitions=3 \
+  --output /path/to/new-private-results-directory
+```
+
+The default one-repetition version is registered as the Linux CTest
+`lazy_pow_crash_recovery` when Python is available. The hooks are linked only
+into `test_bitcoin`; daemon libraries and executables have no crash controls.
+Proof events are streamed to the supervisor, rather than relying on a destructor
+that SIGKILL would skip. Preserve a fixed test executable while the supervisor
+is running; relinking its path can race a subsequent child launch.
+
+SIGKILL preserves the kernel page cache. A batch whose write has not returned
+may therefore recover completely; the test permits either whole-batch outcome,
+requires all acknowledged synchronous commits, and rejects partial evidence
+recovery. The truncated-write case sends a real prefix to the WAL before stopping
+the child and requires the incomplete second batch to be discarded. This is not physical power-loss or arbitrary-storage-corruption
+qualification. The library fixture also does not replace a separate actual-node
+startup/Lazy-progress check or make local unkeyed evidence tamper-proof.
+
 EOF
