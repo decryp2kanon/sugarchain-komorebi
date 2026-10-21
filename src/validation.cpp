@@ -4408,6 +4408,7 @@ bool ChainstateManager::ProcessNewBlockHeaders(std::span<const CBlockHeader> hea
 void ChainstateManager::ReportHeadersPresync(int64_t height, int64_t timestamp)
 {
     AssertLockNotHeld(GetMutex());
+    bool log_progress{false};
     {
         LOCK(GetMutex());
         // Don't report headers presync progress if we already have a post-minchainwork header chain.
@@ -4419,10 +4420,15 @@ void ChainstateManager::ReportHeadersPresync(int64_t height, int64_t timestamp)
         auto now = MockableSteadyClock::now();
         if (now < m_last_presync_update + std::chrono::milliseconds{250}) return;
         m_last_presync_update = now;
+        if (!m_last_presync_log_height || height < *m_last_presync_log_height ||
+            height - *m_last_presync_log_height >= 24'000) {
+            m_last_presync_log_height = height;
+            log_progress = true;
+        }
     }
     bool initial_download = IsInitialBlockDownload();
     GetNotifications().headerTip(GetSynchronizationState(initial_download, m_blockman.m_blockfiles_indexed), height, timestamp, /*presync=*/true);
-    if (initial_download) {
+    if (initial_download && log_progress) {
         int64_t blocks_left{(NodeClock::now() - NodeSeconds{std::chrono::seconds{timestamp}}) / GetConsensus().PowTargetSpacing()};
         blocks_left = std::max<int64_t>(0, blocks_left);
         const double progress{100.0 * height / (height + blocks_left)};
