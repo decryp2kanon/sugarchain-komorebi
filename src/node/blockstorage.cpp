@@ -177,7 +177,7 @@ std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Par
         {
             std::unique_ptr<CDBIterator> cursor{NewIterator()};
             cursor->Seek(std::make_pair(DB_BLOCK_INDEX, last.value_or(uint256{})));
-            while (cursor->Valid() && cursor->KeyHasPrefix(DB_BLOCK_INDEX)) {
+            while (!interrupt && cursor->Valid() && cursor->KeyHasPrefix(DB_BLOCK_INDEX)) {
                 std::pair<uint8_t, uint256> key;
                 CDiskBlockIndex disk;
                 if (!cursor->GetKey(key) || !cursor->GetValue(disk, true)) {
@@ -190,6 +190,8 @@ std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Par
             }
             cursor->CheckStatus();
         }
+        // An interrupted empty/partial read is not a completed scan.
+        if (interrupt) break;
         if (entries.empty()) {
             stats.total = stats.processed.load();
             stats.state = HistoricalPoWStats::COMPLETE;
@@ -203,7 +205,7 @@ std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Par
         std::vector<std::pair<uint8_t, uint256>> evidence(entries.size());
         {
             std::unique_ptr<CDBIterator> proofs{NewIterator()};
-            for (size_t i{0}; i < entries.size(); ++i) {
+            for (size_t i{0}; i < entries.size() && !interrupt; ++i) {
                 const auto expected{std::make_pair(uint8_t{'y'}, entries[i].first)};
                 if (proofs->SeekExact(expected)) {
                     if (!proofs->GetValue(evidence[i])) evidence[i] = {};
@@ -211,6 +213,7 @@ std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Par
             }
             proofs->CheckStatus();
         }
+        if (interrupt) break;
         // Owned header copies survive all queue work. No DB iterator or index
         // pointer is retained while workers compute. A batch is at most 512.
         std::vector<CBlockHeader> headers;
@@ -237,9 +240,17 @@ std::optional<std::string> BlockTreeDB::VerifyHistoricalPoW(const Consensus::Par
             live.push_back(live_valid);
             if (!saved_valid && !live_valid) missing.push_back(header);
         }
-        // Finish this bounded batch even if shutdown arrived while classifying.
-        // The queue joins its tasks before returning; committed successes survive.
+        // Do not start hashing a partially classified batch after shutdown.
+        if (interrupt) break;
+        // Already submitted work joins before returning. Preserve a completed
+        // successful batch, but do not recompute failures after shutdown.
         const bool batch_valid{missing.empty() || verifier.CheckEach(missing, consensus, /*cache_result=*/false)};
+        if (!batch_valid && interrupt) {
+            stats.state = HistoricalPoWStats::FAILED;
+            return "Lazy PoW failed: invalid PoW in a verification batch during shutdown. "
+                   "Back up data and recover with -fast-startup=0 -reindex. "
+                   "Reindexing cannot repair invalid PoW or damaged block files.";
+        }
         CDBBatch batch{*this};
         bool dirty{false};
         for (size_t i{0}; i < headers.size(); ++i) {

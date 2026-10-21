@@ -290,4 +290,18 @@ batch limit, cache budgets and the evidence format are unchanged. No iterator
 snapshot survives into hashing. Targeted lookup measurements do not establish a
 new full-mainnet scan duration.
 
+## Shutdown during a historical scan
+
+Shutdown checks run between index records, evidence lookups and classification,
+and before starting verification. Interrupted empty or partial reads leave the
+scan interrupted; only an uninterrupted end-of-index read can set complete and
+finalize the total. Previously persisted evidence remains reusable.
+
+An already submitted successful verification batch is joined and synchronously
+saved before returning. A confirmed invalid batch remains a failure during
+shutdown, without a redundant per-header failure search. The existing 512-entry
+limit, worker settings, queue and DB lifetime/join rules are unchanged. Individual
+hashes, reads and synchronous writes are not forcibly cancelled; their duration
+and other shutdown tasks can still delay whole-node termination.
+
 EOF

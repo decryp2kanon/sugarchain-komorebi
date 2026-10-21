@@ -179,11 +179,11 @@ target_link_libraries(test_bitcoin
   $<TARGET_NAME_IF_EXISTS:USDT::headers>
 )
 
-# Observe real Yespower calls and inject local failures only in the test binary.
+# Observe real Yespower calls and inject failures/interrupts only in the test binary.
 # Production libraries/binaries contain no counters or fault-injection hooks.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_compile_definitions(test_bitcoin PRIVATE ENABLE_YESPOWER_TEST_WRAP=1)
-  target_link_options(test_bitcoin PRIVATE "LINKER:--wrap=yespower")
+  target_link_options(test_bitcoin PRIVATE "LINKER:--wrap=yespower" "LINKER:--wrap=_ZNK4util15SignalInterruptcvbEv")
 endif()
 
 if(ENABLE_WALLET)
